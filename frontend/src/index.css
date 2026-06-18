@@ -1,0 +1,265 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --safe-t: env(safe-area-inset-top);
+  --safe-b: env(safe-area-inset-bottom);
+  --safe-l: env(safe-area-inset-left);
+  --safe-r: env(safe-area-inset-right);
+  --kb-inset: 0px;
+  --scene-accent: rgba(159, 180, 240, 0.7);
+  --scene-glow: rgba(159, 180, 240, 0.25);
+
+  /* —— 纵深（「深海玻璃」核心新维度）—— */
+  --depth-perspective: 1400px; /* 场景透视：越大越克制 */
+  --depth-near: 60px;          /* 玻璃卡悬浮高度 */
+  --depth-mid: -60px;          /* 海面中景后退 */
+  --depth-far: -180px;         /* 远景层后退 */
+  --tilt-scene: 4deg;          /* 场景视差倾角硬上限 */
+  --tilt-card: 5deg;           /* 卡片倾角硬上限 */
+  --tilt-sandbox: 10deg;       /* 登高沙盘俯仰上限 */
+  /* —— 体积光语言 —— */
+  --vol-light-peak: 0.55;      /* 峰值强度上限（绝不刺眼）*/
+}
+
+/* 稳定的 3D 舞台：承载场景视差，不随场景切换重挂（透视上下文挂在它身上）。 */
+.scene-stage {
+  perspective: var(--depth-perspective);
+  perspective-origin: 50% 45%;
+  transform-style: preserve-3d;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+html, body {
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: rgba(255, 255, 255, 0.92);
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background:
+    radial-gradient(120% 80% at 80% 0%, rgba(120, 90, 180, 0.22) 0%, transparent 55%),
+    radial-gradient(80% 60% at 0% 100%, rgba(70, 110, 150, 0.18) 0%, transparent 60%),
+    linear-gradient(180deg, #0a0e1f 0%, #0d1226 45%, #0a0d1c 100%);
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.045;
+  background-image: url("/noise.svg");
+  background-size: 200px 200px;
+  mix-blend-mode: overlay;
+  z-index: 0;
+}
+
+* { -webkit-tap-highlight-color: transparent; }
+button, [role="button"], a {
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+*:focus { outline: none; }
+:where(button, a, input, textarea, [role="button"], [tabindex]):focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.85),
+    0 0 18px 2px var(--scene-accent);
+  transition: box-shadow 0.18s ease;
+  border-radius: inherit;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.22));
+  border-radius: 9999px;
+  transition: background 0.25s;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.4));
+}
+html { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.18) transparent; }
+
+textarea { resize: none; }
+
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* 衬线/展示字体——直接声明，避免 Tailwind config 缓存导致 font-display/font-serif 类不生效。
+   Fraunces 走 Google Fonts；中文回落到 Mac 自带的宋体/Source Han Serif。 */
+.font-display {
+  font-family: Fraunces, "Cormorant Garamond", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-feature-settings: "ss01", "ss02";
+}
+.font-serif {
+  font-family: Fraunces, "Cormorant Garamond", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", serif;
+}
+.font-hand {
+  font-family: Caveat, "Kaiti SC", cursive;
+}
+
+/* 三档玻璃材质——纯 CSS，避免 @apply + 自定义 rgba 颜色编译问题。
+   注：不强制 position: relative——交给 JSX 决定 fixed/absolute/relative，避免覆盖 Tailwind 的 .fixed。 */
+.panel-glass-1 {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.06) inset,
+    0 8px 24px -12px rgba(8, 12, 28, 0.5);
+}
+
+.panel-glass-2 {
+  /* 需要 position 锚定给 ::before 高光线；不在 fixed 容器里用 panel-glass-2 */
+  position: relative;
+  background: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.04) 38%, rgba(255,255,255,0.04) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.12) inset,
+    0 -1px 0 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 60px -20px rgba(8, 12, 28, 0.55),
+    0 8px 24px -12px rgba(8, 12, 28, 0.4);
+}
+.panel-glass-2::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  pointer-events: none;
+}
+
+.panel-glass-3 {
+  position: relative;
+  background: rgba(10, 14, 31, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.18) inset,
+    0 32px 80px -24px rgba(8, 12, 28, 0.7);
+}
+.panel-glass-3::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  pointer-events: none;
+}
+
+/* 按钮系统 */
+.btn-primary {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.5rem;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, #ffffff 0%, rgba(255,255,255,0.85) 100%);
+  color: #0a0e1f;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow: 0 8px 24px -8px rgba(159, 180, 240, 0.45);
+  transition: all 0.2s ease;
+  border: none;
+  cursor: pointer;
+}
+.btn-primary:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 36px -12px rgba(159, 180, 240, 0.65);
+}
+.btn-primary:not(:disabled):active {
+  transform: scale(0.97);
+  transition-duration: 80ms;
+}
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.10);
+  color: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+.btn-ghost:active { transform: scale(0.97); transition-duration: 80ms; }
+.btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-link {
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 12px;
+  transition: color 0.2s ease;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.btn-link:hover { color: rgba(255, 255, 255, 0.96); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.chip:hover { background: rgba(255, 255, 255, 0.10); color: rgba(255, 255, 255, 0.96); }
+.chip-active { background: rgba(255, 255, 255, 0.30); color: #ffffff; border-color: rgba(255, 255, 255, 0.46); }
+
+.text-island-quote {
+  font-family: Fraunces, "Cormorant Garamond", "Source Han Serif SC", "Noto Serif SC", "Songti SC", serif;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.65);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

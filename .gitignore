@@ -1,0 +1,22 @@
+.DS_Store
+
+# Runtime data
+backend/app/data/*.db
+backend/app/data/*.db-*
+backend/app/data/memories.json
+backend/app/data/chroma/
+backend/data/
+
+# Python
+backend/.venv/
+__pycache__/
+*.py[cod]
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/shot-*.png
+
+# Local env
+.env
+*.local
