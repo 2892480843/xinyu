@@ -284,6 +284,36 @@ export default function Home() {
       });
   }, [memories, nowMs]);
 
+  // 岛上「心灵印记」收集物:每条历史记忆 → 一枚可拾取的发光印记(颜色随情绪),拾起时说明来源。
+  const imprints = useMemo(() => {
+    const relTime = (iso: string): string => {
+      const then = new Date(iso).getTime();
+      if (!Number.isFinite(then)) return "曾经";
+      const days = Math.floor((nowMs - then) / 86400000);
+      if (days <= 0) return "今天";
+      if (days === 1) return "昨天";
+      if (days < 7) return `${days} 天前`;
+      if (days < 30) return `${Math.floor(days / 7)} 周前`;
+      if (days < 365) return `${Math.floor(days / 30)} 个月前`;
+      return "很久以前";
+    };
+    return memories
+      .filter((m) => (m.summary || m.text || "").trim())
+      .slice(0, 8)
+      .map((m) => {
+        const words = (m.summary || m.text || "").trim().replace(/\s+/g, " ");
+        const line = (m.imprint || m.narrative || "").trim();
+        return {
+          emotion: m.emotion,
+          label: EMOTION_META[m.emotion]?.label ?? "心事",
+          color: resolveScene(EMOTION_META[m.emotion]?.palette ?? "").accent,
+          when: relTime(m.created_at),
+          words: words.length > 44 ? words.slice(0, 42) + "…" : words,
+          line: (line.length > 72 ? line.slice(0, 70) + "…" : line) || "岛屿替你把这一刻，轻轻收着了。",
+        };
+      });
+  }, [memories, nowMs]);
+
   const handleStreamEvent = (event: ReflectStreamEvent) => {
     setLoadingText((prev) => STREAM_STAGE_TEXT[event.event] ?? prev);
     if (event.event === "agent") {
@@ -775,7 +805,7 @@ export default function Home() {
       {/* 自由探索：z-[70] 控制小人在岛上走动收集心愿 */}
       {exploreOpen && (
         <Suspense fallback={null}>
-          <ExploreMode visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} />
+          <ExploreMode visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} />
         </Suspense>
       )}
     </div>
