@@ -342,6 +342,7 @@ function Player({
   const facing = useRef(0);
   const walkPhase = useRef(0);
   const vel = useRef({ x: 0, z: 0 }); // 当前水平速度(用于加速/减速平滑)
+  const introT = useRef(0); // 开场俯冲运镜进度 0→1
   const { camera } = useThree();
 
   useFrame((s, dtRaw) => {
@@ -402,10 +403,20 @@ function Player({
     if (legR.current) legR.current.rotation.x = -swing;
     g.position.y += Math.abs(Math.sin(walkPhase.current)) * 0.05 * gait;
 
-    // 第三人称跟随相机:跟在角色身后(随朝向转),缓动
+    // 第三人称跟随相机;开场先来一段从高空侧俯、边降边收到身后的俯冲运镜(约 3.2s)
     const ry = g.rotation.y;
-    _camTarget.set(pos.x - Math.sin(ry) * CAM_DIST, pos.y + CAM_HEIGHT, pos.z - Math.cos(ry) * CAM_DIST);
-    camera.position.lerp(_camTarget, Math.min(1, dt * 2.4));
+    introT.current = Math.min(1, introT.current + dt / 3.2);
+    if (introT.current < 1) {
+      const e = introT.current * introT.current * (3 - 2 * introT.current); // smoothstep 缓动
+      const ang = ry + (1 - e) * 2.2; // 起始侧偏 → 收束到身后
+      const dist = CAM_DIST + (1 - e) * 120; // 起始远
+      const ht = CAM_HEIGHT + (1 - e) * 130; // 起始高
+      _camTarget.set(pos.x - Math.sin(ang) * dist, pos.y + ht, pos.z - Math.cos(ang) * dist);
+      camera.position.lerp(_camTarget, Math.min(1, dt * 3.0));
+    } else {
+      _camTarget.set(pos.x - Math.sin(ry) * CAM_DIST, pos.y + CAM_HEIGHT, pos.z - Math.cos(ry) * CAM_DIST);
+      camera.position.lerp(_camTarget, Math.min(1, dt * 2.4));
+    }
     camera.lookAt(pos.x, pos.y + 1.3, pos.z);
 
     // 涉水时脚下泛起一圈圈涟漪
@@ -1812,6 +1823,23 @@ function ExploreScene({
   useEffect(() => () => skyTex.dispose(), [skyTex]);
   // toon 渐变(地形平涂赛璐璐)
   const toonGrad = useMemo(() => makeToonGradient(), []);
+  // 山顶薄雪:散布在高坡(exGroundY 高处)的扁平白雪块
+  const snowMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#eef5f7", gradientMap: toonGrad, emissive: new THREE.Color("#d8e6ec"), emissiveIntensity: 0.2 }), [toonGrad]);
+  const gSnow = useMemo(() => new THREE.IcosahedronGeometry(1.1, 0), []);
+  useEffect(() => () => { snowMat.dispose(); gSnow.dispose(); }, [snowMat, gSnow]);
+  const snowItems = useMemo<InstItem[]>(() => {
+    const out: InstItem[] = [];
+    for (let i = 0; i < 2000; i++) {
+      const a = hash2(i + 700, 1.3) * Math.PI * 2;
+      const r = Math.sqrt(hash2(i + 700, 2.7)) * WALK_RADIUS * 0.88;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      const h = exGroundY(x, z);
+      if (h < 11.5) continue; // 只盖最高的几座丘(地形 exGroundY 可达 ~16)
+      out.push({ p: [x, h + 0.05, z], sv: [1.1 + hash2(i, 3.1) * 1.0, 0.3, 1.1 + hash2(i, 4.2) * 1.0], r: [0, hash2(i, 5.3) * 6.28, 0] });
+    }
+    return out;
+  }, []);
   useEffect(() => () => toonGrad.dispose(), [toonGrad]);
 
   return (
@@ -1828,6 +1856,13 @@ function ExploreScene({
       </mesh>
       {/* 脚边随风草丛 */}
       <GroundGrass count={52000} animate grad={toonGrad} />
+      {/* 山顶薄雪 */}
+      <InstancedField geo={gSnow} material={snowMat} items={snowItems} />
+      {/* 近岸浪花:贴水线一圈柔白(陆地处被沙挡住,只在水边显形) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.06, 0]}>
+        <ringGeometry args={[WALK_RADIUS * 1.0, WALK_RADIUS * 1.1, 96]} />
+        <meshBasicMaterial color="#e6f6f8" transparent opacity={0.3} depthWrite={false} toneMapped={false} />
+      </mesh>
       {/* 程序小镇 */}
       <Town toonGrad={toonGrad} accent={visual.accent} />
       {/* 海面(大) */}

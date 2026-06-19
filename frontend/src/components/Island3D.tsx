@@ -581,6 +581,68 @@ function Path() {
   return <instancedMesh ref={ref} args={[geo, mat, tiles.length]} frustumCulled={false} />;
 }
 
+// 瀑布水流贴图:竖向白色断流条,UV 向下滚动 → 落水感。
+function createFallTexture() {
+  const W = 8;
+  const H = 48;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.clearRect(0, 0, W, H);
+    for (let x = 0; x < W; x++) {
+      const base = 0.3 + 0.55 * Math.abs(Math.sin(x * 1.7 + 1));
+      for (let y = 0; y < H; y++) {
+        if ((y + x * 3) % 7 < 5) {
+          ctx.fillStyle = `rgba(255,255,255,${base})`;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 3);
+  return { texture, advance: (dt: number) => (texture.offset.y -= dt * 0.9), dispose: () => texture.dispose() };
+}
+
+// 山间小湖 + 瀑布:湖嵌在山坡上,水从外缘垂落到海面,底部一圈浪花。
+function LakeAndFall({ animate }: { animate: boolean }) {
+  const LPX = -0.6;
+  const LPY = -1.0; // 平面坐标 → 世界(px, h, -py);py 取负 → 世界 +z 朝相机的正面坡(左前开阔处)
+  const lakeY = islandHeight(LPX, LPY);
+  const wx = LPX;
+  const wz = -LPY;
+  const out = useMemo(() => new THREE.Vector2(wx, wz).normalize(), [wx, wz]); // 朝海的水平方向
+  const fall = useMemo(() => createFallTexture(), []);
+  useEffect(() => () => fall.dispose(), [fall]);
+  useFrame((_, dt) => {
+    if (animate) fall.advance(dt);
+  });
+  const fallH = lakeY + 0.4;
+  return (
+    <group>
+      {/* 湖面 */}
+      <mesh position={[wx, lakeY + 0.01, wz]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.55, 24]} />
+        <meshStandardMaterial color="#7fd0e0" emissive="#347f90" emissiveIntensity={0.45} transparent opacity={0.86} roughness={0.2} metalness={0.3} />
+      </mesh>
+      {/* 瀑布(竖帘,朝海面方向) */}
+      <mesh position={[wx + out.x * 0.6, lakeY * 0.5, wz + out.y * 0.6]} rotation={[0, Math.atan2(out.x, out.y), 0]}>
+        <planeGeometry args={[0.34, fallH]} />
+        <meshBasicMaterial map={fall.texture} color="#eaf8fb" transparent opacity={0.82} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
+      </mesh>
+      {/* 落水浪花 */}
+      <mesh position={[wx + out.x * 1.05, 0.05, wz + out.y * 1.05]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.3, 18]} />
+        <meshBasicMaterial color="#eef9fb" transparent opacity={0.5} depthWrite={false} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
 // 飞鸟：低多边形剪影,沿高空缓慢环绕岛屿滑翔 + 振翅(仅沉浸态)。静态时停在散开的初始位。
 function Bird({ geo, mat, radius, height, speed, phase, animate }: { geo: THREE.BufferGeometry; mat: THREE.Material; radius: number; height: number; speed: number; phase: number; animate: boolean }) {
   const g = useRef<THREE.Group>(null);
@@ -851,6 +913,7 @@ function Island({ mats, features = [], animate, coreLightRef, tier, accent, nigh
       <Rocks count={rockCount} />
       <SnowCaps count={snowCount} night={night} />
       <Path />
+      <LakeAndFall animate={animate} />
       {/* 近岸浪花:贴水线一圈柔白雾环,把岛"放"在海面上;夜里泛冷光 */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
         <ringGeometry args={[2.62, 3.2, 56]} />
