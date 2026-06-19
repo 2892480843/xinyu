@@ -33,12 +33,20 @@ export default function AgentDirectorPanel({ agents, done }: Props) {
   return (
     <div className="w-full max-w-md mx-auto mt-4">
       <motion.p
-        className="text-center text-mist-400 text-caption tracking-[0.32em] mb-3 font-serif"
+        className="text-center text-mist-400 text-caption tracking-[0.32em] mb-1 font-serif"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.8, delay: 0.2 }}
       >
         岛屿派出了 5 位信使
+      </motion.p>
+      <motion.p
+        className="text-center text-mist-500 text-[10px] tracking-[0.2em] mb-3"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.8, delay: 0.5 }}
+      >
+        它们正自己决定要不要翻记忆、读岛屿
       </motion.p>
 
       <div className="relative flex flex-col gap-2" style={{ perspective: "800px" }}>

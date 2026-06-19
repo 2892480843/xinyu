@@ -20,6 +20,8 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
 # 锦上添花型调用（岛屿低语 / 手写读心 / 修正信）的短超时：
 # 网络抖动时快速降级到模板，避免把界面挂死 30 秒。核心 reflect 仍用 LLM_TIMEOUT。
 LLM_FAST_TIMEOUT = float(os.getenv("LLM_FAST_TIMEOUT", "8"))
+# 工具型 agent 单次反思的最大工具循环步数（防止无限调用工具）。
+AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "6"))
 
 CORS_ORIGINS = _csv_env("CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
 

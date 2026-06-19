@@ -1,7 +1,9 @@
-import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+/* eslint-disable react-hooks/immutability, react-hooks/refs -- R3F scene setup and frame loops intentionally mutate Three.js refs. */
+import { forwardRef, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { MeshReflectorMaterial, Sparkles, Stars, Float, Outlines } from "@react-three/drei";
+import { MeshReflectorMaterial, Sparkles, Stars, Float, Outlines, useGLTF, OrbitControls } from "@react-three/drei";
 import { EffectComposer, Bloom, Vignette, GodRays } from "@react-three/postprocessing";
+import { Effect, EffectAttribute } from "postprocessing";
 import * as THREE from "three";
 import type { SceneVisual } from "../lib/sceneMap";
 import { getPerfTier, type PerfTier } from "../lib/perfTier";
@@ -33,6 +35,14 @@ function toonGradient(): THREE.DataTexture {
   }
   return _toonGrad;
 }
+
+// Blender 真实建模的悬浮岛 glb（雪峰 + 松林 + 木栈道 + 青色水下辉光），套同一套 toon 材质。
+// 默认接管 3D 岛屿皮；?island=proc 切回程序化地形（保留兜底）。缩放/抬升映射到程序岛的取景。
+const GLB_ISLAND_URL = "/models/xy_scene_island.glb";
+const GLB_SCALE = 0.23; // 原生半径 ~10 → 视觉半径 ~2.3，整岛（雪峰+辉光）尽收镜中
+const GLB_Y = 0.3; // 岛坐在海里：沙滩/草地清楚高出水线（不再被海面盖住），沙岩岛底没入水中
+const USE_GLB_ISLAND = typeof location === "undefined" || !location.search.includes("island=proc");
+useGLTF.preload(GLB_ISLAND_URL);
 
 // 渐变天空：模块级工厂持有 16×256 canvas + CanvasTexture，暴露 draw/dispose。
 // 命令式写入（含 needsUpdate）封在普通函数里，绕开 react-hooks 对组件内变异的规则。
@@ -118,17 +128,17 @@ function RippleWater({ waterRef, initialSea, animate, tier }: { waterRef: React.
         // 弱设备：反射分辨率/模糊大幅压低，省 GPU
         resolution={hi ? 384 : 160}
         mixBlur={1}
-        mixStrength={hi ? 5 : 3.5}
+        mixStrength={hi ? 0.6 : 0.5}
         blur={hi ? [260, 80] : [120, 40]}
-        mirror={0.6}
+        mirror={0.04}
         depthScale={1.1}
         minDepthThreshold={0.3}
         maxDepthThreshold={1.2}
         distortionMap={ripple.texture}
-        distortion={hi ? 0.22 : 0.16}
+        distortion={hi ? 0.06 : 0.05}
         color={initialSea}
-        roughness={0.82}
-        metalness={0.25}
+        roughness={0.95}
+        metalness={0.04}
       />
     </mesh>
   );
@@ -178,6 +188,8 @@ function EmotionTint({
   hemiRef,
   dirRef,
   coreLightRef,
+  glbMatsRef,
+  sunMatRef,
 }: {
   visual: SceneVisual;
   animate: boolean;
@@ -187,6 +199,10 @@ function EmotionTint({
   hemiRef: React.RefObject<THREE.HemisphereLight | null>;
   dirRef: React.RefObject<THREE.DirectionalLight | null>;
   coreLightRef: React.RefObject<THREE.PointLight | null>;
+  // glb 岛的辉光材质（海光/光环/晶塔/心愿）；逐帧 lerp 到情绪 accent。可空（程序岛模式 / glb 未载入）。
+  glbMatsRef?: React.RefObject<THREE.MeshStandardMaterial[] | null>;
+  // glb 太阳材质（扁平 MeshBasicMaterial）；逐帧 lerp .color 到情绪 celestial（天体色）。
+  sunMatRef?: React.RefObject<THREE.MeshBasicMaterial | null>;
 }) {
   const invalidate = useThree((s) => s.invalidate);
   const sky = useMemo(() => createSkyGradient(), []);
@@ -233,6 +249,12 @@ function EmotionTint({
     hemiRef.current?.groundColor.lerp(target.sea, t);
     dirRef.current?.color.lerp(target.celestial, t);
     coreLightRef.current?.color.lerp(target.accent, t);
+    // glb 岛辉光：海光/光环/晶塔/心愿随情绪 accent 实时变色（深海玻璃 → 暖金 → 薰衣草…）
+    glbMatsRef?.current?.forEach((m) => {
+      m.color.lerp(target.accent, t);
+      m.emissive.lerp(target.accent, t);
+    });
+    if (sunMatRef?.current) sunMatRef.current.color.lerp(target.celestial, t); // 扁平日轮：只 lerp .color
     skyCur.top.lerp(target.skyTop, t);
     skyCur.mid.lerp(target.skyMid, t);
     skyCur.bottom.lerp(target.skyBottom, t);
@@ -873,6 +895,275 @@ function Whale({ animate }: { animate: boolean }) {
 }
 
 // 低多边形岛屿：地形 + 草木(随成长) + 顶部情绪辉光核 + 漂浮心象结晶；整岛轻浮动(坐于海面的"呼吸")
+// 全局卡通描边（后期边缘检测）：从深度缓冲检出物体边界，画柔和青墨线 —— 不受「单一大网格」限制，
+// 连山体也能干净描边（反向外壳法做不到）。viewZ 线性化后比较邻域，只在真正的物体边界出线，内部棱面不噪。
+const OUTLINE_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform float uThickness;
+uniform float uThreshold;
+uniform float uOpacity;
+void mainImage(const in vec4 inputColor, const in vec2 uv, const in float depth, out vec4 outputColor) {
+  vec2 px = uThickness / resolution;
+  float zc = getViewZ(depth);
+  float z1 = getViewZ(readDepth(uv + vec2(px.x, 0.0)));
+  float z2 = getViewZ(readDepth(uv - vec2(px.x, 0.0)));
+  float z3 = getViewZ(readDepth(uv + vec2(0.0, px.y)));
+  float z4 = getViewZ(readDepth(uv - vec2(0.0, px.y)));
+  float e = abs(zc - z1) + abs(zc - z2) + abs(zc - z3) + abs(zc - z4);
+  float g = smoothstep(uThreshold, uThreshold * 2.5, e / max(0.6, -zc));
+  outputColor = vec4(mix(inputColor.rgb, uColor, g * uOpacity), inputColor.a);
+}
+`;
+class ToonOutlineEffect extends Effect {
+  constructor() {
+    super("ToonOutlineEffect", OUTLINE_FRAG, {
+      attributes: EffectAttribute.DEPTH,
+      uniforms: new Map<string, THREE.Uniform>([
+        ["uColor", new THREE.Uniform(new THREE.Color("#1c333c"))], // 柔和青墨，贴合治愈气质
+        ["uThickness", new THREE.Uniform(2.0)],                    // 采样半径（像素）→ 更粗的卡通线
+        ["uThreshold", new THREE.Uniform(0.32)],                   // 更低 → 连物体间的边界也描
+        ["uOpacity", new THREE.Uniform(1.0)],
+      ]),
+    });
+  }
+}
+const ToonOutline = forwardRef<ToonOutlineEffect>((_props, ref) => {
+  const effect = useMemo(() => new ToonOutlineEffect(), []);
+  return <primitive ref={ref} object={effect} dispose={null} />;
+});
+
+// 克隆 glb → 每个网格换共享 MeshToonMaterial（保留底色，由情绪灯光重新打光）；
+// 名含 "emissive" 的改自发光 StandardMaterial。其中海光/光环/晶塔/心愿（非宝石）收集进 accentMats，
+// 交给 EmotionTint 逐帧 lerp 到当前情绪 accent —— 这是 glb 岛的「实时情绪辉光」。
+function toonifyIsland(src: THREE.Object3D, grad: THREE.Texture) {
+  const root = src.clone(true);
+  const accentMats: THREE.MeshStandardMaterial[] = [];
+  const cache = new Map<THREE.Material, THREE.Material>();
+  const conv = (m: THREE.Material): THREE.Material => {
+    const hit = cache.get(m);
+    if (hit) return hit;
+    const std = m as THREE.MeshStandardMaterial;
+    const base = std.color ? std.color.clone() : new THREE.Color("#ffffff");
+    const name = m.name || "";
+    let out: THREE.Material;
+    if (/emissive/i.test(name)) {
+      const lit = std.emissive && (std.emissive.r || std.emissive.g || std.emissive.b);
+      const col = lit ? std.emissive.clone() : base.clone();
+      const sm = new THREE.MeshStandardMaterial({ color: col, emissive: col.clone(), emissiveIntensity: 0.9, toneMapped: false, transparent: std.transparent, opacity: std.opacity ?? 1 });
+      if (!/gem/i.test(name)) accentMats.push(sm); // 宝石保留各自彩色；其余辉光随情绪
+      out = sm;
+    } else {
+      out = new THREE.MeshToonMaterial({ color: base, gradientMap: grad });
+    }
+    cache.set(m, out);
+    return out;
+  };
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(conv) : conv(mesh.material as THREE.Material);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+  });
+  return { root, accentMats };
+}
+
+function GlbIsland({ matsRef, animate }: { matsRef: React.MutableRefObject<THREE.MeshStandardMaterial[] | null>; animate: boolean }) {
+  const { scene } = useGLTF(GLB_ISLAND_URL);
+  const { root, accentMats } = useMemo(() => toonifyIsland(scene, toonGradient()), [scene]);
+  // 渲染期写入：早于 EmotionTint 的 useLayoutEffect(apply(1))，确保首帧情绪辉光已吸附到位
+  matsRef.current = accentMats;
+  const groupRef = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (!animate || !groupRef.current) return;
+    groupRef.current.position.y = GLB_Y + Math.sin(state.clock.elapsedTime * 0.5) * 0.06; // 轻浮动呼吸
+  });
+  return (
+    <group ref={groupRef} position={[0, GLB_Y, 0]} scale={GLB_SCALE}>
+      <primitive object={root} />
+    </group>
+  );
+}
+
+// ───────── Blender 背景生灵 / 天体 glb（与岛同款 toon 工艺；高画质档自动获全局描边）─────────
+const BG_CLOUD_URL = "/models/xy_bg_cloud.glb";
+const BG_BIRD_URL = "/models/xy_bg_bird.glb";
+const BG_TURTLE_URL = "/models/xy_creature_turtle.glb";
+const BG_SUN_URL = "/models/xy_bg_sun.glb";
+[BG_CLOUD_URL, BG_BIRD_URL, BG_TURTLE_URL, BG_SUN_URL].forEach((u) => useGLTF.preload(u));
+
+// 通用 toon 克隆：每网格换 MeshToonMaterial（保留底色，由情绪天光重新打光）；名含 emissive 的发光。
+function toonClone(src: THREE.Object3D, grad: THREE.Texture): THREE.Object3D {
+  const root = src.clone(true);
+  const cache = new Map<THREE.Material, THREE.Material>();
+  const conv = (m: THREE.Material): THREE.Material => {
+    const hit = cache.get(m);
+    if (hit) return hit;
+    const std = m as THREE.MeshStandardMaterial;
+    const base = std.color ? std.color.clone() : new THREE.Color("#ffffff");
+    let out: THREE.Material;
+    if (/emissive/i.test(m.name || "")) {
+      const lit = std.emissive && (std.emissive.r || std.emissive.g || std.emissive.b);
+      const col = lit ? std.emissive.clone() : base.clone();
+      out = new THREE.MeshStandardMaterial({ color: col, emissive: col.clone(), emissiveIntensity: 2.0, toneMapped: false, transparent: std.transparent, opacity: std.opacity ?? 1 });
+    } else {
+      out = new THREE.MeshToonMaterial({ color: base, gradientMap: grad });
+    }
+    cache.set(m, out);
+    return out;
+  };
+  root.traverse((o) => {
+    const me = o as THREE.Mesh;
+    if (!me.isMesh) return;
+    me.material = Array.isArray(me.material) ? me.material.map(conv) : conv(me.material as THREE.Material);
+    me.castShadow = false;
+    me.receiveShadow = false;
+  });
+  return root;
+}
+
+// 漂浮云朵：低多边形 puff，缓缓横移、循环回绕；由情绪天光重新染色。
+function Clouds({ animate }: { animate: boolean }) {
+  const { scene } = useGLTF(BG_CLOUD_URL);
+  const items = useMemo(() => {
+    const grad = toonGradient();
+    const variants = ["Cloud1", "Cloud2", "Cloud3"].map((n) => scene.getObjectByName(n)).filter(Boolean) as THREE.Object3D[];
+    const specs = [
+      { v: 0, x: -3.6, y: 4.7, z: -13, s: 1.4, sp: 0.4 },
+      { v: 2, x: 3.8, y: 5.2, z: -14, s: 1.6, sp: 0.3 },
+      { v: 1, x: -0.2, y: 5.8, z: -17, s: 1.5, sp: 0.25 },
+      { v: 0, x: -6.5, y: 5.6, z: -16, s: 1.3, sp: 0.45 },
+      { v: 2, x: 6.2, y: 4.3, z: -12, s: 1.3, sp: 0.5 },
+    ];
+    return specs.map((sp) => ({ obj: toonClone(variants[sp.v] ?? variants[0], grad), x: sp.x, y: sp.y, z: sp.z, s: sp.s, sp: sp.sp }));
+  }, [scene]);
+  const refs = useRef<(THREE.Group | null)[]>([]);
+  useFrame((_, delta) => {
+    if (!animate) return;
+    items.forEach((it, i) => {
+      const g = refs.current[i];
+      if (!g) return;
+      g.position.x += it.sp * delta;
+      if (g.position.x > 17) g.position.x = -17;
+    });
+  });
+  return (
+    <>
+      {items.map((it, i) => (
+        <group key={i} ref={(el) => (refs.current[i] = el)} position={[it.x, it.y, it.z]} scale={it.s}>
+          <primitive object={it.obj} />
+        </group>
+      ))}
+    </>
+  );
+}
+
+// 小鸟群：glb 小鸟绕岛盘旋，翅膀拍动（WingL/WingR 子节点）。
+function GlbBirds({ count, animate }: { count: number; animate: boolean }) {
+  const { scene } = useGLTF(BG_BIRD_URL);
+  const birds = useMemo(() => {
+    const grad = toonGradient();
+    return Array.from({ length: count }, (_, i) => {
+      const obj = toonClone(scene, grad);
+      return {
+        obj,
+        wingL: obj.getObjectByName("WingL") as THREE.Object3D | undefined,
+        wingR: obj.getObjectByName("WingR") as THREE.Object3D | undefined,
+        radius: 5.2 + i * 0.9,
+        height: 4.4 + (i % 3) * 0.7,
+        speed: 0.12 + i * 0.018,
+        phase: i * 1.7,
+      };
+    });
+  }, [scene, count]);
+  const refs = useRef<(THREE.Group | null)[]>([]);
+  useFrame((state) => {
+    if (!animate) return;
+    const t = state.clock.elapsedTime;
+    birds.forEach((b, i) => {
+      const g = refs.current[i];
+      if (!g) return;
+      const tt = t * b.speed + b.phase;
+      g.position.set(Math.cos(tt) * b.radius, b.height + Math.sin(tt * 0.8) * 0.3, Math.sin(tt) * b.radius * 0.7 - 4);
+      g.rotation.y = -tt + Math.PI / 2;
+      const flap = Math.sin(t * 8 + b.phase) * 0.6;
+      if (b.wingL) b.wingL.rotation.z = flap;
+      if (b.wingR) b.wingR.rotation.z = -flap;
+    });
+  });
+  return (
+    <>
+      {birds.map((b, i) => (
+        <group
+          key={i}
+          ref={(el) => (refs.current[i] = el)}
+          scale={0.5}
+          position={[Math.cos(b.phase) * b.radius, b.height, Math.sin(b.phase) * b.radius * 0.7 - 4]}
+        >
+          <primitive object={b.obj} />
+        </group>
+      ))}
+    </>
+  );
+}
+
+// 海龟：在海面缓缓画圈巡游、半潜出水（倒影可见），前鳍轻划。
+function Turtle({ animate }: { animate: boolean }) {
+  const { scene } = useGLTF(BG_TURTLE_URL);
+  const obj = useMemo(() => toonClone(scene, toonGradient()), [scene]);
+  const flipL = useMemo(() => obj.getObjectByName("FlipperL") as THREE.Object3D | undefined, [obj]);
+  const flipR = useMemo(() => obj.getObjectByName("FlipperR") as THREE.Object3D | undefined, [obj]);
+  const ref = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    const g = ref.current;
+    if (!g) return;
+    if (!animate) {
+      g.position.set(2.3, -0.32, 3.0);
+      g.rotation.y = -1.1;
+      return;
+    }
+    const t = state.clock.elapsedTime * 0.1;
+    g.position.set(Math.cos(t) * 2.6, -0.34 + Math.sin(t * 3) * 0.08, 2.0 + Math.sin(t) * 1.8);
+    g.rotation.y = -t - Math.PI / 2;
+    const paddle = Math.sin(state.clock.elapsedTime * 1.5) * 0.45;
+    if (flipL) flipL.rotation.z = paddle;
+    if (flipR) flipR.rotation.z = -paddle;
+  });
+  return (
+    <group ref={ref} scale={0.92} position={[2.3, -0.32, 3.0]}>
+      <primitive object={obj} />
+    </group>
+  );
+}
+
+// 太阳：Blender 建模的辐射暖阳。专属 **tone-mapped** 材质（不再 HDR 爆白）→ 暖金日轮 + 光芒清晰可辨，
+// Bloom 只加一圈柔晕；颜色由 EmotionTint 随情绪 celestial lerp（sunMatRef）。核心 mesh 作 god-rays 光源。
+function GlbSun({ setSunMesh, sunMatRef, initialCelestial }: { setSunMesh: (m: THREE.Mesh) => void; sunMatRef: React.RefObject<THREE.MeshBasicMaterial | null>; initialCelestial: string }) {
+  const { scene } = useGLTF(BG_SUN_URL);
+  const built = useMemo(() => {
+    const sunMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(initialCelestial), toneMapped: true }); // 扁平不打光 → 卡通日轮 + 全局描边裹边，不再爆白
+    const root = scene.clone(true);
+    let core: THREE.Mesh | null = null;
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.material = sunMat;
+      if (/core/i.test(m.name || "")) core = m;
+    });
+    return { root, core, sunMat };
+  }, [scene, initialCelestial]);
+  sunMatRef.current = built.sunMat; // 渲染期写入，供 EmotionTint 逐帧染色
+  useEffect(() => {
+    if (built.core) setSunMesh(built.core);
+  }, [built, setSunMesh]);
+  return (
+    <group position={[3.0, 3.1, -6]} rotation={[0, Math.PI, 0]} scale={1.05}>
+      <primitive object={built.root} />
+      <pointLight color={initialCelestial} intensity={28} distance={40} decay={1.4} />
+    </group>
+  );
+}
+
 function Island({ mats, features = [], animate, coreLightRef, tier, accent, night }: { mats: EmotionMats; features?: string[]; animate: boolean; coreLightRef: React.RefObject<THREE.PointLight | null>; tier: PerfTier; accent: string; night: boolean }) {
   const terrain = useMemo(() => buildIslandGeometry(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
@@ -948,6 +1239,8 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
   const hemiRef = useRef<THREE.HemisphereLight>(null);
   const dirRef = useRef<THREE.DirectionalLight>(null);
   const coreLightRef = useRef<THREE.PointLight>(null);
+  const glbMatsRef = useRef<THREE.MeshStandardMaterial[] | null>(null); // glb 岛辉光材质，交 EmotionTint 逐帧染色
+  const sunMatRef = useRef<THREE.MeshBasicMaterial | null>(null); // glb 太阳材质（扁平），交 EmotionTint 逐帧染色（celestial）
   // 天体 mesh 作 god rays 的光源；用 state 持有(回调 ref),编译好后再挂 GodRays 效果
   const [sunMesh, setSunMesh] = useState<THREE.Mesh | null>(null);
 
@@ -962,42 +1255,76 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
         hemiRef={hemiRef}
         dirRef={dirRef}
         coreLightRef={coreLightRef}
+        glbMatsRef={glbMatsRef}
+        sunMatRef={sunMatRef}
       />
       <fog ref={fogRef} attach="fog" args={[initial.sea, 9, 26]} />
       <ambientLight intensity={0.55} />
       <hemisphereLight ref={hemiRef} args={[initial.skyMid, initial.sea, 0.7]} />
       <directionalLight ref={dirRef} position={[5, 6, 2]} intensity={1.1} color={initial.celestial} />
 
-      {/* 天体（强自发光，被 Bloom 晕成主光，并作 god rays 光源） */}
-      <group position={[5.5, 4.2, -6]}>
-        <mesh ref={setSunMesh} material={mats.celestial}>
-          <sphereGeometry args={[0.9, 24, 24]} />
-        </mesh>
-        <pointLight color={initial.celestial} intensity={28} distance={40} decay={1.4} />
-      </group>
+      {/* 天体（强自发光，被 Bloom 晕成主光，并作 god rays 光源）。glb 模式用 Blender 辐射暖阳 */}
+      {USE_GLB_ISLAND ? (
+        <GlbSun setSunMesh={setSunMesh} sunMatRef={sunMatRef} initialCelestial={initial.celestial} />
+      ) : (
+        <group position={[5.5, 4.2, -6]}>
+          <mesh ref={setSunMesh} material={mats.celestial}>
+            <sphereGeometry args={[0.9, 24, 24]} />
+          </mesh>
+          <pointLight color={initial.celestial} intensity={28} distance={40} decay={1.4} />
+        </group>
+      )}
 
-      <Island mats={mats} features={features} animate={animate} coreLightRef={coreLightRef} tier={tier} accent={visual.accent} night={!!visual.stars} />
+      {USE_GLB_ISLAND ? (
+        <>
+          {/* Blender 真实建模岛屿，套 toon 材质 + 情绪辉光（见 GlbIsland / toonifyIsland） */}
+          <GlbIsland matsRef={glbMatsRef} animate={animate} />
+          {/* 情绪核心点光：从悬浮岛中心向外晕染，颜色随 accent 由 EmotionTint 驱动 */}
+          <pointLight ref={coreLightRef} position={[0, GLB_Y + 1.2, 0]} intensity={5} distance={9} decay={1.5} color={visual.accent} />
+        </>
+      ) : (
+        <Island mats={mats} features={features} animate={animate} coreLightRef={coreLightRef} tier={tier} accent={visual.accent} night={!!visual.stars} />
+      )}
 
       {/* 反射水面 + 涟漪（深海玻璃感核心）。颜色由 EmotionTint 驱动 */}
       <RippleWater waterRef={waterRef} initialSea={initial.sea} animate={animate} tier={tier} />
 
-      <Birds count={hi ? 5 : 2} animate={animate} />
-      <WishLights count={hi ? 12 : 5} color={visual.accent} animate={animate} />
+      {USE_GLB_ISLAND ? <GlbBirds count={hi ? 5 : 3} animate={animate} /> : <Birds count={hi ? 5 : 2} animate={animate} />}
+      <WishLights count={hi ? 7 : 3} color={visual.accent} animate={animate} />
       <Whale animate={animate} />
+      {USE_GLB_ISLAND && <Turtle animate={animate} />}
+      {USE_GLB_ISLAND && <Clouds animate={animate} />}
       <Sparkles count={animate ? (hi ? 46 : 20) : hi ? 24 : 12} scale={[14, 6, 14]} position={[0, 2, 0]} size={3} speed={animate ? 0.4 : 0} opacity={0.6} color={visual.accent} />
       {visual.stars && <Stars radius={60} depth={30} count={hi ? 1200 : 450} factor={3} fade speed={animate ? 0.4 : 0} />}
       {visual.stars && <ShootingStars count={hi ? 3 : 1} animate={animate} />}
       {visual.stars && hi && <Aurora animate={animate} />}
 
-      <CameraRig animate={animate} />
+      {USE_GLB_ISLAND ? (
+        // 拖动环绕查看岛屿 + 缓慢自转展示；限制俯仰，不穿到水下/正顶，平移锁定保持取景
+        <OrbitControls
+          makeDefault
+          target={[0, 0.1, 0]}
+          enablePan={false}
+          enableZoom={false}
+          minPolarAngle={Math.PI * 0.18}
+          maxPolarAngle={Math.PI * 0.5}
+          autoRotate={animate}
+          autoRotateSpeed={0.25}
+          enableDamping
+          dampingFactor={0.06}
+        />
+      ) : (
+        <CameraRig animate={animate} />
+      )}
 
       {/* 后期：仅 high 档启用；弱设备直接走 r3f 自动渲染,省整条后期 pass。
           顺序: god rays(体积光束) → Bloom(辉光) → Vignette(暗角)。数组+filter 让条件效果满足类型 */}
       {hi && (
         <EffectComposer multisampling={4}>
           {([
-            sunMesh ? <GodRays key="godrays" sun={sunMesh} samples={60} density={0.9} decay={0.93} weight={0.4} exposure={0.42} blur /> : null,
-            <Bloom key="bloom" mipmapBlur luminanceThreshold={0.62} luminanceSmoothing={0.3} intensity={0.8} radius={0.6} />,
+            sunMesh ? <GodRays key="godrays" sun={sunMesh} samples={50} density={0.5} decay={0.95} weight={0.06} exposure={0.16} blur /> : null,
+            <Bloom key="bloom" mipmapBlur luminanceThreshold={0.72} luminanceSmoothing={0.3} intensity={0.45} radius={0.55} />,
+            USE_GLB_ISLAND ? <ToonOutline key="outline" /> : null,
             <Vignette key="vignette" eskil={false} offset={0.26} darkness={0.55} />,
           ].filter(Boolean) as React.ReactElement[])}
         </EffectComposer>

@@ -164,6 +164,52 @@ class ApiRegressionTest(unittest.TestCase):
                 narrative_trace = next(t for t in payload["agent_trace"] if t["agent"] == "narrative")
                 self.assertIn("暂停", narrative_trace["output"])
 
+    def test_companion_chat_returns_safe_in_character_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app, _ = _load_app(tmp)
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/companion/chat",
+                    json={
+                        "user_id": "companion-user",
+                        "message": "我今天有点孤独，想和你说说话",
+                        "companion_name": "微光",
+                        "affinity": 42,
+                        "emotion": "lonely",
+                        "unlocked_secrets": ["firstWhisper"],
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["reply"])
+                self.assertLessEqual(len(payload["reply"]), 120)
+                self.assertFalse(payload["safety"]["triggered"])
+                self.assertIn(payload["animation"], {"TalkListen", "BondGlow", "Joyful", "Worried"})
+                self.assertEqual(payload["prompt_version"], "xinyu-companion-v1")
+
+    def test_companion_chat_degrades_high_risk_message_to_safety_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app, _ = _load_app(tmp)
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/companion/chat",
+                    json={
+                        "user_id": "companion-risk-user",
+                        "message": "我想结束自己的生命",
+                        "companion_name": "微光",
+                        "affinity": 80,
+                        "emotion": "helpless",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["safety"]["triggered"])
+                self.assertIn("紧急电话", payload["safety"]["message"])
+                self.assertIn("先别独自扛着", payload["reply"])
+                self.assertEqual(payload["animation"], "Worried")
+
     def test_growth_level_increases_with_memory_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)

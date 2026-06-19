@@ -17,10 +17,17 @@ from pydantic import ValidationError
 
 from app import config, db
 from app.schemas import (
+    AgentAskRequest,
+    AgentAskResponse,
     AgentTraceItem,
     ArtifactItem,
     AddPhraseRequest,
     EchoPhrase,
+    CompanionChatRequest,
+    CompanionChatResponse,
+    IslandChatRequest,
+    IslandChatResponse,
+    Safety,
     GlyphReadRequest,
     GlyphResponse,
     IslandActResponse,
@@ -42,16 +49,25 @@ from app.services.emotion_service import EmotionService
 from app.services.island_ritual_service import IslandRitualService, GLYPH_CHARS
 from app.services.island_state_service import EMOTION_ZH, IslandStateService
 from app.services.llm_provider import get_provider
+from app.services.agent_service import (
+    AgentReflectionService,
+    ToolChatAgent,
+    CHAT_SYSTEM,
+    ASK_SYSTEM,
+    CHAT_TOOLS,
+    LIST_RECENT_TOOL,
+)
 from app.services.embedding_service import EmbeddingService
 from app.services.memory_service import MemoryService
 from app.services.narrative_service import NarrativeService
-from app.services.safety_service import SafetyService
+from app.services.safety_service import SafetyService, SAFETY_MESSAGE
 from app.services.vector_memory_service import VectorMemoryService
 from app.services.welcome_back_service import WelcomeBackService
 from app.services.revision_service import RevisionService
 from app.services.phrase_service import PhraseService
 from app.services.tts_service import TTSService
 from app.services import scene_map
+from app.services.companion_prompt import COMPANION_PROMPT_VERSION
 
 from pydantic import BaseModel
 
@@ -177,7 +193,7 @@ def _scrub_generated(text: Optional[str], fallback: str = "") -> str:
     return text or ""
 
 
-def _reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
+def _classic_reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
     """多智能体反思管道（生成器）。
 
     按导演台展示顺序逐阶段计算并 `yield (event_name, payload)`，让 WebSocket 能在
@@ -331,6 +347,148 @@ def _reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
     # 无痕模式下不发 memory 事件（无记忆可言）
     if not ephemeral:
         yield ("memory", {"memory": saved_memory})
+
+
+def _agent_reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
+    """工具型 Agent 反思管道（P1）。
+
+    用 AgentReflectionService（DeepSeek function-calling）让模型**自主**决定调用
+    recall_memories / read_island，再 compose 出叙事——真实的工具循环，导演台显示的
+    是 agent 实际做了什么（查了哪些记忆、读没读岛屿），而非写死的固定文案。
+    事件类型与 ReflectResponse 结构与 classic 完全一致，前端无需改动即可工作。
+    安全：关键词高风险已在 dispatcher 前置拦截走 classic；这里只做强度阈值兜底。
+    """
+    recent_for_island = memory_service.get_recent(user_id, 10)
+    recent_history = recent_for_island[:3]
+    total_count = memory_service.count_by_user(user_id)
+    artifact_keys = artifact_service.distinct_keys(user_id)
+    captured: Dict[str, Any] = {"recall": None, "island": None}
+
+    def _tool_recall(query: str) -> List[Dict[str, Any]]:
+        hist = _get_narrative_history(user_id, query, "", "", recent_history)
+        captured["recall"] = {"query": query, "count": len(hist)}
+        return [
+            {
+                "emotion": EMOTION_ZH.get(m.get("emotion", ""), m.get("emotion", "")),
+                "summary": m.get("summary", ""),
+                "said": (m.get("text", "") or "")[:50],
+            }
+            for m in hist[:3]
+        ]
+
+    def _tool_island() -> Dict[str, Any]:
+        st = island_state_service.compute(recent_for_island, total_count, current=None, artifacts=artifact_keys)
+        captured["island"] = st
+        return {
+            "growth_level": st.growth_level,
+            "trend": st.trend,
+            "dominant_emotion": EMOTION_ZH.get(st.dominant_emotion, st.dominant_emotion),
+            "features": st.features,
+            "summary": st.summary,
+        }
+
+    agent = AgentReflectionService({"recall_memories": _tool_recall, "read_island": _tool_island})
+    hint = f"ta 最近一次心情是「{EMOTION_ZH.get(recent_history[0].get('emotion', ''), '平静')}」" if recent_history else ""
+
+    composed: Optional[Dict[str, Any]] = None
+    for ev, data in agent.run(text, recent_hint=hint):
+        if ev == "final":
+            composed = data
+    composed = composed or {"emotion": "calm", "intensity": 0.5, "summary": "心情有了波动", "narrative": "", "imprint": None, "steps": 0}
+
+    emotion = composed["emotion"]
+    intensity = composed["intensity"]
+    summary = composed["summary"]
+    narrative = composed.get("narrative") or ""
+    imprint = composed.get("imprint")
+    memory_hint: Optional[str] = None
+    zh = EMOTION_ZH.get(emotion, emotion)
+    safety = safety_service.check(emotion, intensity, text)
+
+    # 以与 classic 一致的顺序发事件（WS 会逐个带停顿推送，保留「信使逐个抵达」），内容由 agent 实际行为决定
+    emotion_trace = AgentTraceItem(agent="emotion", label="情绪分析 Agent", output=f"agent 判定为{zh}，强度 {intensity:.2f}")
+    yield ("agent", emotion_trace.model_dump())
+    yield ("emotion", {"emotion": emotion, "intensity": intensity, "summary": summary, "safety": safety.model_dump()})
+
+    if captured["recall"] is not None:
+        c = captured["recall"]
+        mem_out = (f"agent 主动检索「{c['query']}」→ 找到 {c['count']} 条相关旧事" if c["count"]
+                   else f"agent 检索「{c['query']}」→ 暂无相关旧事")
+    elif ephemeral:
+        mem_out = "本次为无痕陪伴，记忆不会留下"
+    else:
+        mem_out = "岛屿与你的第一次相遇，还没有更早的记忆" if not total_count else "agent 判断此刻无需回溯旧记忆"
+    memory_trace = AgentTraceItem(agent="memory", label="记忆检索 Agent", output=mem_out)
+    yield ("agent", memory_trace.model_dump())
+
+    scene = scene_map.get_scene(emotion, intensity)
+    island_state = island_state_service.compute(
+        recent_for_island, total_count if ephemeral else total_count + 1,
+        current={"emotion": emotion, "intensity": intensity}, artifacts=artifact_keys,
+    )
+    env_out = (f"agent 读取岛屿：第 {island_state.growth_level} 级 · 趋势 {island_state.trend}"
+               if captured["island"] is not None else f"环境推理：岛屿成长至第 {island_state.growth_level} 级")
+    environment_trace = AgentTraceItem(agent="environment", label="环境推理 Agent", output=env_out)
+    yield ("agent", environment_trace.model_dump())
+    yield ("scene", {"scene": scene})
+    yield ("island_state", {"island_state": island_state.model_dump()})
+
+    if safety.triggered:
+        narrative = ""
+        imprint = None
+        narr_out = "检测到高风险，已暂停普通叙事"
+    else:
+        narrative = _scrub_generated(narrative, "此刻就让岛屿静静陪着你，不必急着说什么。")
+        narr_out = f"agent 经 {composed.get('steps', 0)} 步工具调用，写下 {len(narrative)} 字治愈叙事"
+    narrative_trace = AgentTraceItem(agent="narrative", label="叙事表达 Agent", output=narr_out)
+    yield ("agent", narrative_trace.model_dump())
+    yield ("narrative", {"narrative": narrative, "imprint": imprint, "memory_hint": memory_hint})
+
+    safety_trace = AgentTraceItem(agent="safety", label="安全边界 Agent", output="已触发安全边界，引导寻求帮助" if safety.triggered else "未发现高风险，正常陪伴")
+    yield ("agent", safety_trace.model_dump())
+    agent_trace = [emotion_trace, memory_trace, environment_trace, narrative_trace, safety_trace]
+
+    echo_phrase: Optional[EchoPhrase] = None
+    if not safety.triggered and not ephemeral:
+        picked = phrase_service.pick_for(user_id, emotion)
+        if picked:
+            echo_phrase = EchoPhrase(content=picked["content"], attribution=picked.get("attribution", ""), emotion=emotion)
+
+    choices = [] if (safety.triggered or ephemeral) else [IslandChoice(**c) for c in ritual_service.get_choices(emotion, island_state.trend)]
+
+    saved_memory: Dict[str, Any] = {}
+    if not ephemeral:
+        saved_memory = memory_service.save({
+            "user_id": user_id, "text": text, "emotion": emotion, "intensity": intensity,
+            "summary": summary, "narrative": narrative, "imprint": imprint,
+        })
+        _try_add_vector_memory(saved_memory)
+
+    logger.info("reflect[agent] user=%s emotion=%s intensity=%.2f safety=%s growth=%s steps=%s ephemeral=%s",
+                user_id, emotion, intensity, safety.triggered, island_state.growth_level, composed.get("steps", 0), ephemeral)
+
+    response = ReflectResponse(
+        emotion=emotion, intensity=intensity, summary=summary, scene=scene, island_state=island_state,
+        agent_trace=agent_trace, choices=choices, narrative=narrative, imprint=imprint,
+        memory_hint=memory_hint, safety=safety, ephemeral=ephemeral, echo_phrase=echo_phrase,
+    )
+    yield ("__final__", {"response": response, "saved": saved_memory})
+    if not ephemeral:
+        yield ("memory", {"memory": saved_memory})
+
+
+def _reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
+    """调度：能用真 agent（OpenAI 兼容 + 文本无关键词高风险）就走工具型 agent，否则走经典管线。
+    两条路径事件类型与 ReflectResponse 结构一致，HTTP / WS 调用方无需区分。"""
+    use_agent = (
+        config.LLM_PROVIDER == "openai"
+        and bool(config.OPENAI_API_KEY)
+        and not safety_service.has_risk_keyword(text)
+    )
+    if use_agent:
+        yield from _agent_reflect_pipeline(user_id, text, ephemeral)
+    else:
+        yield from _classic_reflect_pipeline(user_id, text, ephemeral)
 
 
 def _run_reflect(
@@ -598,6 +756,72 @@ def silent_companion(req: SilentCompanionRequest) -> ArtifactItem:
     return ArtifactItem(**saved)
 
 
+@app.post("/api/companion/chat", response_model=CompanionChatResponse)
+def companion_chat(req: CompanionChatRequest) -> CompanionChatResponse:
+    """专属精灵对话：复用现有 LLM Provider。
+
+    默认 Mock 可离线演示；配置 OpenAI 兼容接口后，精灵会按专属 prompt 生成入戏回应。
+    安全风险先由规则层截断，避免模型自由复述高风险内容。
+    """
+    user_id = (req.user_id or "demo-user").strip() or "demo-user"
+    text = (req.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="message 不能为空")
+    if len(text) > 500:
+        raise HTTPException(status_code=400, detail="message 过长（上限 500 字）")
+    name = (req.companion_name or "微光").strip()[:8] or "微光"
+    recent = memory_service.get_recent(user_id, 5)
+    analyzed = emotion_service.analyze(text, recent[:3])
+    emotion = (req.emotion or analyzed.get("emotion") or "calm").strip().lower()
+    if emotion not in EMOTION_ZH:
+        emotion = analyzed.get("emotion", "calm")
+    intensity = float(analyzed.get("intensity", 0.5) or 0.5)
+    safety = safety_service.check(emotion, intensity, text)
+    if safety.triggered:
+        reply = (
+            f"{name}把灯塔光停在你身边：先别独自扛着。"
+            "请马上联系身边可信任的人，或拨打当地紧急电话；我会安静陪你等到有人回应。"
+        )
+        return CompanionChatResponse(
+            reply=reply,
+            emotion=emotion,
+            animation="Worried",
+            safety=safety,
+            prompt_version=COMPANION_PROMPT_VERSION,
+        )
+
+    safe_recent = [m for m in recent if not safety_service.memory_is_high_risk(m)]
+    island_state = island_state_service.compute(
+        safe_recent,
+        memory_service.count_by_user(user_id),
+        current=None,
+        artifacts=artifact_service.distinct_keys(user_id),
+    )
+    companion = {
+        "name": name,
+        "affinity": max(0, min(int(req.affinity or 0), 100)),
+        "feed_count": max(0, int(req.feed_count or 0)),
+        "talk_count": max(0, int(req.talk_count or 0)),
+        "unlocked_secrets": list(req.unlocked_secrets or [])[:8],
+    }
+    out = provider.generate_companion_reply(text, companion, emotion, safe_recent, island_state.model_dump())
+    reply = _scrub_generated(
+        out.get("reply", ""),
+        f"{name}轻轻靠近你，灯塔光低低亮着：我在这里，陪你把这一刻慢慢放轻。",
+    )
+    animation = out.get("animation", "BondGlow")
+    if animation not in {"TalkListen", "BondGlow", "Joyful", "Worried"}:
+        animation = "BondGlow"
+    logger.info("companion_chat user=%s emotion=%s animation=%s", user_id, out.get("emotion", emotion), animation)
+    return CompanionChatResponse(
+        reply=reply[:120],
+        emotion=out.get("emotion", emotion),
+        animation=animation,
+        safety=safety,
+        prompt_version=COMPANION_PROMPT_VERSION,
+    )
+
+
 @app.post("/api/artifacts/{artifact_id}/inscribe", response_model=ArtifactItem)
 def inscribe_artifact(artifact_id: int, req: InscribeRequest) -> ArtifactItem:
     """给一枚已留下的物件刻一句给未来自己的话（30-80 字内）。"""
@@ -855,6 +1079,71 @@ async def _stream_reflect(
     if response is None:  # 生成器必产出 __final__，理论上不会发生
         raise RuntimeError("reflect pipeline did not finalize")
     return response
+
+
+def _chat_tools_for(user_id: str):
+    """构造对话/助手 agent 的工具实现（user-scoped 闭包）。"""
+    recent = memory_service.get_recent(user_id, 20)
+    artifact_keys = artifact_service.distinct_keys(user_id)
+    total = memory_service.count_by_user(user_id)
+
+    def _recall(query: str):
+        hist = _get_narrative_history(user_id, query, "", "", recent[:3])
+        return [
+            {"emotion": EMOTION_ZH.get(m.get("emotion", ""), m.get("emotion", "")),
+             "summary": m.get("summary", ""), "said": (m.get("text", "") or "")[:50]}
+            for m in hist[:3]
+        ]
+
+    def _island():
+        st = island_state_service.compute(recent[:10], total, current=None, artifacts=artifact_keys)
+        return {"growth_level": st.growth_level, "trend": st.trend,
+                "dominant_emotion": EMOTION_ZH.get(st.dominant_emotion, st.dominant_emotion),
+                "features": st.features, "summary": st.summary, "total_records": total}
+
+    def _list_recent(limit: int = 8):
+        n = max(1, min(20, int(limit or 8)))
+        return [
+            {"when": m.get("created_at", ""), "emotion": EMOTION_ZH.get(m.get("emotion", ""), m.get("emotion", "")),
+             "summary": m.get("summary", "")}
+            for m in recent[:n]
+        ]
+
+    return {"recall_memories": _recall, "read_island": _island, "list_recent_memories": _list_recent}
+
+
+@app.post("/api/chat", response_model=IslandChatResponse)
+def island_chat(req: IslandChatRequest) -> IslandChatResponse:
+    """P2 多轮对话伙伴：带上整段对话历史，岛屿/精灵用工具型 agent 多轮回应。"""
+    msgs = [
+        {"role": "assistant" if t.role == "assistant" else "user", "content": t.content}
+        for t in req.messages if t.content and t.content.strip()
+    ][-12:]
+    last_user = next((t.content for t in reversed(req.messages) if t.role == "user"), "")
+    if not msgs or not last_user.strip():
+        return IslandChatResponse(reply="我在这儿，慢慢说。")
+    if safety_service.has_risk_keyword(last_user):  # 安全前置
+        return IslandChatResponse(reply=SAFETY_MESSAGE, safety=Safety(triggered=True, message=SAFETY_MESSAGE))
+    agent = ToolChatAgent(_chat_tools_for(req.user_id))
+    reply, used = agent.run(CHAT_SYSTEM, msgs)
+    reply = _scrub_generated(reply, "此刻就让岛屿静静陪着你，不必急着说什么。") or "我在听，慢慢说，不急。"
+    logger.info("chat user=%s turns=%s tools=%s", req.user_id, len(msgs), used)
+    return IslandChatResponse(reply=reply, tools_used=used)
+
+
+@app.post("/api/agent/ask", response_model=AgentAskResponse)
+def agent_ask(req: AgentAskRequest) -> AgentAskResponse:
+    """P3 常驻助手：问『我最近怎么样』『回顾这周』，agent 调记忆/统计工具据实回答。"""
+    q = (req.question or "").strip()
+    if not q:
+        return AgentAskResponse(answer="想问我点什么呢？比如『我最近怎么样』。")
+    if safety_service.has_risk_keyword(q):
+        return AgentAskResponse(answer=SAFETY_MESSAGE, safety=Safety(triggered=True, message=SAFETY_MESSAGE))
+    agent = ToolChatAgent(_chat_tools_for(req.user_id), tools_spec=CHAT_TOOLS + [LIST_RECENT_TOOL])
+    answer, used = agent.run(ASK_SYSTEM, [{"role": "user", "content": q}])
+    answer = _scrub_generated(answer, "我先安静地陪着你。") or "我这会儿没接上信号，但我一直在你这座岛上。"
+    logger.info("ask user=%s tools=%s", req.user_id, used)
+    return AgentAskResponse(answer=answer, tools_used=used)
 
 
 @app.websocket("/ws/reflect")

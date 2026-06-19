@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app import config
+from app.services.companion_prompt import COMPANION_ALLOWED_ANIMATIONS, COMPANION_SYSTEM_PROMPT
 
 logger = logging.getLogger("xinyu.llm")
 
@@ -98,6 +99,17 @@ class LLMProvider(ABC):
         """岛屿修正信：让 LLM 回看一条历史叙事，判断是否需要补一句"那时我说得不太对"。
         lenient=True 是演示模式，鼓励 AI 主动找一处可以更贴的细节做修正。
         返回 {needed: bool, kind: 'too_heavy'|'too_light'|'off_topic'|''，revision: 60-100 字修正文本（needed=False 时为空）}。"""
+
+    @abstractmethod
+    def generate_companion_reply(
+        self,
+        message: str,
+        companion: Dict[str, Any],
+        emotion: str,
+        recent_memories: List[Dict[str, Any]],
+        island_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """专属精灵对话：返回 {reply, emotion, animation}。"""
 
 
 # 各情绪的治愈叙事模板（50-120 字），风格温柔克制
@@ -411,6 +423,40 @@ class MockProvider(LLMProvider):
             }
         return {"needed": False, "kind": "", "revision": ""}
 
+    def generate_companion_reply(
+        self,
+        message: str,
+        companion: Dict[str, Any],
+        emotion: str,
+        recent_memories: List[Dict[str, Any]],
+        island_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Mock 精灵聊天：不用 Key 也能保持入戏陪伴。"""
+        name = str(companion.get("name") or "微光")[:8]
+        emo = emotion if emotion in EMOTION_ZH else self.analyze_emotion(message, recent_memories).get("emotion", "calm")
+        affinity = int(companion.get("affinity") or 0)
+        trend = str((island_state or {}).get("trend") or "stable")
+        if emo in {"sad", "anxious", "lonely", "helpless"}:
+            if affinity >= 60:
+                reply = f"{name}靠近你的肩侧，灯塔光压得很柔：我听见了。今晚先别急着解释自己，我陪你把这阵潮声慢慢听完。"
+            else:
+                reply = f"{name}轻轻停在你身边，尾鳍慢慢摆着：我在这里。你不用马上变好，先让灯塔替你照住这一小步。"
+            animation = "TalkListen"
+        elif emo == "angry":
+            reply = f"{name}把小灯塔转向海面：这阵风有它的来处。你可以先站稳，我陪你等浪声小一点。"
+            animation = "Worried"
+        elif emo == "happy":
+            reply = f"{name}开心地绕了一圈，灯塔亮出一颗小星：这份明亮我替你收进贝壳里，等夜晚也能听见。"
+            animation = "Joyful"
+        elif emo == "tired":
+            reply = f"{name}把光调得低低的：累的时候不用撑出很亮的样子。你停一会儿，我守着这片岸。"
+            animation = "TalkListen"
+        else:
+            extra = "，今晚的海会更安静一点" if trend == "stormy" else ""
+            reply = f"{name}的灯塔像呼吸一样亮了一下：我在{extra}。你说的话，我会放进岛屿最柔软的光里。"
+            animation = "BondGlow"
+        return {"reply": reply[:120], "emotion": emo, "animation": animation}
+
 
 class OpenAIProvider(LLMProvider):
     """OpenAI 兼容接口。失败时降级到 Mock，保证演示不中断。"""
@@ -678,6 +724,52 @@ class OpenAIProvider(LLMProvider):
         except Exception as e:
             logger.warning("OpenAI 手写读心失败，降级到 Mock: %s", e)
             return self._mock.read_glyph(char, dynamics, prior_emotion)
+
+    def generate_companion_reply(
+        self,
+        message: str,
+        companion: Dict[str, Any],
+        emotion: str,
+        recent_memories: List[Dict[str, Any]],
+        island_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        name = str(companion.get("name") or "微光")[:8]
+        memory_lines = []
+        for item in recent_memories[:4]:
+            memory_lines.append(
+                f"- {EMOTION_ZH.get(item.get('emotion',''), item.get('emotion',''))}/"
+                f"{item.get('intensity','')}：{(item.get('summary') or item.get('text') or '')[:36]}"
+            )
+        state_line = ""
+        if island_state:
+            state_line = (
+                f"岛屿状态：成长 {island_state.get('growth_level','')} 级，"
+                f"趋势 {island_state.get('trend','')}，"
+                f"天气记忆 {island_state.get('weather_memory','')}。"
+            )
+        user = (
+            f"精灵名字：{name}\n"
+            f"亲密度：{companion.get('affinity', 0)}/100；投喂 {companion.get('feed_count', 0)} 次；"
+            f"对话 {companion.get('talk_count', 0)} 次；已解锁彩蛋：{', '.join(companion.get('unlocked_secrets') or []) or '无'}。\n"
+            f"玩家当前情绪参考：{emotion}\n{state_line}\n"
+            f"最近记忆摘要：\n{chr(10).join(memory_lines) if memory_lines else '暂无'}\n\n"
+            f"玩家刚刚对{name}说：{message}"
+        )
+        try:
+            data = self._chat_json(COMPANION_SYSTEM_PROMPT.replace("「微光」", f"「{name}」"), user, timeout=config.LLM_FAST_TIMEOUT)
+            reply = str(data.get("reply", "") or "").strip()
+            if not reply:
+                raise ValueError("empty companion reply")
+            emo = str(data.get("emotion", emotion) or emotion).lower()
+            if emo not in EMOTION_ZH:
+                emo = emotion if emotion in EMOTION_ZH else "calm"
+            animation = str(data.get("animation", "BondGlow") or "BondGlow")
+            if animation not in COMPANION_ALLOWED_ANIMATIONS:
+                animation = "TalkListen" if emo in {"sad", "anxious", "lonely", "helpless"} else "BondGlow"
+            return {"reply": reply[:120], "emotion": emo, "animation": animation}
+        except Exception as e:
+            logger.warning("OpenAI 专属精灵对话失败，降级到 Mock: %s", e)
+            return self._mock.generate_companion_reply(message, companion, emotion, recent_memories, island_state)
 
 
 def get_provider() -> LLMProvider:

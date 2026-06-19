@@ -97,6 +97,25 @@ export interface GlyphResponse {
   artifact: ArtifactItem;
 }
 
+export interface CompanionChatRequest {
+  user_id: string;
+  message: string;
+  companion_name: string;
+  affinity: number;
+  emotion?: string;
+  feed_count: number;
+  talk_count: number;
+  unlocked_secrets: string[];
+}
+
+export interface CompanionChatResponse {
+  reply: string;
+  emotion: string;
+  animation: string;
+  safety: { triggered: boolean; message: string | null };
+  prompt_version: string;
+}
+
 export interface PhraseItem {
   id: number;
   user_id: string;
@@ -188,6 +207,42 @@ export async function reflect(
     }
     throw new Error(detail);
   }
+  return res.json();
+}
+
+// ── P2 多轮对话伙伴 ──
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+export interface IslandChatResponse {
+  reply: string;
+  safety: { triggered: boolean; message?: string };
+  tools_used: string[];
+}
+export async function chatWithIsland(user_id: string, messages: ChatTurn[]): Promise<IslandChatResponse> {
+  const res = await fetch(`${BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id, messages }),
+  });
+  if (!res.ok) throw new Error(`对话失败 (${res.status})`);
+  return res.json();
+}
+
+// ── P3 常驻 AI 助手 ──
+export interface AgentAskResponse {
+  answer: string;
+  tools_used: string[];
+  safety: { triggered: boolean; message?: string };
+}
+export async function agentAsk(user_id: string, question: string): Promise<AgentAskResponse> {
+  const res = await fetch(`${BASE}/api/agent/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id, question }),
+  });
+  if (!res.ok) throw new Error(`助手暂时没接上 (${res.status})`);
   return res.json();
 }
 
@@ -373,6 +428,21 @@ export async function silentCompanion(user_id: string, duration_seconds: number)
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id, duration_seconds }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** 专属精灵 AI 对话：后端默认 mock，配置 OpenAI 兼容模型后自动升级。失败时前端走本地温柔回退。 */
+export async function requestCompanionChat(payload: CompanionChatRequest): Promise<CompanionChatResponse | null> {
+  try {
+    const res = await fetch(`${BASE}/api/companion/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
     if (!res.ok) return null;
     return await res.json();

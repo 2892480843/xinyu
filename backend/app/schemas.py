@@ -177,6 +177,29 @@ class GlyphResponse(BaseModel):
     artifact: ArtifactItem
 
 
+class CompanionChatRequest(BaseModel):
+    """专属精灵对话：前端带上本地精灵状态，后端只负责生成安全、入戏的一句回应。"""
+
+    user_id: str = "demo-user"
+    message: str
+    companion_name: str = "微光"
+    affinity: int = 0
+    emotion: str = "calm"
+    feed_count: int = 0
+    talk_count: int = 0
+    unlocked_secrets: List[str] = Field(default_factory=list)
+
+
+class CompanionChatResponse(BaseModel):
+    """专属精灵大模型回应。prompt_version 便于之后调 prompt 时做回归追踪。"""
+
+    reply: str = ""
+    emotion: str = "calm"
+    animation: str = "BondGlow"
+    safety: Safety = Safety()
+    prompt_version: str = "xinyu-companion-v1"
+
+
 class RevisionResponse(BaseModel):
     """岛屿修正信：LLM 回看昨日叙事，主动承认"我那句说得不准确"。"""
 
@@ -203,3 +226,34 @@ class MemoryItem(BaseModel):
 
 class MemoryListResponse(BaseModel):
     memories: List[MemoryItem]
+
+
+class ChatTurn(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class IslandChatRequest(BaseModel):
+    """主页多轮对话（P2）：带上整段对话历史，岛屿/精灵多轮回应。"""
+
+    user_id: str = "demo-user"
+    messages: List[ChatTurn] = Field(default_factory=list)
+
+
+class IslandChatResponse(BaseModel):
+    reply: str = ""
+    safety: Safety = Safety()
+    tools_used: List[str] = Field(default_factory=list)  # 本轮 agent 实际调用过的工具
+
+
+class AgentAskRequest(BaseModel):
+    """常驻 AI 助手（P3）：用户随时提问，agent 调记忆/统计工具作答。"""
+
+    user_id: str = "demo-user"
+    question: str
+
+
+class AgentAskResponse(BaseModel):
+    answer: str = ""
+    tools_used: List[str] = Field(default_factory=list)
+    safety: Safety = Safety()

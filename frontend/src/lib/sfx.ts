@@ -113,6 +113,41 @@ function tone(opts: {
   osc.stop(start + opts.duration + 0.05);
 }
 
+// 风铃单音(任意音高):基频 + 八度泛音,清亮带海岛混响。用于「风铃心曲」逐音敲响。
+export function chimeNote(freq: number) {
+  tone({ freq, duration: 1.3, attack: 0.004, type: "sine", gain: 0.42, reverb: 0.4 });
+  tone({ freq: freq * 2, duration: 0.9, attack: 0.004, type: "sine", gain: 0.15, startAt: 0.02, reverb: 0.4 });
+}
+
+// 引擎低鸣(持续音源):上车 startEngine、下车 stopEngine、行驶中每帧 setEngineSpeed(|车速|/上限)。
+let engine: { osc: OscillatorNode; sub: OscillatorNode; filt: BiquadFilterNode; gain: GainNode } | null = null;
+export function startEngine() {
+  const c = ensure();
+  if (!c || !masterGain || engine) return;
+  const osc = c.createOscillator(); osc.type = "sawtooth"; osc.frequency.value = 56;
+  const sub = c.createOscillator(); sub.type = "triangle"; sub.frequency.value = 28;
+  const filt = c.createBiquadFilter(); filt.type = "lowpass"; filt.frequency.value = 300; filt.Q.value = 0.7;
+  const gain = c.createGain(); gain.gain.value = 0;
+  osc.connect(filt); sub.connect(filt); filt.connect(gain); gain.connect(masterGain);
+  osc.start(); sub.start();
+  engine = { osc, sub, filt, gain };
+}
+export function setEngineSpeed(spd: number) {
+  if (!engine || !ctx) return;
+  const t = ctx.currentTime; const s = Math.max(0, Math.min(1, spd));
+  const base = 52 + s * 95; // 怠速 → 拉高
+  engine.osc.frequency.setTargetAtTime(base, t, 0.08);
+  engine.sub.frequency.setTargetAtTime(base * 0.5, t, 0.08);
+  engine.filt.frequency.setTargetAtTime(280 + s * 760, t, 0.1);
+  engine.gain.gain.setTargetAtTime(muted ? 0 : 0.05 + s * 0.06, t, 0.1); // 低鸣,随速度略响
+}
+export function stopEngine() {
+  if (!engine || !ctx) return;
+  const e = engine; engine = null;
+  e.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.12);
+  setTimeout(() => { try { e.osc.stop(); e.sub.stop(); e.osc.disconnect(); e.sub.disconnect(); e.filt.disconnect(); e.gain.disconnect(); } catch { /* ignore */ } }, 350);
+}
+
 // 频率滑音 tone（whoosh / 上行点亮等用）。
 function sweep(opts: {
   from: number;

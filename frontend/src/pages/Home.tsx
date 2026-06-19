@@ -8,6 +8,8 @@ const ExploreMode = lazy(() => import("../components/ExploreMode"));
 import Particles from "../components/Particles";
 import MoodInput from "../components/MoodInput";
 import NarrativeCard from "../components/NarrativeCard";
+import IslandChat from "../components/IslandChat";
+import IslandAssistant from "../components/IslandAssistant";
 import MindMap from "../components/MindMap";
 import SafetyNotice from "../components/SafetyNotice";
 import BreathingRitual from "../components/BreathingRitual";
@@ -85,6 +87,7 @@ export default function Home() {
     immersive && phase !== "narrative" && phase !== "safety" && phase !== "breathing",
   );
   const [result, setResult] = useState<ReflectResponse | null>(null);
+  const [lastMood, setLastMood] = useState(""); // 最近一次提交的心情原文（作为多轮对话的种子）
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<ErrorVoiceKind>("server");
   const [lastSubmit, setLastSubmit] = useState<{ text: string; ephemeral: boolean } | null>(null);
@@ -337,6 +340,7 @@ export default function Home() {
     setLiveIsland(null);
     setLiveScene(null);
     setLastSubmit({ text, ephemeral });
+    setLastMood(text); // 作为多轮对话的种子
     setLoadingText("岛屿在远处望见你了……");
     setPhase("loading");
     // 同一次提交用同一个 request_id：WS 超时回退 HTTP 时后端据此去重，避免重复落库
@@ -611,12 +615,13 @@ export default function Home() {
                   岛屿记得你上次的 {EMOTION_META[memories[0].emotion]?.label ?? "心事"}，欢迎回来
                 </motion.p>
               )}
-              <div className="text-center mt-2 flex items-center justify-center gap-3">
+              <div className="text-center mt-2 flex items-center justify-center gap-3 flex-wrap">
                 {memories.length > 0 && (
                   <button onClick={() => setReplayMode("self")} className="btn-link">
                     回望这些天 ›
                   </button>
                 )}
+                {memories.length > 0 && identity && <IslandAssistant userId={identity.user_id} />}
                 {(memories.length > 0 || artifacts.length > 0) && (
                   <button onClick={() => setIslandMapOpen(true)} className="btn-link">
                     登高望岛 ›
@@ -663,6 +668,9 @@ export default function Home() {
                 onInscribed={() => fetchArtifacts(identity.user_id).then(setArtifacts).catch(() => {})}
                 onNarrativeDone={handleNarrativeDone}
               />
+              {result.narrative && (
+                <IslandChat userId={identity.user_id} seedUser={lastMood} seedNarrative={result.narrative} />
+              )}
             </motion.div>
           )}
 
@@ -805,7 +813,7 @@ export default function Home() {
       {/* 自由探索：z-[70] 控制小人在岛上走动收集心愿 */}
       {exploreOpen && (
         <Suspense fallback={null}>
-          <ExploreMode visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} />
+          <ExploreMode key={identity?.user_id ?? "guest"} visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} userId={identity?.user_id} />
         </Suspense>
       )}
     </div>
