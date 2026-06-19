@@ -282,7 +282,7 @@ function CameraRig({ animate }: { animate: boolean }) {
 // 岛屿地形高度场(平面坐标)——地形网格与植被布点共用同一函数，保证草木精确贴地。
 // hash 值噪声(纯 JS、确定性、无依赖)。
 const ISLAND_SIZE = 9;
-const ISLAND_SEG = 64;
+const ISLAND_SEG = 88;
 const ISLAND_RADIUS = 3.0;
 const ISLAND_PEAK = 1.7;
 function hash2(x: number, y: number) {
@@ -310,8 +310,10 @@ function islandHeight(x: number, y: number) {
   const r = Math.sqrt(x * x + y * y) / ISLAND_RADIUS;
   const fall = 1 - smoothstep01(0.15, 1.0, r); // 中心高、向外衰减
   let h = fall * ISLAND_PEAK;
-  h += fall * (valueNoise(x * 0.7 + 11, y * 0.7 + 11) - 0.5) * 1.3; // 大尺度山丘
-  h += fall * (valueNoise(x * 1.7, y * 1.7) - 0.5) * 0.5; // 细碎起伏
+  h += fall * (valueNoise(x * 0.7 + 11, y * 0.7 + 11) - 0.5) * 1.55; // 大尺度山丘(加强)
+  h += fall * (1 - Math.abs(valueNoise(x * 1.05 + 5, y * 1.05 + 5) - 0.5) * 2) * 0.42; // 脊线(ridged)→ 山脊起伏
+  h += fall * (valueNoise(x * 1.9, y * 1.9) - 0.5) * 0.55; // 中尺度
+  h += fall * (valueNoise(x * 3.6, y * 3.6) - 0.5) * 0.22; // 细碎
   h -= smoothstep01(0.62, 1.15, r) * 1.4; // 边缘沉入海面 → 自然海岸线
   return h;
 }
