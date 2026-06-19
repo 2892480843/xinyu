@@ -1,12 +1,13 @@
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Outlines, Html } from "@react-three/drei";
+import { Outlines, Html, useGLTF } from "@react-three/drei";
 import { EffectComposer } from "@react-three/postprocessing";
 import { Effect, EffectAttribute } from "postprocessing";
 import * as THREE from "three";
 import type { SceneVisual } from "../lib/sceneMap";
 import type { SceneMotionMood } from "../lib/sceneMotion";
 import { hash2, islandHeight, valueNoise, smoothstep01, ISLAND_RADIUS, ISLAND_SIZE } from "../lib/islandTerrain";
+import { play as playSfx } from "../lib/sfx";
 
 // 探索地形:岛屿轮廓大幅水平放大 → 一座很大很大的可走岛
 const EXS = 80.0; // 水平放大(极巨大岛)
@@ -144,6 +145,142 @@ interface InstItem {
   sv?: [number, number, number];
   r?: [number, number, number];
 }
+// ── Blender glb 素材接线 ───────────────────────────────────────────────
+// 载入 public/models 下的 glb → 克隆 → 把每个网格材质换成共享 MeshToonMaterial(保留底色);
+// 材质名含 "Emissive" 的改成发光 StandardMaterial(可用 tint 覆盖为情绪色)。
+const MODELS = {
+  lighthouse: "/models/xy_landmark_lighthouse.glb",
+  windmill: "/models/xy_landmark_windmill.glb",
+  torii: "/models/xy_landmark_torii.glb",
+  shrine: "/models/xy_landmark_shrine.glb",
+  pier: "/models/xy_landmark_pier.glb",
+  vending: "/models/xy_landmark_vending.glb",
+  boat: "/models/xy_landmark_boat.glb",
+  whalerock: "/models/xy_landmark_whalerock.glb",
+  whale: "/models/xy_creature_whale.glb",
+  wishlight: "/models/xy_item_wishlight.glb",
+  imprint: "/models/xy_item_imprint.glb",
+  driftbottle: "/models/xy_item_driftbottle.glb",
+  riverlamp: "/models/xy_item_riverlamp.glb",
+  companion: "/models/xy_char_companion.glb",
+  stonelantern: "/models/xy_item_stonelantern.glb",
+  bonfire: "/models/xy_item_bonfire.glb",
+  cairn: "/models/xy_item_cairn.glb",
+  kite: "/models/xy_item_kite.glb",
+  shell: "/models/xy_item_shell.glb",
+  nightflower: "/models/xy_item_nightflower.glb",
+} as const;
+Object.values(MODELS).forEach((u) => useGLTF.preload(u));
+
+// 陪伴精灵:跟随玩家漂浮的小灵兽(强化「情感陪伴」)。保留 glb 原材质(半透+发光),不套 toon。
+function Companion({ posRef }: { posRef: React.RefObject<THREE.Vector3> }) {
+  const { scene } = useGLTF(MODELS.companion);
+  const obj = useMemo(() => {
+    const c = scene.clone(true);
+    c.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.castShadow = false;
+      m.receiveShadow = false;
+      const mat = m.material as THREE.MeshStandardMaterial;
+      if (mat && mat.emissive && (mat.emissive.r || mat.emissive.g || mat.emissive.b)) mat.toneMapped = false;
+    });
+    return c;
+  }, [scene]);
+  const ref = useRef<THREE.Group>(null);
+  useFrame((s, dt) => {
+    const p = posRef.current;
+    const g = ref.current;
+    if (!p || !g) return;
+    const t = s.clock.elapsedTime;
+    const k = Math.min(1, dt * 2.5);
+    const ty = exGroundY(p.x, p.z) + 1.95 + Math.sin(t * 1.8) * 0.18;
+    g.position.x += (p.x + 1.15 - g.position.x) * k;
+    g.position.z += (p.z + 1.15 - g.position.z) * k;
+    g.position.y += (ty - g.position.y) * Math.min(1, dt * 3.5);
+    g.rotation.y = Math.sin(t * 0.5) * 0.35;
+  });
+  return (
+    <group ref={ref} position={[1.15, 2.4, 1.15]}>
+      <primitive object={obj} scale={1.2} />
+      <pointLight color="#bff0ec" intensity={1.6} distance={4.5} decay={1.6} />
+    </group>
+  );
+}
+
+// 轻飘的 glb 道具(风筝等):上下浮 + 轻摆。
+function FloatSway({ url, grad, position, scale, amp = 0.4, speed = 1.0, tint }: {
+  url: string; grad?: THREE.Texture; position: [number, number, number]; scale?: number; amp?: number; speed?: number; tint?: string;
+}) {
+  const { scene } = useGLTF(url);
+  const obj = useMemo(() => toonifyScene(scene, grad, tint), [scene, grad, tint]);
+  const ref = useRef<THREE.Group>(null);
+  const baseY = position[1];
+  useFrame((s) => {
+    const g = ref.current; if (!g) return;
+    const t = s.clock.elapsedTime;
+    g.position.y = baseY + Math.sin(t * speed) * amp;
+    g.rotation.z = Math.sin(t * speed * 0.8) * 0.22;
+    g.rotation.y = Math.sin(t * speed * 0.5) * 0.18;
+  });
+  return <group ref={ref} position={position}><primitive object={obj} scale={scale} /></group>;
+}
+
+function toonifyScene(src: THREE.Object3D, grad?: THREE.Texture, tint?: string): THREE.Object3D {
+  const root = src.clone(true);
+  const cache = new Map<THREE.Material, THREE.Material>();
+  const conv = (m: THREE.Material): THREE.Material => {
+    const hit = cache.get(m);
+    if (hit) return hit;
+    const std = m as THREE.MeshStandardMaterial;
+    const base = std.color ? std.color.clone() : new THREE.Color("#ffffff");
+    let out: THREE.Material;
+    if (/emissive/i.test(m.name || "")) {
+      const lit = std.emissive && (std.emissive.r || std.emissive.g || std.emissive.b);
+      const col = tint ? new THREE.Color(tint) : lit ? std.emissive.clone() : base;
+      out = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 2.2, toneMapped: false, transparent: std.transparent, opacity: std.opacity ?? 1 });
+    } else {
+      out = new THREE.MeshToonMaterial({ color: base, gradientMap: grad ?? null });
+    }
+    cache.set(m, out);
+    return out;
+  };
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(conv) : conv(mesh.material as THREE.Material);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+  });
+  return root;
+}
+
+function GltfProp({
+  url,
+  grad,
+  position,
+  rotation,
+  scale,
+  tint,
+  spin,
+}: {
+  url: string;
+  grad?: THREE.Texture;
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  scale?: number | [number, number, number];
+  tint?: string;
+  spin?: { node: string; speed: number }; // 让某个子节点绕自身 Z 轴自转(如风车 Blades)
+}) {
+  const { scene } = useGLTF(url);
+  const obj = useMemo(() => toonifyScene(scene, grad, tint), [scene, grad, tint]);
+  const spinNode = useMemo(() => (spin ? obj.getObjectByName(spin.node) : undefined), [obj, spin]);
+  useFrame((_, delta) => {
+    if (spinNode && spin) spinNode.rotateZ(delta * spin.speed);
+  });
+  return <primitive object={obj} position={position} rotation={rotation} scale={scale} />;
+}
+
 function InstancedField({ geo, material, items }: { geo: THREE.BufferGeometry; material: THREE.Material; items: InstItem[] }) {
   const ref = useRef<THREE.InstancedMesh>(null);
   useLayoutEffect(() => {
@@ -471,8 +608,6 @@ function Wishes({
     }
     return out;
   }, [total]);
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 3, toneMapped: false }), [color]);
-  useEffect(() => () => mat.dispose(), [mat]);
 
   useFrame((state) => {
     const pos = posRef.current;
@@ -502,9 +637,7 @@ function Wishes({
           }}
           position={[s.x, exGroundY(s.x, s.z) + 0.55, s.z]}
         >
-          <mesh material={mat}>
-            <octahedronGeometry args={[0.14, 0]} />
-          </mesh>
+          <GltfProp url={MODELS.wishlight} position={[0, 0, 0]} scale={0.5} tint={color} />
           <pointLight color={color} intensity={2} distance={2.2} decay={1.6} />
         </group>
       ))}
@@ -1114,15 +1247,8 @@ function Town({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string })
           <pointLight position={[0, 1.7, 0]} color="#ffe6a0" intensity={2.4} distance={4.5} decay={1.6} />
         </group>
       ))}
-      {/* 售货机 */}
-      <group position={[-4.0, exGroundY(-4.0, 0.6), 0.6]} rotation={[0, 0.8, 0]}>
-        <mesh material={dark} position={[0, 0.7, 0]}>
-          <boxGeometry args={[0.8, 1.4, 0.5]} />
-        </mesh>
-        <mesh material={glow} position={[0, 0.85, 0.27]}>
-          <boxGeometry args={[0.55, 0.8, 0.04]} />
-        </mesh>
-      </group>
+      {/* 售货机(glb) */}
+      <GltfProp url={MODELS.vending} grad={toonGrad} position={[-4.0, exGroundY(-4.0, 0.6), 0.6]} rotation={[0, 0.8, 0]} scale={0.7} />
 
       {/* 电线杆 */}
       {poleSpots.map((p, i) => (
@@ -1162,21 +1288,8 @@ function Town({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string })
       {/* 路面中线虚线(实例化) */}
       <InstancedField geo={gDash} material={wall} items={dashItems} />
 
-      {/* 鸟居(主路尽头的入口地标,跨在路上) */}
-      <group position={[-WALK_RADIUS * 0.9, exGroundY(-WALK_RADIUS * 0.9, 0), 0]} rotation={[0, Math.PI / 2, 0]} scale={1.5}>
-        <mesh material={red} position={[-0.9, 1.1, 0]}>
-          <cylinderGeometry args={[0.12, 0.14, 2.2, 8]} />
-        </mesh>
-        <mesh material={red} position={[0.9, 1.1, 0]}>
-          <cylinderGeometry args={[0.12, 0.14, 2.2, 8]} />
-        </mesh>
-        <mesh material={red} position={[0, 2.25, 0]}>
-          <boxGeometry args={[2.5, 0.22, 0.3]} />
-        </mesh>
-        <mesh material={red} position={[0, 1.85, 0]}>
-          <boxGeometry args={[2.1, 0.16, 0.22]} />
-        </mesh>
-      </group>
+      {/* 鸟居(glb,主路尽头的入口地标,跨在路上) */}
+      <GltfProp url={MODELS.torii} grad={toonGrad} position={[-WALK_RADIUS * 0.9, exGroundY(-WALK_RADIUS * 0.9, 0), 0]} rotation={[0, Math.PI / 2, 0]} scale={0.78} />
 
       {/* 小花(实例化,两色) */}
       <InstancedField geo={gFlower} material={petal} items={flowerPink} />
@@ -1191,72 +1304,24 @@ function Town({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string })
         <circleGeometry args={[4.5, 32]} />
       </mesh>
 
-      {/* 木栈桥(从大岛东岸伸进海里) */}
-      <group position={[WALK_RADIUS + 0.5, 0, 0]}>
-        <mesh material={wood} position={[0, 0.2, 0]}>
-          <boxGeometry args={[6, 0.12, 1.7]} />
-        </mesh>
-        {[-2, 0, 2].map((dx, i) => (
-          <group key={i}>
-            <mesh material={wood} position={[dx, -0.4, 0.7]}>
-              <cylinderGeometry args={[0.08, 0.08, 1.5, 6]} />
-            </mesh>
-            <mesh material={wood} position={[dx, -0.4, -0.7]}>
-              <cylinderGeometry args={[0.08, 0.08, 1.5, 6]} />
-            </mesh>
-          </group>
-        ))}
-      </group>
+      {/* 木栈桥(glb,从大岛东岸伸进海里;原点在陆端,+Z 朝海 → 转 +90° 朝 +X) */}
+      <GltfProp url={MODELS.pier} grad={toonGrad} position={[WALK_RADIUS - 1.5, -0.35, 0]} rotation={[0, Math.PI / 2, 0]} scale={0.5} />
 
       {/* 浅滩礁石(实例化) */}
       <InstancedField geo={gRock} material={rock} items={rockItems} />
 
-      {/* 小神社(岛上地标) */}
-      <group position={[7, exGroundY(7, -7), -7]} rotation={[0, 0.5, 0]} scale={1.4}>
-        <mesh material={wall3} position={[0, 0.55, 0]}>
-          <boxGeometry args={[1.3, 1.1, 1.1]} />
-        </mesh>
-        <mesh material={red} position={[0, 1.35, 0]} rotation={[0, Math.PI / 4, 0]}>
-          <coneGeometry args={[1.15, 0.7, 4]} />
-        </mesh>
+      {/* 小神社(glb,岛上地标) */}
+      <GltfProp url={MODELS.shrine} grad={toonGrad} position={[7, exGroundY(7, -7), -7]} rotation={[0, 0.5, 0]} scale={0.8} />
+
+      {/* 灯塔(glb,呼应心屿灯塔) */}
+      <group position={[-WALK_RADIUS * 0.92, exGroundY(-WALK_RADIUS * 0.92, -WALK_RADIUS * 0.3), -WALK_RADIUS * 0.3]}>
+        <GltfProp url={MODELS.lighthouse} grad={toonGrad} position={[0, 0, 0]} scale={0.6} />
+        <pointLight position={[0, 9.6, 0]} color="#ffeec0" intensity={8} distance={22} decay={1.3} />
       </group>
 
-      {/* 灯塔(岛屿地标,呼应心屿灯塔) */}
-      <group position={[-WALK_RADIUS * 0.92, exGroundY(-WALK_RADIUS * 0.92, -WALK_RADIUS * 0.3), -WALK_RADIUS * 0.3]} scale={1.8}>
-        <mesh material={wall} position={[0, 2.2, 0]}>
-          <cylinderGeometry args={[0.7, 1.05, 4.4, 14]} />
-        </mesh>
-        <mesh material={red} position={[0, 1.25, 0]}>
-          <cylinderGeometry args={[0.92, 0.98, 0.55, 14]} />
-        </mesh>
-        <mesh material={red} position={[0, 3.0, 0]}>
-          <cylinderGeometry args={[0.76, 0.8, 0.5, 14]} />
-        </mesh>
-        <mesh material={dark} position={[0, 4.55, 0]}>
-          <cylinderGeometry args={[0.85, 0.85, 0.35, 14]} />
-        </mesh>
-        <mesh material={glow} position={[0, 5.05, 0]}>
-          <cylinderGeometry args={[0.58, 0.58, 0.7, 12]} />
-        </mesh>
-        <pointLight position={[0, 5.05, 0]} color="#ffeec0" intensity={8} distance={22} decay={1.3} />
-        <mesh material={red} position={[0, 5.65, 0]}>
-          <coneGeometry args={[0.72, 0.6, 12]} />
-        </mesh>
-      </group>
-
-      {/* 小船(停泊在东岸) */}
+      {/* 小船(glb,停泊在东岸) */}
       {boats.map((b, i) => (
-        <group key={i} position={[b.x, 0.12, b.z]} rotation={[0, b.rot, 0]}>
-          <mesh material={wood} position={[0, 0.18, 0]}>
-            <boxGeometry args={[1.8, 0.4, 0.8]} />
-          </mesh>
-          <mesh material={dark} position={[0, 0.7, 0]}>
-            <cylinderGeometry args={[0.04, 0.04, 1.1, 5]} />
-          </mesh>
-          <mesh material={wall} position={[0, 0.75, 0.22]}>
-            <boxGeometry args={[0.03, 0.8, 0.7]} />
-          </mesh>
-        </group>
+        <GltfProp key={i} url={MODELS.boat} grad={toonGrad} position={[b.x, 0.2, b.z]} rotation={[0, b.rot, 0]} scale={0.42} />
       ))}
 
       {/* 浮标(实例化,水里漂) */}
@@ -1285,32 +1350,19 @@ function Town({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string })
       {/* 贝壳 / 卵石(实例化,沿岸沙地) */}
       <InstancedField geo={gShell} material={shell} items={shellItems} />
 
-      {/* 风车(岛屿地标) */}
-      <group position={[-WALK_RADIUS * 0.35, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45), WALK_RADIUS * 0.45]} scale={1.8}>
-        <mesh material={wall} position={[0, 1.6, 0]}>
-          <cylinderGeometry args={[0.55, 0.9, 3.2, 10]} />
-        </mesh>
-        <mesh material={red} position={[0, 3.45, 0]}>
-          <coneGeometry args={[0.78, 0.7, 10]} />
-        </mesh>
-        <group position={[0, 3.0, 0.7]}>
-          <mesh material={dark} rotation={[Math.PI / 2, 0, 0]}>
-            <cylinderGeometry args={[0.14, 0.14, 0.25, 8]} />
-          </mesh>
-          {[0, 1, 2, 3].map((k) => (
-            <group key={k} rotation={[0, 0, (k * Math.PI) / 2]}>
-              <mesh material={wood} position={[0, 0.95, 0]}>
-                <boxGeometry args={[0.22, 1.8, 0.04]} />
-              </mesh>
-            </group>
-          ))}
-        </group>
-      </group>
+      {/* 风车(glb,岛屿地标;叶片 Blades 节点缓缓自转) */}
+      <GltfProp url={MODELS.windmill} grad={toonGrad} position={[-WALK_RADIUS * 0.35, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45), WALK_RADIUS * 0.45]} scale={0.78} spin={{ node: "Blades", speed: 0.7 }} />
 
       {/* 池塘 + 芦苇 */}
       <mesh material={pond} position={[WALK_RADIUS * 0.3, exGroundY(WALK_RADIUS * 0.3, WALK_RADIUS * 0.3) + 0.04, WALK_RADIUS * 0.3]} rotation={[-Math.PI / 2, 0, 0]}>
         <circleGeometry args={[6, 30]} />
       </mesh>
+      {/* 河灯(glb,漂在池塘上——呼应「放河灯」仪式) */}
+      {([[-2.2, 1.4], [1.6, -1.8], [2.8, 2.2]] as const).map(([dx, dz], i) => {
+        const pcx = WALK_RADIUS * 0.3;
+        const py = exGroundY(pcx, pcx) + 0.14;
+        return <GltfProp key={`riverlamp${i}`} url={MODELS.riverlamp} grad={toonGrad} position={[pcx + dx, py, pcx + dz]} rotation={[0, i * 1.3, 0]} scale={0.7} />;
+      })}
       {/* 荷叶 + 荷花 */}
       {Array.from({ length: 9 }).map((_, k) => {
         const a = hash2(k + 600, 1.3) * Math.PI * 2;
@@ -1341,23 +1393,33 @@ function Town({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string })
         );
       })}
 
-      {/* 石灯笼(岛上) */}
+      {/* 石灯笼(glb,岛上石径) */}
       {([[7, -13], [13, -6], [-9, 11], [11, 9]] as const).map(([lx, lz], i) => (
-        <group key={i} position={[lx, exGroundY(lx, lz), lz]}>
-          <mesh material={stone} position={[0, 0.15, 0]}>
-            <boxGeometry args={[0.4, 0.3, 0.4]} />
-          </mesh>
-          <mesh material={stone} position={[0, 0.55, 0]}>
-            <cylinderGeometry args={[0.1, 0.1, 0.6, 6]} />
-          </mesh>
-          <mesh material={glow} position={[0, 1.0, 0]}>
-            <boxGeometry args={[0.3, 0.3, 0.3]} />
-          </mesh>
-          <mesh material={stone} position={[0, 1.28, 0]} rotation={[0, Math.PI / 4, 0]}>
-            <coneGeometry args={[0.34, 0.28, 4]} />
-          </mesh>
+        <group key={`lan${i}`} position={[lx, exGroundY(lx, lz), lz]}>
+          <GltfProp url={MODELS.stonelantern} grad={toonGrad} position={[0, 0, 0]} scale={0.8} />
+          <pointLight position={[0, 0.85, 0]} color="#ffdf9b" intensity={2.2} distance={5} decay={1.7} />
         </group>
       ))}
+      {/* 仪式艺术品散布岛上(对应岛屿仪式 ARTIFACTS) */}
+      {/* 篝火(村口空地) */}
+      <group position={[-6, exGroundY(-6, -3), -3]}>
+        <GltfProp url={MODELS.bonfire} grad={toonGrad} position={[0, 0, 0]} scale={1.0} />
+        <pointLight position={[0, 0.7, 0]} color="#ff9a4a" intensity={3} distance={7} decay={1.6} />
+      </group>
+      {/* 心境石(海湾沙地 + 池畔) */}
+      {([[Math.cos(0.5) * WALK_RADIUS * 0.9, Math.sin(0.5) * WALK_RADIUS * 0.9], [Math.cos(0.62) * WALK_RADIUS * 0.86, Math.sin(0.62) * WALK_RADIUS * 0.86], [WALK_RADIUS * 0.3 + 6.5, WALK_RADIUS * 0.3 + 1]] as const).map(([cx, cz], i) => (
+        <GltfProp key={`cairn${i}`} url={MODELS.cairn} grad={toonGrad} position={[cx, exGroundY(cx, cz), cz]} rotation={[0, i * 1.1, 0]} scale={0.85} />
+      ))}
+      {/* 贝壳(海湾沙地,精模点缀) */}
+      {([[Math.cos(0.48) * WALK_RADIUS * 0.95, Math.sin(0.48) * WALK_RADIUS * 0.95], [Math.cos(0.58) * WALK_RADIUS * 0.93, Math.sin(0.58) * WALK_RADIUS * 0.93]] as const).map(([sx, sz], i) => (
+        <GltfProp key={`shell${i}`} url={MODELS.shell} grad={toonGrad} position={[sx, Math.max(exGroundY(sx, sz), 0.05) + 0.03, sz]} rotation={[0, i * 2, 0]} scale={1.1} />
+      ))}
+      {/* 夜来香(神社旁) */}
+      {([[5.5, -7.5], [8.2, -6.4]] as const).map(([fx, fz], i) => (
+        <GltfProp key={`nf${i}`} url={MODELS.nightflower} grad={toonGrad} position={[fx, exGroundY(fx, fz), fz]} scale={1.2} />
+      ))}
+      {/* 风筝(风车上空,随风轻摆) */}
+      <FloatSway url={MODELS.kite} grad={toonGrad} position={[-WALK_RADIUS * 0.35 + 6, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45) + 7, WALK_RADIUS * 0.45 - 3]} scale={1.4} amp={0.5} speed={0.9} />
     </group>
   );
 }
@@ -1621,13 +1683,7 @@ function SecretWhale({ posRef, onFound, night }: { posRef: React.RefObject<THREE
     <>
       {/* 观鲸石(地标) */}
       <group position={[lookX, lookY, lookZ]}>
-        <mesh material={mats.rock} position={[0, 1.0, 0]} rotation={[0.12, LOOK_A, 0.06]}>
-          <icosahedronGeometry args={[1.2, 0]} />
-          <Outlines thickness={0.02} color="#1a2230" />
-        </mesh>
-        <mesh material={mats.rock} position={[0.8, 0.4, 0.5]}>
-          <icosahedronGeometry args={[0.5, 0]} />
-        </mesh>
+        <GltfProp url={MODELS.whalerock} grad={grad} position={[0, 0, 0]} rotation={[0, LOOK_A, 0]} scale={0.62} />
         {found && (
           <Html position={[0, 2.8, 0]} center distanceFactor={13} zIndexRange={[45, 0]} style={{ pointerEvents: "none" }} prepend>
             <div
@@ -1655,55 +1711,8 @@ function SecretWhale({ posRef, onFound, night }: { posRef: React.RefObject<THREE
 
       {/* 远海鲸鱼(默认沉在水下,发现后缓缓跃出) */}
       <group ref={whale} position={[whaleX, -80, whaleZ]} rotation={[0, LOOK_A + Math.PI / 2, 0]}>
-        <mesh material={mats.body} scale={[9, 3, 3.6]}>
-          <icosahedronGeometry args={[1, 1]} />
-          <Outlines thickness={0.012} color="#1a2230" />
-        </mesh>
-        <mesh material={mats.belly} position={[0.3, -0.7, 0]} scale={[8, 1.5, 3.1]}>
-          <icosahedronGeometry args={[1, 1]} />
-        </mesh>
-        {/* 夜间生物荧光斑点(白天不显) */}
-        {night &&
-          ([
-            [-6.5, 1.4, 1.7],
-            [-4, 2.0, 0.5],
-            [-2, 1.9, -1.3],
-            [0, 2.3, 1.1],
-            [2, 2.0, -0.7],
-            [4, 1.7, 1.5],
-            [5.6, 1.4, -0.9],
-            [-5, 1.6, -1.6],
-          ] as [number, number, number][]).map((p, k) => (
-            <mesh key={k} material={mats.glow} position={p} scale={0.13 + (k % 3) * 0.05}>
-              <sphereGeometry args={[1, 6, 6]} />
-            </mesh>
-          ))}
-        {/* 尾鳍 */}
-        <mesh material={mats.body} position={[-9, 0.4, 1.2]} rotation={[0.5, 0, Math.PI / 2]} scale={[1.3, 2.4, 0.28]}>
-          <coneGeometry args={[1, 1, 4]} />
-        </mesh>
-        <mesh material={mats.body} position={[-9, 0.4, -1.2]} rotation={[-0.5, 0, Math.PI / 2]} scale={[1.3, 2.4, 0.28]}>
-          <coneGeometry args={[1, 1, 4]} />
-        </mesh>
-        {/* 眼睛(两侧各一,任何角度都能看见) */}
-        <mesh material={mats.eye} position={[6.6, 0.7, 1.7]} scale={0.42}>
-          <sphereGeometry args={[1, 8, 8]} />
-        </mesh>
-        <mesh material={mats.eye} position={[6.6, 0.7, -1.7]} scale={0.42}>
-          <sphereGeometry args={[1, 8, 8]} />
-        </mesh>
-        {/* 喷水 */}
-        <group ref={spout} position={[5.6, 3.0, 0]} visible={false}>
-          <mesh material={mats.spout} position={[0, 0.6, 0]} scale={[0.6, 1.6, 0.6]}>
-            <sphereGeometry args={[1, 8, 8]} />
-          </mesh>
-          <mesh material={mats.spout} position={[0.5, 1.4, 0.3]} scale={0.5}>
-            <sphereGeometry args={[1, 8, 8]} />
-          </mesh>
-          <mesh material={mats.spout} position={[-0.45, 1.5, -0.2]} scale={0.45}>
-            <sphereGeometry args={[1, 8, 8]} />
-          </mesh>
-        </group>
+        {/* glb 鲸鱼:头朝 +X,自带喷水 + 夜间 Emissive_Spots 荧光 */}
+        <GltfProp url={MODELS.whale} grad={grad} position={[0, 0, 0]} scale={2.6} />
       </group>
     </>
   );
@@ -1774,15 +1783,7 @@ function DriftBottles({ posRef, onFind, notes }: { posRef: React.RefObject<THREE
           position={[sp.x, sp.y, sp.z]}
           rotation={[0, sp.rot, 0.95]}
         >
-          <mesh material={mats.glass} position={[0, 0.18, 0]}>
-            <cylinderGeometry args={[0.1, 0.11, 0.32, 10]} />
-          </mesh>
-          <mesh material={mats.glass} position={[0, 0.4, 0]}>
-            <cylinderGeometry args={[0.045, 0.08, 0.14, 8]} />
-          </mesh>
-          <mesh material={mats.cork} position={[0, 0.49, 0]}>
-            <cylinderGeometry args={[0.045, 0.045, 0.06, 8]} />
-          </mesh>
+          <GltfProp url={MODELS.driftbottle} grad={grad} position={[0, 0.18, 0]} scale={0.5} />
           {found[i] && (
             <Html position={[0, 1.0, 0]} center distanceFactor={9} zIndexRange={[44, 0]} style={{ pointerEvents: "none" }} prepend>
               <div
@@ -1993,6 +1994,7 @@ function ExploreScene({
       </mesh>
 
       <Player inputRef={inputRef} posRef={posRef} avatar={avatar} />
+      <Companion posRef={posRef} />
       <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={onNear} />
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
@@ -2163,6 +2165,16 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const done = collected >= total;
   const imprintsDone = hasImprints && pickedImprints.length >= imp.length;
   const allGifted = giftedIds.length >= NPC_TOTAL; // 送完岛上所有人 → 庆祝
+
+  // —— 音景：进入俯冲、彩蛋发现、完成峰值（均为 sfx.ts 零素材合成音，跟随音乐静音）——
+  useEffect(() => { playSfx("whoosh"); }, []); // 俯冲入岛
+  useEffect(() => { if (whaleFound) playSfx("chime"); }, [whaleFound]); // 🐋 鲸落之海
+  useEffect(() => { if (bottles.length > 0) playSfx("collect"); }, [bottles.length]); // 🍾 拾到漂流瓶
+  useEffect(() => { if (giftedIds.length > 0) playSfx("tap"); }, [giftedIds.length]); // 送出一个心愿
+  useEffect(() => { if (done) playSfx("bloom"); }, [done]); // 心愿收齐
+  useEffect(() => { if (imprintsDone) playSfx("bloom"); }, [imprintsDone]); // 记忆之树成形
+  useEffect(() => { if (allGifted) playSfx("bloom"); }, [allGifted]); // 温暖了全岛
+
   const hearts = useMemo(
     () =>
       Array.from({ length: 26 }, (_, i) => ({
@@ -2185,7 +2197,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         frameloop="always"
       >
         <Suspense fallback={null}>
-          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => setCollected((c) => c + 1)} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} />
+          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} />
         </Suspense>
       </Canvas>
 
