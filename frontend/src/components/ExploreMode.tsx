@@ -533,8 +533,22 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
       }),
     [imprints],
   );
-  const mats = useMemo(() => imprints.map((im) => new THREE.MeshStandardMaterial({ color: im.color, emissive: im.color, emissiveIntensity: 2.6, toneMapped: false })), [imprints]);
+  const mats = useMemo(() => imprints.map((im) => new THREE.MeshStandardMaterial({ color: im.color, emissive: im.color, emissiveIntensity: 1.4, toneMapped: false })), [imprints]);
   useEffect(() => () => mats.forEach((m) => m.dispose()), [mats]);
+  // 印记按情绪取不同形状(呼应需求文档的「光点/贝壳/星/花/雨滴」)
+  const geos = useMemo(
+    () => ({
+      star: new THREE.OctahedronGeometry(0.26, 0), // 星/光点
+      shell: new THREE.ConeGeometry(0.24, 0.34, 7), // 贝壳
+      flower: new THREE.IcosahedronGeometry(0.24, 0), // 花苞
+      spark: new THREE.TetrahedronGeometry(0.3, 0), // 火花(尖)
+      drop: new THREE.SphereGeometry(0.2, 12, 12), // 雨滴/水珠
+    }),
+    [],
+  );
+  useEffect(() => () => Object.values(geos).forEach((g) => g.dispose()), [geos]);
+  const shapeOf = (e: string): "star" | "shell" | "flower" | "spark" | "drop" =>
+    e === "happy" ? "star" : e === "calm" ? "shell" : e === "lonely" ? "flower" : e === "angry" ? "spark" : "drop";
   useFrame((state) => {
     const pos = posRef.current;
     if (!pos) return;
@@ -556,13 +570,52 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
     <>
       {spots.map((s, i) => (
         <group key={i} ref={(el) => { refs.current[i] = el; }} position={[s.x, exGroundY(s.x, s.z) + 0.7, s.z]}>
-          <mesh material={mats[i]}>
-            <octahedronGeometry args={[0.26, 0]} />
-          </mesh>
+          <mesh geometry={geos[shapeOf(imprints[i].emotion)]} material={mats[i]} />
           <pointLight color={imprints[i].color} intensity={2.4} distance={3} decay={1.6} />
         </group>
       ))}
     </>
+  );
+}
+
+// 记忆之树:拾齐所有心灵印记后,在岛心长出——树冠是你收集到的每段情绪之色,轻轻明灭。
+function MemoryTree({ colors }: { colors: string[] }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const orbRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const baseY = exGroundY(0, 0);
+  const grad = useMemo(() => makeToonGradient(), []);
+  const trunkMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#6a533c", gradientMap: grad }), [grad]);
+  const orbMats = useMemo(() => colors.map((c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 1.5, toneMapped: false })), [colors]);
+  useEffect(() => () => { grad.dispose(); trunkMat.dispose(); orbMats.forEach((m) => m.dispose()); }, [grad, trunkMat, orbMats]);
+  const orbs = useMemo(
+    () =>
+      colors.map((_, i) => {
+        const a = (i / Math.max(1, colors.length)) * Math.PI * 2 + i * 0.7;
+        const r = 0.6 + (i % 2) * 0.5;
+        return { x: Math.cos(a) * r, y: 3.3 + (i % 3) * 0.6, z: Math.sin(a) * r };
+      }),
+    [colors],
+  );
+  useFrame((s) => {
+    const t = s.clock.elapsedTime;
+    if (groupRef.current) groupRef.current.position.y = baseY + Math.sin(t * 0.8) * 0.06;
+    orbRefs.current.forEach((m, i) => {
+      if (m) m.scale.setScalar(0.85 + Math.sin(t * 1.6 + i) * 0.18);
+    });
+  });
+  return (
+    <group ref={groupRef} position={[0, baseY, 0]}>
+      <mesh material={trunkMat} position={[0, 1.55, 0]}>
+        <cylinderGeometry args={[0.18, 0.34, 3.1, 7]} />
+        <Outlines thickness={0.02} color="#1a2230" />
+      </mesh>
+      <pointLight position={[0, 3.8, 0]} color="#fff0c8" intensity={2.6} distance={8} decay={1.5} />
+      {orbs.map((o, i) => (
+        <mesh key={i} ref={(el) => { orbRefs.current[i] = el; }} material={orbMats[i]} position={[o.x, o.y, o.z]}>
+          <icosahedronGeometry args={[0.2, 0]} />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
@@ -1838,6 +1891,7 @@ function ExploreScene({
   bottleNotes,
   imprints,
   onPickImprint,
+  treeColors,
 }: {
   visual: SceneVisual;
   inputRef: React.RefObject<Input>;
@@ -1852,6 +1906,7 @@ function ExploreScene({
   bottleNotes?: string[];
   imprints: Imprint[];
   onPickImprint: (i: number) => void;
+  treeColors: string[];
 }) {
   const terrain = useMemo(() => buildExploreTerrain(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
@@ -1942,6 +1997,7 @@ function ExploreScene({
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
       {imprints.length > 0 ? <MemoryImprints posRef={posRef} imprints={imprints} onPick={onPickImprint} /> : <Wishes posRef={posRef} color={visual.accent} onCollect={onCollect} total={total} />}
+      {treeColors.length > 0 && <MemoryTree colors={treeColors} />}
 
       {/* 手绘后期:墨线 + 色阶 + 纸纹 */}
       <EffectComposer>
@@ -2039,8 +2095,8 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const keys = useRef<Set<string>>(new Set());
   const total = 5;
   const [collected, setCollected] = useState(0);
-  const [pickedImprints, setPickedImprints] = useState<number[]>([]); // 已拾起的心灵印记下标
   const imp = imprints;
+  const [pickedImprints, setPickedImprints] = useState<number[]>([]); // 已拾起的心灵印记下标
   const [shownImprint, setShownImprint] = useState<Imprint | null>(null); // 当前展开的来源卡
   const hasImprints = imp.length > 0;
   const [nearNpc, setNearNpc] = useState(-1); // 当前可搭话的 NPC(-1=无),由场景内 onNear 回报
@@ -2129,7 +2185,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         frameloop="always"
       >
         <Suspense fallback={null}>
-          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => setCollected((c) => c + 1)} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} />
+          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => setCollected((c) => c + 1)} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} />
         </Suspense>
       </Canvas>
 
