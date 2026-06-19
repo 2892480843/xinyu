@@ -581,21 +581,22 @@ export default function Home() {
                   岛屿记得你上次的 {EMOTION_META[memories[0].emotion]?.label ?? "心事"}，欢迎回来
                 </motion.p>
               )}
-              {(memories.length > 0 || artifacts.length > 0) && (
-                <div className="text-center mt-2 flex items-center justify-center gap-3">
-                  {memories.length > 0 && (
-                    <button onClick={() => setReplayMode("self")} className="btn-link">
-                      回望这些天 ›
-                    </button>
-                  )}
+              <div className="text-center mt-2 flex items-center justify-center gap-3">
+                {memories.length > 0 && (
+                  <button onClick={() => setReplayMode("self")} className="btn-link">
+                    回望这些天 ›
+                  </button>
+                )}
+                {(memories.length > 0 || artifacts.length > 0) && (
                   <button onClick={() => setIslandMapOpen(true)} className="btn-link">
                     登高望岛 ›
                   </button>
-                  <button onClick={() => setExploreOpen(true)} className="btn-link">
-                    上岛走走 ›
-                  </button>
-                </div>
-              )}
+                )}
+                {/* 自由探索不依赖历史,任何时候都能上岛走走 */}
+                <button onClick={() => setExploreOpen(true)} className="btn-link">
+                  上岛走走 ›
+                </button>
+              </div>
             </motion.div>
           )}
 
