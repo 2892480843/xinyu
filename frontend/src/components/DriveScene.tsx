@@ -143,18 +143,27 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
     s.clk += dt;
     const road = roadRef.current;
 
-    // 首次落地:原点周围宽网格取命中中位数 = 稳健路面高度
+    // 首次落地:全图宽网格高空起射,取「较低 40% 命中」= 地面(树冠/背景在上方),
+    // 把车出生点挪到地面群中心 + 取其高度 → 一定落在地面上(背景把 bbox 中心撑偏到空地,故不能用原点)
     if (!found.current && road) {
-      const ys: number[] = [];
-      for (let dx = -80; dx <= 80; dx += 32) {
-        for (let dz = -80; dz <= 80; dz += 32) {
-          const y = castGround(dx, dz, 2000, 4000); // 高空起射 → 命中很高的路面(出生不再悬空)
-          if (y !== null) ys.push(y);
+      const hits: { x: number; z: number; y: number }[] = [];
+      const R = FIT_SIZE * 0.46;
+      const step = R / 6;
+      for (let dx = -R; dx <= R; dx += step) {
+        for (let dz = -R; dz <= R; dz += step) {
+          const y = castGround(dx, dz, 2000, 4000); // 高空起射
+          if (y !== null) hits.push({ x: dx, z: dz, y });
         }
       }
-      if (ys.length) {
-        ys.sort((a, b) => a - b);
-        groundY.current = ys[Math.floor(ys.length / 2)];
+      if (hits.length) {
+        const ys = hits.map((h) => h.y).sort((a, b) => a - b);
+        const lo = ys[Math.floor((ys.length - 1) * 0.4)]; // 较低 40% 高度 = 地面
+        const ground = hits.filter((h) => h.y <= lo);
+        let sx = 0, sz = 0, sy = 0;
+        for (const h of ground) { sx += h.x; sz += h.z; sy += h.y; }
+        s.x = sx / ground.length;
+        s.z = sz / ground.length;
+        groundY.current = sy / ground.length;
         found.current = true;
       }
     }

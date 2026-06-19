@@ -1116,6 +1116,16 @@ function Player({
     pos.z += vel.current.z * dt;
     // 障碍碰撞:把玩家推出树/房子/地标,并沿其滑行(障碍是整柱高,跳跃也穿不过去)
     resolveCollisions(collidersRef?.current ?? null, pos, vel.current, PLAYER_COL_R);
+    // 停着的车也挡住玩家(开车时玩家在车里,跳过):动态圆碰撞,人不能穿过车身
+    if (!carState.driving) {
+      const cdx = pos.x - carState.x, cdz = pos.z - carState.z, cmd = 2.4 + PLAYER_COL_R, cd2 = cdx * cdx + cdz * cdz;
+      if (cd2 < cmd * cmd && cd2 > 1e-6) {
+        const cd = Math.sqrt(cd2), cnx = cdx / cd, cnz = cdz / cd;
+        pos.x = carState.x + cnx * cmd; pos.z = carState.z + cnz * cmd;
+        const cvn = vel.current.x * cnx + vel.current.z * cnz;
+        if (cvn < 0) { vel.current.x -= cvn * cnx; vel.current.z -= cvn * cnz; }
+      }
+    }
     const speedMag = Math.hypot(vel.current.x, vel.current.z);
 
     // 限制在岛上:海湾一侧允许多走出去一点(踏进浅滩),其余按 WALK_RADIUS

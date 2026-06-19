@@ -5,11 +5,13 @@ import { useImmersion } from "../hooks/useImmersion";
 import { EMOTION_META } from "../lib/sceneMap";
 import IslandStatePanel from "./IslandStatePanel";
 import IslandChoiceCards from "./IslandChoiceCards";
+import IslandChat from "./IslandChat";
 import { SPRING_TAP } from "../lib/motion";
 
 interface Props {
   result: ReflectResponse;
   userId: string;
+  seedMood?: string; // 最初那段心情原文，作为多轮对话的种子
   onReset: () => void;
   onActed: (result: IslandActResponse) => void;
   onInscribed?: () => void;
@@ -72,10 +74,11 @@ const VOICE_TUNING: Record<string, { rate: number; pitch: number }> = {
   angry: { rate: 0.92, pitch: 0.98 },
 };
 
-export default function NarrativeCard({ result, userId, onReset, onActed, onInscribed, onNarrativeDone }: Props) {
+export default function NarrativeCard({ result, userId, seedMood, onReset, onActed, onInscribed, onNarrativeDone }: Props) {
   const meta = EMOTION_META[result.emotion] ?? { label: result.emotion, palette: "" };
   const typed = useTypewriter(result.narrative);
   const done = typed.length >= result.narrative.length;
+  const [chatOpen, setChatOpen] = useState(false); // 「继续聊聊」展开多轮对话
 
   // 叙事打完最后一字 → 触发一次「生长瞬间」（Home 据此播萌发音 + 岛屿光涌）。
   // 按 narrative 文本去重，避免同一段叙事重复触发（narrative 阶段不重挂载）。
@@ -391,6 +394,16 @@ export default function NarrativeCard({ result, userId, onReset, onActed, onInsc
             {speechSupported ? (speaking ? "停止朗读" : "朗读叙事") : "朗读不可用"}
           </motion.button>
           <motion.button
+            type="button"
+            onClick={() => setChatOpen((v) => !v)}
+            whileHover={{ y: -1 }}
+            whileTap={{ scale: 0.96 }}
+            transition={SPRING_TAP}
+            className="btn-ghost"
+          >
+            {chatOpen ? "收起对话" : "继续聊聊 ›"}
+          </motion.button>
+          <motion.button
             onClick={onReset}
             whileHover={{ y: -1 }}
             whileTap={{ scale: 0.96 }}
@@ -400,6 +413,10 @@ export default function NarrativeCard({ result, userId, onReset, onActed, onInsc
             再说一次
           </motion.button>
         </motion.div>
+      )}
+
+      {done && chatOpen && (
+        <IslandChat userId={userId} seedUser={seedMood ?? ""} seedNarrative={result.narrative} />
       )}
     </motion.div>
   );

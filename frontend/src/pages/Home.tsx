@@ -8,7 +8,6 @@ const ExploreMode = lazy(() => import("../components/ExploreMode"));
 import Particles from "../components/Particles";
 import MoodInput from "../components/MoodInput";
 import NarrativeCard from "../components/NarrativeCard";
-import IslandChat from "../components/IslandChat";
 import IslandAssistant from "../components/IslandAssistant";
 import MindMap from "../components/MindMap";
 import SafetyNotice from "../components/SafetyNotice";
@@ -663,14 +662,12 @@ export default function Home() {
               <NarrativeCard
                 result={result}
                 userId={identity.user_id}
+                seedMood={lastMood}
                 onReset={reset}
                 onActed={handleActed}
                 onInscribed={() => fetchArtifacts(identity.user_id).then(setArtifacts).catch(() => {})}
                 onNarrativeDone={handleNarrativeDone}
               />
-              {result.narrative && (
-                <IslandChat userId={identity.user_id} seedUser={lastMood} seedNarrative={result.narrative} />
-              )}
             </motion.div>
           )}
 

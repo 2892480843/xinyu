@@ -101,10 +101,10 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
               type="button"
               disabled={loading || submitting}
               onClick={fillDemo}
-              title="路演模式：依次填入焦虑 / 疲惫 / 开心 / 高风险示例"
+              title="试一句：依次填入焦虑 / 疲惫 / 开心 / 高风险示例"
               className="chip disabled:opacity-40"
             >
-              路演 <span className="tnum">{demoIndex + 1}/{DEMO_SCRIPT.length}</span> ▸
+              试一句 <span className="tnum">{demoIndex + 1}/{DEMO_SCRIPT.length}</span> ▸
             </button>
           )}
         </div>

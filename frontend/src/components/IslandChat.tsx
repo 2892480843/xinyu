@@ -14,7 +14,6 @@ export default function IslandChat({
   seedUser: string;
   seedNarrative: string;
 }) {
-  const [open, setOpen] = useState(false);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -46,23 +45,13 @@ export default function IslandChat({
     }
   };
 
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="btn-link mt-3 text-white/60 text-caption tracking-wider"
-      >
-        继续跟岛屿说说 ›
-      </button>
-    );
-  }
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className="mt-3 w-full"
+      className="mt-4 w-full"
     >
+      <p className="text-caption text-white/40 mb-2 tracking-wider">继续跟岛屿说说</p>
       {turns.length > 0 && (
         <div className="space-y-2 mb-2.5 max-h-64 overflow-y-auto pr-1">
           {turns.map((t, i) => (
