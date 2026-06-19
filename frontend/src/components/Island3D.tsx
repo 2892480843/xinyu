@@ -474,10 +474,13 @@ function Rocks({ count }: { count: number }) {
 }
 
 // 山顶薄雪:近峰顶散布的扁平白色雪块,贴着坡面。
-function SnowCaps({ count }: { count: number }) {
+function SnowCaps({ count, night }: { count: number; night: boolean }) {
   const spots = useMemo(() => scatterOnIsland(count, 88, 1.32, 1.72), [count]);
   const geo = useMemo(() => new THREE.IcosahedronGeometry(0.24, 0), []);
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#eef5f7", emissive: new THREE.Color("#d8e6ec"), emissiveIntensity: 0.22, roughness: 0.85, flatShading: true }), []);
+  const mat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#eef5f7", emissive: new THREE.Color(night ? "#86c4e0" : "#d8e6ec"), emissiveIntensity: night ? 0.5 : 0.22, roughness: 0.85, flatShading: true }),
+    [night],
+  );
   const ref = useRef<THREE.InstancedMesh>(null);
   useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
   useLayoutEffect(() => {
@@ -494,6 +497,48 @@ function SnowCaps({ count }: { count: number }) {
     mesh.instanceMatrix.needsUpdate = true;
   }, [spots]);
   return <instancedMesh ref={ref} args={[geo, mat, spots.length]} frustumCulled={false} />;
+}
+
+// 蜿蜒石径:从山脚螺旋盘上,一路通到峰顶辉光核。踩着地形高度铺,逐块朝路径方向。
+function Path() {
+  const tiles = useMemo(() => {
+    const pts: { x: number; z: number; y: number }[] = [];
+    const steps = 60;
+    const startAng = 2.2;
+    for (let i = 0; i < steps; i++) {
+      const t = i / (steps - 1);
+      const ang = startAng + t * Math.PI * 2.3; // 约 1.15 圈,前面看是一条连贯的路
+      const r = ISLAND_RADIUS * (0.86 - t * 0.74); // 山脚 → 近峰顶
+      const px = Math.cos(ang) * r;
+      const py = Math.sin(ang) * r;
+      const h = islandHeight(px, py);
+      if (h < 0.06) continue; // 不铺进水里
+      pts.push({ x: px, z: -py, y: h + 0.02 });
+    }
+    return pts.map((p, i) => {
+      const nxt = pts[Math.min(i + 1, pts.length - 1)];
+      const yaw = Math.atan2(nxt.x - p.x, nxt.z - p.z);
+      return { ...p, yaw, s: 0.85 + hash2(p.x * 9.1, p.z * 9.1) * 0.4 };
+    });
+  }, []);
+  const geo = useMemo(() => new THREE.BoxGeometry(0.36, 0.05, 0.28), []);
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#cdbf9f", roughness: 0.95, metalness: 0, flatShading: true }), []);
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const d = new THREE.Object3D();
+    tiles.forEach((t, i) => {
+      d.position.set(t.x, t.y, t.z);
+      d.rotation.set(0, t.yaw, 0);
+      d.scale.set(t.s, 1, t.s);
+      d.updateMatrix();
+      mesh.setMatrixAt(i, d.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [tiles]);
+  return <instancedMesh ref={ref} args={[geo, mat, tiles.length]} frustumCulled={false} />;
 }
 
 // 飞鸟：低多边形剪影,沿高空缓慢环绕岛屿滑翔 + 振翅(仅沉浸态)。静态时停在散开的初始位。
@@ -726,7 +771,7 @@ function Whale({ animate }: { animate: boolean }) {
 }
 
 // 低多边形岛屿：地形 + 草木(随成长) + 顶部情绪辉光核 + 漂浮心象结晶；整岛轻浮动(坐于海面的"呼吸")
-function Island({ mats, features = [], animate, coreLightRef, tier, accent }: { mats: EmotionMats; features?: string[]; animate: boolean; coreLightRef: React.RefObject<THREE.PointLight | null>; tier: PerfTier; accent: string }) {
+function Island({ mats, features = [], animate, coreLightRef, tier, accent, night }: { mats: EmotionMats; features?: string[]; animate: boolean; coreLightRef: React.RefObject<THREE.PointLight | null>; tier: PerfTier; accent: string; night: boolean }) {
   const terrain = useMemo(() => buildIslandGeometry(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
 
@@ -764,11 +809,12 @@ function Island({ mats, features = [], animate, coreLightRef, tier, accent }: { 
       <Trees count={treeCount} />
       <Flowers count={flowerCount} accent={accent} />
       <Rocks count={rockCount} />
-      <SnowCaps count={snowCount} />
-      {/* 近岸浪花:贴水线一圈柔白雾环,把岛"放"在海面上 */}
+      <SnowCaps count={snowCount} night={night} />
+      <Path />
+      {/* 近岸浪花:贴水线一圈柔白雾环,把岛"放"在海面上;夜里泛冷光 */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
         <ringGeometry args={[2.62, 3.2, 56]} />
-        <meshBasicMaterial color="#e2f3f4" transparent opacity={0.32} depthWrite={false} />
+        <meshBasicMaterial color={night ? "#bfe9f5" : "#e2f3f4"} transparent opacity={night ? 0.46 : 0.32} depthWrite={false} toneMapped={false} />
       </mesh>
       {/* 顶部情绪辉光核：随情绪 accent 变色，呼吸式浮动，局部点光晕染地形 */}
       <Float speed={animate ? 1.4 : 0} rotationIntensity={animate ? 0.5 : 0} floatIntensity={animate ? 0.8 : 0}>
@@ -827,7 +873,7 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
         <pointLight color={initial.celestial} intensity={28} distance={40} decay={1.4} />
       </group>
 
-      <Island mats={mats} features={features} animate={animate} coreLightRef={coreLightRef} tier={tier} accent={visual.accent} />
+      <Island mats={mats} features={features} animate={animate} coreLightRef={coreLightRef} tier={tier} accent={visual.accent} night={!!visual.stars} />
 
       {/* 反射水面 + 涟漪（深海玻璃感核心）。颜色由 EmotionTint 驱动 */}
       <RippleWater waterRef={waterRef} initialSea={initial.sea} animate={animate} tier={tier} />
