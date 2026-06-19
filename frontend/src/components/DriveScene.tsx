@@ -119,12 +119,12 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
   useEffect(() => () => { dustGeo.dispose(); dustMat.dispose(); }, [dustGeo, dustMat]);
 
   // 向下射线取地面高度;命中时把法线写入 _hitN。返回 y 或 null。
-  const castGround = (x: number, z: number): number | null => {
+  const castGround = (x: number, z: number, fromY?: number, far = 50): number | null => {
     const road = roadRef.current;
     if (!road) return null;
-    _o.set(x, groundY.current + 12, z);
+    _o.set(x, fromY ?? groundY.current + 8, z); // 默认从车上方一点点打(忽略高处树冠);出生时传高空值
     ray.set(_o, _down);
-    ray.far = 60;
+    ray.far = far;
     const h = ray.intersectObject(road, true);
     if (!h.length) return null;
     if (h[0].face) {
@@ -148,7 +148,7 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
       const ys: number[] = [];
       for (let dx = -80; dx <= 80; dx += 32) {
         for (let dz = -80; dz <= 80; dz += 32) {
-          const y = castGround(dx, dz);
+          const y = castGround(dx, dz, 2000, 4000); // 高空起射 → 命中很高的路面(出生不再悬空)
           if (y !== null) ys.push(y);
         }
       }
@@ -167,7 +167,7 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
     const frac = Math.min(1, Math.abs(s.speed) / MAX_SPEED);
 
     // 转向:A/方向左 = 左,D/方向右 = 右(inp.x:左 -1 右 +1);低速灵活、高速沉稳,静止不转
-    const turnRate = (1.9 - frac * 0.95) * (Math.abs(s.speed) > 0.4 ? 1 : 0);
+    const turnRate = (2.4 - frac * 1.1) * (Math.abs(s.speed) > 0.25 ? 1 : 0);
     s.heading += inp.x * turnRate * dt * (s.speed >= 0 ? 1 : -1);
 
     // 试探前进位置
@@ -181,11 +181,11 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
       _fdir.set(Math.sin(s.heading) * dir, 0, Math.cos(s.heading) * dir);
       _o.set(s.x, groundY.current + 1.0, s.z);
       ray.set(_o, _fdir);
-      ray.far = 3.0;
+      ray.far = 2.2;
       const fh = ray.intersectObject(road, true);
       if (fh.length && fh[0].face) {
         _hitN.copy(fh[0].face.normal).transformDirection(fh[0].object.matrixWorld);
-        if (Math.abs(_hitN.y) < 0.6) blocked = true; // 垂直面 = 障碍
+        if (Math.abs(_hitN.y) < 0.5) blocked = true; // 仅近乎垂直的面(树/岩/壁)才挡,斜坡放行
       }
     }
     if (blocked) s.speed *= 0.25;
@@ -211,7 +211,7 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
       if (cy !== null) top = Math.max(top, cy);
       if (fy !== null) top = Math.max(top, fy);
       if (ry !== null) top = Math.max(top, ry);
-      if (top > -1e8) groundY.current += (top - groundY.current) * Math.min(1, dt * 14);
+      if (top > -1e8) groundY.current += (top - groundY.current) * Math.min(1, dt * 22);
     }
 
     const gy = groundY.current;
@@ -306,6 +306,43 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
       inputRef.current.y = gas.current;
     }
   };
+  // 自带键盘:A/← 左,D/→ 右,W/↑ 前,S/↓ 后;并阻止方向键滚动页面
+  useEffect(() => {
+    const sharedInput = inputRef.current;
+    const keys = new Set<string>();
+    const recompute = () => {
+      let x = 0;
+      let y = 0;
+      if (keys.has("a") || keys.has("arrowleft")) x -= 1;
+      if (keys.has("d") || keys.has("arrowright")) x += 1;
+      if (keys.has("w") || keys.has("arrowup")) y -= 1;
+      if (keys.has("s") || keys.has("arrowdown")) y += 1;
+      if (inputRef.current) {
+        inputRef.current.x = x;
+        inputRef.current.y = y;
+      }
+    };
+    const down = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (k === "arrowup" || k === "arrowdown" || k === "arrowleft" || k === "arrowright" || k === " ") e.preventDefault();
+      keys.add(k);
+      recompute();
+    };
+    const up = (e: KeyboardEvent) => {
+      keys.delete(e.key.toLowerCase());
+      recompute();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      if (sharedInput) {
+        sharedInput.x = 0;
+        sharedInput.y = 0;
+      }
+    };
+  }, [inputRef]);
   return (
     <div className="fixed inset-0 z-40" style={{ background: "linear-gradient(to bottom,#9fc6da,#cfe3ea)" }}>
       <Canvas camera={{ position: [0, 9, 18], fov: 56 }} dpr={[1, 1.7]} gl={{ antialias: true }}>
