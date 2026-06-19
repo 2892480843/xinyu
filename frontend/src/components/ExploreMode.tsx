@@ -1692,6 +1692,73 @@ function DriftBottles({ posRef, onFind, notes }: { posRef: React.RefObject<THREE
   );
 }
 
+// 地表草丛:走在岛上脚边的随风草(实例化一张绘制),避开中央广场与沙滩;toon + 双色 + 顶部随风摆。
+function GroundGrass({ count, animate, grad }: { count: number; animate: boolean; grad: THREE.DataTexture }) {
+  const blades = useMemo(() => {
+    const out: { x: number; z: number; y: number; s: number; rot: number }[] = [];
+    let tries = 0;
+    const maxR = WALK_RADIUS * 0.66; // 集中在常走的核心区(巨岛全铺不现实),外圈交给树
+    while (out.length < count && tries < count * 6) {
+      tries += 1;
+      const a = hash2(tries * 1.7, 9.1) * Math.PI * 2;
+      const r = Math.sqrt(hash2(tries * 2.3, 4.7)) * maxR;
+      if (r < 6) continue; // 避开中央广场
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      const h = exGroundY(x, z);
+      if (h < 0.2) continue; // 避开沙滩 / 水
+      out.push({ x, z, y: h, s: 0.7 + hash2(tries, 3.1) * 0.7, rot: hash2(tries, 7.7) * 6.28 });
+    }
+    return out;
+  }, [count]);
+  const geo = useMemo(() => new THREE.ConeGeometry(0.06, 0.4, 5, 2), []);
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const shaderRef = useRef<THREE.WebGLProgramParametersWithUniforms | null>(null);
+  const material = useMemo(() => {
+    const m = new THREE.MeshToonMaterial({ color: "#ffffff", gradientMap: grad, emissive: new THREE.Color("#3f7a4f"), emissiveIntensity: 0.3 });
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uTime = { value: 0 };
+      sh.vertexShader =
+        "uniform float uTime;\n" +
+        sh.vertexShader.replace(
+          "#include <begin_vertex>",
+          `#include <begin_vertex>
+           float bladeH = clamp((position.y + 0.2) / 0.4, 0.0, 1.0);
+           float ph = instanceMatrix[3].x + instanceMatrix[3].z;
+           float sway = sin(uTime * 1.5 + ph * 0.7) * 0.12 + sin(uTime * 2.6 + ph * 1.2) * 0.05;
+           transformed.x += sway * bladeH * bladeH;
+           transformed.z += sway * 0.4 * bladeH * bladeH;`,
+        );
+      shaderRef.current = sh;
+    };
+    return m;
+  }, [grad]);
+  useEffect(() => () => { geo.dispose(); material.dispose(); }, [geo, material]);
+  useLayoutEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const d = new THREE.Object3D();
+    const cCool = new THREE.Color("#5aa06a");
+    const cWarm = new THREE.Color("#9ac76e");
+    const col = new THREE.Color();
+    blades.forEach((b, i) => {
+      d.position.set(b.x, b.y + 0.2 * b.s, b.z);
+      d.rotation.set(0, b.rot, 0);
+      d.scale.setScalar(b.s);
+      d.updateMatrix();
+      mesh.setMatrixAt(i, d.matrix);
+      col.copy(cCool).lerp(cWarm, hash2(b.x * 0.7, b.z * 0.7));
+      mesh.setColorAt(i, col);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [blades]);
+  useFrame((s) => {
+    if (animate && shaderRef.current) shaderRef.current.uniforms.uTime.value = s.clock.elapsedTime;
+  });
+  return <instancedMesh ref={meshRef} args={[geo, material, blades.length]} frustumCulled={false} />;
+}
+
 function ExploreScene({
   visual,
   inputRef,
@@ -1759,6 +1826,8 @@ function ExploreScene({
       <mesh geometry={terrain} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <meshToonMaterial vertexColors gradientMap={toonGrad} />
       </mesh>
+      {/* 脚边随风草丛 */}
+      <GroundGrass count={52000} animate grad={toonGrad} />
       {/* 程序小镇 */}
       <Town toonGrad={toonGrad} accent={visual.accent} />
       {/* 海面(大) */}
