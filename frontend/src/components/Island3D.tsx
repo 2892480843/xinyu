@@ -46,7 +46,7 @@ function createSkyGradient() {
 // 水面涟漪扰动图：程序生成的正弦干涉噪声（周期性 → 无缝平铺），驱动反射 UV 微扰。
 // advance() 每帧滚动 offset，让倒影随微浪荡漾；命令式写入封在普通函数里绕开 react-hooks 规则。
 function createRippleDistortion() {
-  const size = 128;
+  const size = 256;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
@@ -76,7 +76,7 @@ function createRippleDistortion() {
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(3, 3);
+  texture.repeat.set(2, 2);
   const advance = (dt: number) => {
     texture.offset.x += dt * 0.03;
     texture.offset.y += dt * 0.015;
@@ -102,16 +102,16 @@ function RippleWater({ waterRef, initialSea, animate, tier }: { waterRef: React.
           waterRef.current = m;
         }}
         // 弱设备：反射分辨率/模糊大幅压低，省 GPU
-        resolution={hi ? 256 : 128}
+        resolution={hi ? 384 : 160}
         mixBlur={1}
-        mixStrength={hi ? 6 : 4}
+        mixStrength={hi ? 5 : 3.5}
         blur={hi ? [260, 80] : [120, 40]}
         mirror={0.6}
         depthScale={1.1}
         minDepthThreshold={0.3}
         maxDepthThreshold={1.2}
         distortionMap={ripple.texture}
-        distortion={hi ? 0.4 : 0.28}
+        distortion={hi ? 0.22 : 0.16}
         color={initialSea}
         roughness={0.82}
         metalness={0.25}
@@ -333,19 +333,19 @@ function scatterOnIsland(count: number, seed: number, minH: number, maxH: number
 
 // 实例化草地 + 顶点风场：每株草顶端随风摆动(底部固定)，仅沉浸态推进。
 function Grass({ count, animate }: { count: number; animate: boolean }) {
-  const blades = useMemo(() => scatterOnIsland(count, 31, 0.12, 1.5), [count]);
-  const geo = useMemo(() => new THREE.ConeGeometry(0.05, 0.42, 4, 2), []);
+  const blades = useMemo(() => scatterOnIsland(count, 31, 0.1, 1.02), [count]); // 草只长在中低坡,山顶留白
+  const geo = useMemo(() => new THREE.ConeGeometry(0.055, 0.18, 5, 2), []); // 更矮更圆的草簇,不再是扎人的尖刺
   useEffect(() => () => geo.dispose(), [geo]);
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const shaderRef = useRef<THREE.WebGLProgramParametersWithUniforms | null>(null);
   const material = useMemo(() => {
-    const m = new THREE.MeshStandardMaterial({ color: "#5fa67a", roughness: 0.95, metalness: 0, flatShading: true });
+    const m = new THREE.MeshStandardMaterial({ color: "#ffffff", emissive: new THREE.Color("#386f4c"), emissiveIntensity: 0.32, roughness: 0.95, metalness: 0, flatShading: true });
     m.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = { value: 0 };
       sh.vertexShader = "uniform float uTime;\n" + sh.vertexShader.replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>
-         float bladeH = clamp((position.y + 0.21) / 0.42, 0.0, 1.0);
+         float bladeH = clamp((position.y + 0.09) / 0.18, 0.0, 1.0);
          float ph = instanceMatrix[3].x + instanceMatrix[3].z;
          float sway = sin(uTime * 1.6 + ph * 0.8) * 0.11 + sin(uTime * 2.7 + ph * 1.3) * 0.04;
          transformed.x += sway * bladeH * bladeH;
@@ -360,14 +360,20 @@ function Grass({ count, animate }: { count: number; animate: boolean }) {
     const mesh = meshRef.current;
     if (!mesh) return;
     const dummy = new THREE.Object3D();
+    const cCool = new THREE.Color("#6ab47e");
+    const cWarm = new THREE.Color("#a6d27f");
+    const col = new THREE.Color();
     blades.forEach((b, i) => {
-      dummy.position.set(b.x, b.y + 0.2 * b.s, b.z);
+      dummy.position.set(b.x, b.y + 0.09 * b.s, b.z);
       dummy.rotation.set(0, b.rot, 0);
       dummy.scale.setScalar(b.s);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
+      col.copy(cCool).lerp(cWarm, hash2(b.x * 5.1, b.z * 5.1)); // 冷暖两种绿,逐株打散
+      mesh.setColorAt(i, col);
     });
     mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }, [blades]);
   useFrame((state) => {
     if (animate && shaderRef.current) shaderRef.current.uniforms.uTime.value = state.clock.elapsedTime;
@@ -377,30 +383,117 @@ function Grass({ count, animate }: { count: number; animate: boolean }) {
 
 // 低多边形树(数量随成长)：树干 + 二段树冠，静态栽在地形上(随整岛轻浮动)。
 function Trees({ count }: { count: number }) {
-  const trees = useMemo(() => scatterOnIsland(count, 97, 0.35, 1.25), [count]);
+  const trees = useMemo(() => scatterOnIsland(count, 97, 0.35, 1.05), [count]);
   const trunkGeo = useMemo(() => new THREE.CylinderGeometry(0.035, 0.06, 0.5, 5), []);
-  const leafGeo = useMemo(() => new THREE.IcosahedronGeometry(0.34, 0), []);
+  const leafBig = useMemo(() => new THREE.IcosahedronGeometry(0.34, 0), []);
+  const leafTop = useMemo(() => new THREE.IcosahedronGeometry(0.22, 0), []);
+  const pineGeo = useMemo(() => new THREE.ConeGeometry(0.3, 0.55, 6), []);
   const trunkMat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#5b4636", roughness: 1, flatShading: true }), []);
   const leafMat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#4f9e72", roughness: 0.9, flatShading: true }), []);
+  const leaf2Mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#6fb880", roughness: 0.9, flatShading: true }), []); // 暖亮绿做树冠层次
+  const pineMat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#3f8a64", roughness: 0.9, flatShading: true }), []); // 针叶冷绿
   useEffect(
     () => () => {
-      trunkGeo.dispose();
-      leafGeo.dispose();
-      trunkMat.dispose();
-      leafMat.dispose();
+      [trunkGeo, leafBig, leafTop, pineGeo].forEach((g) => g.dispose());
+      [trunkMat, leafMat, leaf2Mat, pineMat].forEach((m) => m.dispose());
     },
-    [trunkGeo, leafGeo, trunkMat, leafMat],
+    [trunkGeo, leafBig, leafTop, pineGeo, trunkMat, leafMat, leaf2Mat, pineMat],
   );
   return (
     <>
-      {trees.map((t, i) => (
-        <group key={i} position={[t.x, t.y, t.z]} rotation={[0, t.rot, 0]} scale={t.s}>
-          <mesh geometry={trunkGeo} material={trunkMat} position={[0, 0.25, 0]} />
-          <mesh geometry={leafGeo} material={leafMat} position={[0, 0.64, 0]} />
-        </group>
-      ))}
+      {trees.map((t, i) => {
+        const conifer = hash2(97 + i, 8.8) < 0.34; // ~1/3 针叶松
+        const warm = hash2(97 + i, 4.5) > 0.58;
+        return (
+          <group key={i} position={[t.x, t.y, t.z]} rotation={[0, t.rot, 0]} scale={t.s}>
+            <mesh geometry={trunkGeo} material={trunkMat} position={[0, 0.25, 0]} />
+            {conifer ? (
+              <>
+                <mesh geometry={pineGeo} material={pineMat} position={[0, 0.6, 0]} />
+                <mesh geometry={pineGeo} material={pineMat} position={[0, 0.92, 0]} scale={0.64} />
+              </>
+            ) : (
+              <>
+                <mesh geometry={leafBig} material={warm ? leaf2Mat : leafMat} position={[0, 0.62, 0]} />
+                <mesh geometry={leafTop} material={leaf2Mat} position={[0, 0.92, 0.02]} />
+              </>
+            )}
+          </group>
+        );
+      })}
     </>
   );
+}
+
+// 野花：贴着草丛的小彩点,颜色随情绪 accent + 几种暖色,给山坡添生气。
+function Flowers({ count, accent }: { count: number; accent: string }) {
+  const spots = useMemo(() => scatterOnIsland(count, 53, 0.15, 0.92), [count]);
+  const geo = useMemo(() => new THREE.IcosahedronGeometry(0.05, 0), []);
+  const mat = useMemo(() => new THREE.MeshBasicMaterial(), []); // 不受光,小花永远是亮色点(instanceColor 上色)
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const d = new THREE.Object3D();
+    const palette = [new THREE.Color(accent), new THREE.Color("#fff3df"), new THREE.Color("#f3d27a"), new THREE.Color("#ef9ab4")];
+    spots.forEach((s, i) => {
+      d.position.set(s.x, s.y + 0.14 * s.s, s.z);
+      d.scale.setScalar(0.7 + (i % 3) * 0.25);
+      d.updateMatrix();
+      mesh.setMatrixAt(i, d.matrix);
+      mesh.setColorAt(i, palette[Math.floor(hash2(s.x * 3.3, s.z * 7.7) * palette.length) % palette.length]);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [spots, accent]);
+  return <instancedMesh ref={ref} args={[geo, mat, spots.length]} frustumCulled={false} />;
+}
+
+// 低多边形礁石:灰岩,非均匀缩放 + 随机翻滚,点缀山坡结构感。
+function Rocks({ count }: { count: number }) {
+  const spots = useMemo(() => scatterOnIsland(count, 71, 0.2, 1.15), [count]);
+  const geo = useMemo(() => new THREE.IcosahedronGeometry(0.16, 0), []);
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#8b919b", roughness: 1, flatShading: true }), []);
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const d = new THREE.Object3D();
+    spots.forEach((s, i) => {
+      d.position.set(s.x, s.y + 0.04 * s.s, s.z);
+      d.rotation.set(hash2(s.x, 1.1) * 3, s.rot, hash2(s.z, 2.2) * 1.4);
+      d.scale.set(s.s * (0.8 + hash2(s.x, 3.3) * 0.6), s.s * (0.55 + hash2(s.z, 4.4) * 0.5), s.s * (0.8 + hash2(s.x, 5.5) * 0.6));
+      d.updateMatrix();
+      mesh.setMatrixAt(i, d.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [spots]);
+  return <instancedMesh ref={ref} args={[geo, mat, spots.length]} frustumCulled={false} />;
+}
+
+// 山顶薄雪:近峰顶散布的扁平白色雪块,贴着坡面。
+function SnowCaps({ count }: { count: number }) {
+  const spots = useMemo(() => scatterOnIsland(count, 88, 1.32, 1.72), [count]);
+  const geo = useMemo(() => new THREE.IcosahedronGeometry(0.24, 0), []);
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#eef5f7", emissive: new THREE.Color("#d8e6ec"), emissiveIntensity: 0.22, roughness: 0.85, flatShading: true }), []);
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const d = new THREE.Object3D();
+    spots.forEach((s, i) => {
+      d.position.set(s.x, s.y - 0.04 * s.s, s.z);
+      d.rotation.set(0, s.rot, 0);
+      d.scale.set(s.s * (1 + hash2(s.x, 6.1) * 0.7), s.s * 0.4, s.s * (1 + hash2(s.z, 6.2) * 0.7));
+      d.updateMatrix();
+      mesh.setMatrixAt(i, d.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [spots]);
+  return <instancedMesh ref={ref} args={[geo, mat, spots.length]} frustumCulled={false} />;
 }
 
 // 飞鸟：低多边形剪影,沿高空缓慢环绕岛屿滑翔 + 振翅(仅沉浸态)。静态时停在散开的初始位。
@@ -633,7 +726,7 @@ function Whale({ animate }: { animate: boolean }) {
 }
 
 // 低多边形岛屿：地形 + 草木(随成长) + 顶部情绪辉光核 + 漂浮心象结晶；整岛轻浮动(坐于海面的"呼吸")
-function Island({ mats, features = [], animate, coreLightRef, tier }: { mats: EmotionMats; features?: string[]; animate: boolean; coreLightRef: React.RefObject<THREE.PointLight | null>; tier: PerfTier }) {
+function Island({ mats, features = [], animate, coreLightRef, tier, accent }: { mats: EmotionMats; features?: string[]; animate: boolean; coreLightRef: React.RefObject<THREE.PointLight | null>; tier: PerfTier; accent: string }) {
   const terrain = useMemo(() => buildIslandGeometry(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
 
@@ -645,8 +738,11 @@ function Island({ mats, features = [], animate, coreLightRef, tier }: { mats: Em
 
   // 成长可视化：草木密度随岛屿元素(features)增多而繁茂；弱设备减量
   const lush = Math.min(8, features.length);
-  const grassCount = (tier === "high" ? 360 : 130) + lush * (tier === "high" ? 55 : 18);
-  const treeCount = Math.min(tier === "high" ? 7 : 4, 2 + lush);
+  const grassCount = (tier === "high" ? 540 : 200) + lush * (tier === "high" ? 60 : 20); // 矮草要更密才成片
+  const treeCount = Math.min(tier === "high" ? 16 : 9, (tier === "high" ? 7 : 4) + lush); // 多栽点树,别让草尖唱主角
+  const flowerCount = (tier === "high" ? 40 : 16) + lush * 4;
+  const rockCount = Math.min(tier === "high" ? 12 : 6, 4 + lush);
+  const snowCount = tier === "high" ? 14 : 7;
 
   const coreCount = Math.min(6, Math.max(1, features.length || 1));
   const crystals = useMemo(
@@ -666,11 +762,19 @@ function Island({ mats, features = [], animate, coreLightRef, tier }: { mats: Em
       {/* 植被：随风草地 + 低多边形树，密度随成长 */}
       <Grass count={grassCount} animate={animate} />
       <Trees count={treeCount} />
+      <Flowers count={flowerCount} accent={accent} />
+      <Rocks count={rockCount} />
+      <SnowCaps count={snowCount} />
+      {/* 近岸浪花:贴水线一圈柔白雾环,把岛"放"在海面上 */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
+        <ringGeometry args={[2.62, 3.2, 56]} />
+        <meshBasicMaterial color="#e2f3f4" transparent opacity={0.32} depthWrite={false} />
+      </mesh>
       {/* 顶部情绪辉光核：随情绪 accent 变色，呼吸式浮动，局部点光晕染地形 */}
       <Float speed={animate ? 1.4 : 0} rotationIntensity={animate ? 0.5 : 0} floatIntensity={animate ? 0.8 : 0}>
         <mesh position={[0, 1.95, 0]} material={mats.core}>
-          <icosahedronGeometry args={[0.28, 0]} />
-          <pointLight ref={coreLightRef} intensity={7} distance={7} decay={1.6} />
+          <icosahedronGeometry args={[0.2, 0]} />
+          <pointLight ref={coreLightRef} intensity={5.5} distance={7} decay={1.6} />
         </mesh>
       </Float>
       {/* 心象结晶：每个岛屿元素一枚漂浮辉光晶体，悬于山坡上方，呼应「岛屿生长」 */}
@@ -723,7 +827,7 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
         <pointLight color={initial.celestial} intensity={28} distance={40} decay={1.4} />
       </group>
 
-      <Island mats={mats} features={features} animate={animate} coreLightRef={coreLightRef} tier={tier} />
+      <Island mats={mats} features={features} animate={animate} coreLightRef={coreLightRef} tier={tier} accent={visual.accent} />
 
       {/* 反射水面 + 涟漪（深海玻璃感核心）。颜色由 EmotionTint 驱动 */}
       <RippleWater waterRef={waterRef} initialSea={initial.sea} animate={animate} tier={tier} />
@@ -743,8 +847,8 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
       {hi && (
         <EffectComposer multisampling={4}>
           {([
-            sunMesh ? <GodRays key="godrays" sun={sunMesh} samples={60} density={0.95} decay={0.92} weight={0.5} exposure={0.5} blur /> : null,
-            <Bloom key="bloom" mipmapBlur luminanceThreshold={0.55} luminanceSmoothing={0.25} intensity={0.95} radius={0.72} />,
+            sunMesh ? <GodRays key="godrays" sun={sunMesh} samples={60} density={0.9} decay={0.93} weight={0.4} exposure={0.42} blur /> : null,
+            <Bloom key="bloom" mipmapBlur luminanceThreshold={0.62} luminanceSmoothing={0.3} intensity={0.8} radius={0.6} />,
             <Vignette key="vignette" eskil={false} offset={0.26} darkness={0.55} />,
           ].filter(Boolean) as React.ReactElement[])}
         </EffectComposer>
