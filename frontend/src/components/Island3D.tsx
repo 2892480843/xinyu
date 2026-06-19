@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { MeshReflectorMaterial, Sparkles, Stars, Float } from "@react-three/drei";
+import { MeshReflectorMaterial, Sparkles, Stars, Float, Outlines } from "@react-three/drei";
 import { EffectComposer, Bloom, Vignette, GodRays } from "@react-three/postprocessing";
 import * as THREE from "three";
 import type { SceneVisual } from "../lib/sceneMap";
@@ -19,6 +19,20 @@ interface Props {
 // 情绪切换：所有颜色（雾/水/岛/辉光/天体/光/天空）由 EmotionTint 集中 lerp，绝不硬切。
 // 整套 gated on `animate`：静态时相机不漂、浮尘不动、frameloop="demand" 只渲一帧、颜色直接吸附。
 // ───────────────────────────────────────────────────────────
+
+// 卡通阶梯上色查找图(与「上岛走走」探索岛同一套 toon 风);3 档红通道,最近邻取样。
+// 模块级单例:全场景植被共用一张 3×1 贴图(极小,常驻不 dispose)。
+let _toonGrad: THREE.DataTexture | null = null;
+function toonGradient(): THREE.DataTexture {
+  if (!_toonGrad) {
+    const t = new THREE.DataTexture(new Uint8Array([84, 150, 235]), 3, 1, THREE.RedFormat);
+    t.minFilter = THREE.NearestFilter;
+    t.magFilter = THREE.NearestFilter;
+    t.needsUpdate = true;
+    _toonGrad = t;
+  }
+  return _toonGrad;
+}
 
 // 渐变天空：模块级工厂持有 16×256 canvas + CanvasTexture，暴露 draw/dispose。
 // 命令式写入（含 needsUpdate）封在普通函数里，绕开 react-hooks 对组件内变异的规则。
@@ -339,7 +353,7 @@ function Grass({ count, animate }: { count: number; animate: boolean }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const shaderRef = useRef<THREE.WebGLProgramParametersWithUniforms | null>(null);
   const material = useMemo(() => {
-    const m = new THREE.MeshStandardMaterial({ color: "#ffffff", emissive: new THREE.Color("#386f4c"), emissiveIntensity: 0.32, roughness: 0.95, metalness: 0, flatShading: true });
+    const m = new THREE.MeshToonMaterial({ color: "#ffffff", gradientMap: toonGradient(), emissive: new THREE.Color("#386f4c"), emissiveIntensity: 0.32 });
     m.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = { value: 0 };
       sh.vertexShader = "uniform float uTime;\n" + sh.vertexShader.replace(
@@ -388,10 +402,10 @@ function Trees({ count }: { count: number }) {
   const leafBig = useMemo(() => new THREE.IcosahedronGeometry(0.34, 0), []);
   const leafTop = useMemo(() => new THREE.IcosahedronGeometry(0.22, 0), []);
   const pineGeo = useMemo(() => new THREE.ConeGeometry(0.3, 0.55, 6), []);
-  const trunkMat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#5b4636", roughness: 1, flatShading: true }), []);
-  const leafMat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#4f9e72", roughness: 0.9, flatShading: true }), []);
-  const leaf2Mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#6fb880", roughness: 0.9, flatShading: true }), []); // 暖亮绿做树冠层次
-  const pineMat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#3f8a64", roughness: 0.9, flatShading: true }), []); // 针叶冷绿
+  const trunkMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#5b4636", gradientMap: toonGradient() }), []);
+  const leafMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#4f9e72", gradientMap: toonGradient() }), []);
+  const leaf2Mat = useMemo(() => new THREE.MeshToonMaterial({ color: "#6fb880", gradientMap: toonGradient() }), []); // 暖亮绿做树冠层次
+  const pineMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#3f8a64", gradientMap: toonGradient() }), []); // 针叶冷绿
   useEffect(
     () => () => {
       [trunkGeo, leafBig, leafTop, pineGeo].forEach((g) => g.dispose());
@@ -406,16 +420,26 @@ function Trees({ count }: { count: number }) {
         const warm = hash2(97 + i, 4.5) > 0.58;
         return (
           <group key={i} position={[t.x, t.y, t.z]} rotation={[0, t.rot, 0]} scale={t.s}>
-            <mesh geometry={trunkGeo} material={trunkMat} position={[0, 0.25, 0]} />
+            <mesh geometry={trunkGeo} material={trunkMat} position={[0, 0.25, 0]}>
+              <Outlines thickness={0.015} color="#243042" />
+            </mesh>
             {conifer ? (
               <>
-                <mesh geometry={pineGeo} material={pineMat} position={[0, 0.6, 0]} />
-                <mesh geometry={pineGeo} material={pineMat} position={[0, 0.92, 0]} scale={0.64} />
+                <mesh geometry={pineGeo} material={pineMat} position={[0, 0.6, 0]}>
+                  <Outlines thickness={0.012} color="#243042" />
+                </mesh>
+                <mesh geometry={pineGeo} material={pineMat} position={[0, 0.92, 0]} scale={0.64}>
+                  <Outlines thickness={0.012} color="#243042" />
+                </mesh>
               </>
             ) : (
               <>
-                <mesh geometry={leafBig} material={warm ? leaf2Mat : leafMat} position={[0, 0.62, 0]} />
-                <mesh geometry={leafTop} material={leaf2Mat} position={[0, 0.92, 0.02]} />
+                <mesh geometry={leafBig} material={warm ? leaf2Mat : leafMat} position={[0, 0.62, 0]}>
+                  <Outlines thickness={0.012} color="#243042" />
+                </mesh>
+                <mesh geometry={leafTop} material={leaf2Mat} position={[0, 0.92, 0.02]}>
+                  <Outlines thickness={0.012} color="#243042" />
+                </mesh>
               </>
             )}
           </group>
@@ -454,7 +478,7 @@ function Flowers({ count, accent }: { count: number; accent: string }) {
 function Rocks({ count }: { count: number }) {
   const spots = useMemo(() => scatterOnIsland(count, 71, 0.2, 1.15), [count]);
   const geo = useMemo(() => new THREE.IcosahedronGeometry(0.16, 0), []);
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#8b919b", roughness: 1, flatShading: true }), []);
+  const mat = useMemo(() => new THREE.MeshToonMaterial({ color: "#8b919b", gradientMap: toonGradient() }), []);
   const ref = useRef<THREE.InstancedMesh>(null);
   useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
   useLayoutEffect(() => {
@@ -478,7 +502,7 @@ function SnowCaps({ count, night }: { count: number; night: boolean }) {
   const spots = useMemo(() => scatterOnIsland(count, 88, 1.32, 1.72), [count]);
   const geo = useMemo(() => new THREE.IcosahedronGeometry(0.24, 0), []);
   const mat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: "#eef5f7", emissive: new THREE.Color(night ? "#86c4e0" : "#d8e6ec"), emissiveIntensity: night ? 0.5 : 0.22, roughness: 0.85, flatShading: true }),
+    () => new THREE.MeshToonMaterial({ color: "#eef5f7", gradientMap: toonGradient(), emissive: new THREE.Color(night ? "#86c4e0" : "#d8e6ec"), emissiveIntensity: night ? 0.5 : 0.22 }),
     [night],
   );
   const ref = useRef<THREE.InstancedMesh>(null);
@@ -522,7 +546,7 @@ function Path() {
     });
   }, []);
   const geo = useMemo(() => new THREE.BoxGeometry(0.36, 0.05, 0.28), []);
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#cdbf9f", roughness: 0.95, metalness: 0, flatShading: true }), []);
+  const mat = useMemo(() => new THREE.MeshToonMaterial({ color: "#cdbf9f", gradientMap: toonGradient() }), []);
   const ref = useRef<THREE.InstancedMesh>(null);
   useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
   useLayoutEffect(() => {
