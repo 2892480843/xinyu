@@ -140,7 +140,8 @@ function useEmotionMaterials(init: SceneVisual) {
     () => {
       // 岛体：海玻璃菲涅尔内透光。自发光(情绪色)只在掠射边缘显现 → 透光的玻璃边,
       // 棱面受光不被抹平,并保留 12% 体内微光;边缘亮度足以被 Bloom 晕成光边。
-      const island = new THREE.MeshStandardMaterial({ color: init.island, emissive: init.accent, emissiveIntensity: 1.3, flatShading: true, roughness: 0.9, metalness: 0.05 });
+      // vertexColors:低坡偏草绿、高处偏岩灰(乘在情绪基色上,不破坏情绪反应);见 buildIslandGeometry 的 color 属性
+      const island = new THREE.MeshStandardMaterial({ color: init.island, emissive: init.accent, emissiveIntensity: 1.3, flatShading: true, roughness: 0.9, metalness: 0.05, vertexColors: true });
       island.onBeforeCompile = (shader) => {
         shader.fragmentShader = shader.fragmentShader.replace(
           "#include <emissivemap_fragment>",
@@ -322,9 +323,22 @@ function islandHeight(x: number, y: number) {
 function buildIslandGeometry() {
   const geo = new THREE.PlaneGeometry(ISLAND_SIZE, ISLAND_SIZE, ISLAND_SEG, ISLAND_SEG);
   const pos = geo.attributes.position;
+  // 高度分层顶点色(乘在情绪基色上):近岸暖沙 → 低坡草绿 → 高处岩灰
+  const colors: number[] = [];
+  const cSand = new THREE.Color(1.0, 0.92, 0.7);
+  const cGrass = new THREE.Color(0.56, 1.0, 0.44);
+  const cRock = new THREE.Color(0.98, 0.95, 1.0);
+  const tmp = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
-    pos.setZ(i, islandHeight(pos.getX(i), pos.getY(i)));
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const h = islandHeight(x, y);
+    pos.setZ(i, h);
+    tmp.copy(cGrass).lerp(cRock, smoothstep01(0.65, 1.7, h)); // 低坡草绿 → 高处岩灰
+    tmp.lerp(cSand, 1 - smoothstep01(0.05, 0.32, h)); // 贴水线压回暖沙
+    colors.push(tmp.r, tmp.g, tmp.b);
   }
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geo.computeVertexNormals();
   return geo;
 }
