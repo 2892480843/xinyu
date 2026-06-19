@@ -174,6 +174,17 @@ export default function MusicControl({ music }: Props) {
         </div>
       </div>
 
+      {/* CC-BY 署名：曲目均为 Kevin MacLeod，授权要求在「可被合理发现」处署名 */}
+      <a
+        href={track.licenseUrl}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="mt-2 block truncate text-[9px] leading-tight text-white/30 hover:text-white/55 transition-colors"
+        title={`「${track.title}」 by ${track.artist} — 知识共享 署名 4.0（点击查看许可）`}
+      >
+        ♪ {track.title} · {track.artist} · {track.license}
+      </a>
+
       {/* 静海模式：一键减弱全部 3D/视差/体积光（无障碍/晕动症开关，持久化） */}
       <button
         type="button"

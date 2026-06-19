@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { RevisionResponse } from "../lib/api";
+import { play as playSfx } from "../lib/sfx";
 
 interface Props {
   revision: RevisionResponse;
@@ -27,6 +28,7 @@ function fmtDate(iso: string): string {
 export default function IslandRevision({ revision }: Props) {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  useEffect(() => { playSfx("reveal"); }, []); // 修正信静静浮现
   if (dismissed) return null;
 
   const dateLabel = fmtDate(revision.target_created_at);
@@ -41,7 +43,7 @@ export default function IslandRevision({ revision }: Props) {
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => { playSfx("page"); setOpen((v) => !v); }}
         className="w-full text-left px-4 py-3 hover:bg-white/4 transition flex items-start gap-3"
       >
         <span className="text-xl leading-none mt-0.5" aria-hidden="true">📩</span>

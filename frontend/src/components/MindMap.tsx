@@ -6,6 +6,7 @@ import { EMOTION_COLOR } from "../lib/islandMeta";
 import FeatureGlyph from "./IslandFeatureIcons";
 import IslandLetter from "./IslandLetter";
 import IslandPhrases from "./IslandPhrases";
+import { play as playSfx } from "../lib/sfx";
 
 interface Props {
   memories: MemoryItem[];
@@ -66,7 +67,7 @@ export default function MindMap({ memories, island, artifacts, open, onToggle, u
   return (
     <div className="relative z-30 max-w-[min(50vw,21rem)]">
       <button
-        onClick={onToggle}
+        onClick={() => { playSfx(open ? "page" : "reveal"); onToggle(); }}
         className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-card bg-white/10 backdrop-blur-md border border-white/18 text-mist-200 hover:text-white text-sm hover:bg-white/15 transition"
         aria-expanded={open}
       >
@@ -144,7 +145,7 @@ export default function MindMap({ memories, island, artifacts, open, onToggle, u
                       <motion.button
                         key={p.m.id}
                         type="button"
-                        onClick={() => setSelected(active ? null : p.m)}
+                        onClick={() => { playSfx("tap"); setSelected(active ? null : p.m); }}
                         className="absolute -translate-x-1/2 -translate-y-1/2 grid place-items-center rounded-full"
                         style={{
                           left: `${p.x}%`,

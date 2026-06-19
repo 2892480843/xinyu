@@ -21,7 +21,10 @@ export default function OnboardingArrival({ nickname, onDone }: Props) {
   const full = `${line1}\n${line2}`;
 
   useEffect(() => {
-    const t1 = setTimeout(() => setPhase("island"), 700);
+    const t1 = setTimeout(() => {
+      setPhase("island");
+      playSfx("wave"); // 岛屿剪影浮出海面
+    }, 700);
     const t2 = setTimeout(() => {
       setPhase("type");
       playSfx("chime");
@@ -47,6 +50,7 @@ export default function OnboardingArrival({ nickname, onDone }: Props) {
 
   useEffect(() => {
     if (phase !== "wave") return;
+    playSfx("ripple"); // 涟漪扩散，收束抵岸
     const t = window.setTimeout(onDone, 1100);
     return () => window.clearTimeout(t);
   }, [phase, onDone]);

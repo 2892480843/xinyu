@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { readGlyph, type GlyphResponse } from "../lib/api";
 import { EMOTION_META } from "../lib/sceneMap";
+import { play as playSfx } from "../lib/sfx";
 
 interface Props {
   userId: string;
@@ -71,6 +72,7 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
   }, [char]);
 
   const pickChar = (c: string) => {
+    playSfx("tap");
     setChar(c);
     setHasInk(false);
   };
@@ -86,6 +88,7 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
 
   const down = (e: React.PointerEvent) => {
     if (!char || result) return;
+    if (!hasInk && strokes.current.length === 0) playSfx("inscribe"); // 首笔落墨
     drawing.current = true;
     current.current = [pos(e)];
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -127,6 +130,7 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
   };
 
   const clear = () => {
+    playSfx("page"); // 擦去重写
     drawGuide(char);
     strokes.current = [];
     current.current = [];
@@ -180,9 +184,12 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
     if (!char || !hasInk || busy) return;
     setBusy(true);
     setError(null);
+    playSfx("shell"); // 交给岛屿读心
     const res = await readGlyph(userId, char, computeDynamics());
-    if (res) setResult(res);
-    else setError("岛屿这次没读到，再写一次试试");
+    if (res) {
+      setResult(res);
+      playSfx("bloom"); // 心境石成形
+    } else setError("岛屿这次没读到，再写一次试试");
     setBusy(false);
   };
 

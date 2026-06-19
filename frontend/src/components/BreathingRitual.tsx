@@ -78,6 +78,7 @@ export default function BreathingRitual({ emotionLabel, onComplete, onSkip }: Pr
 
   useEffect(() => {
     if (step !== "done") return;
+    playSfx("bloom"); // 仪式圆满落定
     const t = window.setTimeout(onComplete, 1600);
     return () => window.clearTimeout(t);
   }, [step, onComplete]);
@@ -116,7 +117,10 @@ export default function BreathingRitual({ emotionLabel, onComplete, onSkip }: Pr
             <div className="mt-7 flex flex-col sm:flex-row gap-2.5 justify-center">
               <motion.button
                 type="button"
-                onClick={() => setStep("inhale")}
+                onClick={() => {
+                  playSfx("tap");
+                  setStep("inhale");
+                }}
                 whileHover={{ y: -1, scale: 1.02 }}
                 whileTap={{ scale: 0.96 }}
                 transition={SPRING_TAP}

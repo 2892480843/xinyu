@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { silentCompanion, type ArtifactItem } from "../lib/api";
+import { play as playSfx } from "../lib/sfx";
 
 interface Props {
   userId: string;
@@ -24,6 +25,8 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
   const saved = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  useEffect(() => { playSfx("wave"); }, []); // 入座：海浪替你数着秒数
+
   useEffect(() => {
     if (phase !== "sitting") return;
     const t = window.setInterval(() => {
@@ -43,6 +46,7 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
     if (elapsed < total || saved.current) return;
     saved.current = true;
     setPhase("closing");
+    playSfx("shell"); // 一枚静默贝壳落下
     (async () => {
       const artifact = await silentCompanion(userId, total);
       closeTimer.current = setTimeout(() => onClose(artifact), 1800);
@@ -59,6 +63,7 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
   const leaveEarly = async () => {
     if (saved.current) return;
     saved.current = true;
+    playSfx("ripple"); // 岛屿不催你，轻轻送别
     const artifact = await silentCompanion(userId, Math.max(0, elapsed));
     onClose(artifact);
   };

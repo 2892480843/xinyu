@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { FEATURE_META } from "../lib/islandMeta";
+import { play as playSfx } from "../lib/sfx";
 
 interface Props {
   message: string;
@@ -14,6 +15,7 @@ interface Props {
  */
 export default function WelcomeBackCard({ message, artifactKey }: Props) {
   const [dismissed, setDismissed] = useState(false);
+  useEffect(() => { if (message) playSfx("reveal"); }, [message]); // 离岛信浮现
   if (dismissed || !message) return null;
   const icon = artifactKey ? (FEATURE_META[artifactKey]?.icon ?? "💌") : "💌";
 

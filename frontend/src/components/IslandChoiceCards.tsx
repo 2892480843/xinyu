@@ -35,6 +35,7 @@ export default function IslandChoiceCards({ userId, choices, onActed, onInscribe
     const updated = await inscribeArtifact(userId, acted.artifact.id, inscribeText.trim());
     if (updated) {
       setInscribed(updated.inscription);
+      playSfx("inscribe"); // 墨字刻入物件
       setInscribeOpen(false);
       onInscribed?.(); // 通知父级刷新收藏墙，让 ✒️ 标记立即同步(#5)
     }
@@ -51,6 +52,8 @@ export default function IslandChoiceCards({ userId, choices, onActed, onInscribe
       setActedChoiceId(choice.id);
       setActed(result);
       onActed(result);
+      playSfx("settle"); // 物件温柔落在岛上
+
     } catch {
       setError("岛屿仪式没能完成，稍后再试一次");
     } finally {
