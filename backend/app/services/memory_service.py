@@ -1,62 +1,28 @@
-"""情绪记忆服务：SQLite 持久化 + JSON 镜像（便于查看/迁移）。"""
+"""情绪记忆服务：PostgreSQL 持久化。
 
-import json
-import os
-import sqlite3
-import threading
+并发与原子性交给 Postgres：每个 `with db.connection()` 块即一个事务，连接池本身
+线程安全，故不再需要旧 SQLite 实现里的 threading.Lock / WAL。schema 由 app.db
+集中建表，本服务只负责读写与种子数据。
+"""
+
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from app import config
+from app import db
 
 
 class MemoryService:
     def __init__(self) -> None:
-        os.makedirs(config.DATA_DIR, exist_ok=True)
-        os.makedirs(os.path.dirname(os.path.abspath(config.MEMORY_DB)), exist_ok=True)
-        os.makedirs(os.path.dirname(os.path.abspath(config.MEMORY_JSON)), exist_ok=True)
-        self._lock = threading.Lock()
-        self._init_db()
+        db.init_db()
         if self._count_all() == 0:
             self._seed()
 
-    def _conn(self) -> sqlite3.Connection:
-        # timeout 让并发写时等待而非立刻抛 database is locked；WAL 允许读写并发。
-        conn = sqlite3.connect(config.MEMORY_DB, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
-
-    def _init_db(self) -> None:
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    emotion TEXT NOT NULL,
-                    intensity REAL NOT NULL,
-                    summary TEXT NOT NULL,
-                    narrative TEXT NOT NULL DEFAULT '',
-                    imprint TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            # 兼容旧库：缺少 imprint 列时补加
-            cols = {row["name"] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
-            if "imprint" not in cols:
-                conn.execute("ALTER TABLE memories ADD COLUMN imprint TEXT NOT NULL DEFAULT ''")
-            conn.commit()
-
     def save(self, item: Dict[str, Any]) -> Dict[str, Any]:
         created_at = datetime.utcnow().isoformat() + "Z"
-        with self._lock, self._conn() as conn:
-            cur = conn.execute(
+        with db.connection() as conn:
+            row = conn.execute(
                 "INSERT INTO memories (user_id, text, emotion, intensity, summary, narrative, imprint, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
                 (
                     item.get("user_id", "demo-user"),
                     item.get("text", ""),
@@ -67,16 +33,13 @@ class MemoryService:
                     item.get("imprint") or "",
                     created_at,
                 ),
-            )
-            conn.commit()
-            row = self._row_to_dict(self._get_one(conn, cur.lastrowid))
-        self._mirror_json()
-        return row
+            ).fetchone()
+        return self._row_to_dict(row)
 
     def get_recent(self, user_id: str, limit: int = 3) -> List[Dict[str, Any]]:
-        with self._lock, self._conn() as conn:
+        with db.connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM memories WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                "SELECT * FROM memories WHERE user_id = %s ORDER BY id DESC LIMIT %s",
                 (user_id, limit),
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
@@ -86,19 +49,19 @@ class MemoryService:
         if not clean_ids:
             return []
 
-        placeholders = ",".join("?" for _ in clean_ids)
-        with self._lock, self._conn() as conn:
+        with db.connection() as conn:
             rows = conn.execute(
-                f"SELECT * FROM memories WHERE user_id = ? AND id IN ({placeholders})",
-                (user_id, *clean_ids),
+                "SELECT * FROM memories WHERE user_id = %s AND id = ANY(%s)",
+                (user_id, clean_ids),
             ).fetchall()
         by_id = {int(row["id"]): self._row_to_dict(row) for row in rows}
+        # 保持调用方给定的 id 顺序（向量检索按相关度排序，顺序有意义）
         return [by_id[i] for i in clean_ids if i in by_id]
 
     def get_all(self, user_id: str) -> List[Dict[str, Any]]:
-        with self._lock, self._conn() as conn:
+        with db.connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM memories WHERE user_id = ? ORDER BY id DESC",
+                "SELECT * FROM memories WHERE user_id = %s ORDER BY id DESC",
                 (user_id,),
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
@@ -108,57 +71,38 @@ class MemoryService:
         if not clean_user_id:
             raise ValueError("user_id is required")
 
-        with self._lock, self._conn() as conn:
-            cur = conn.execute("DELETE FROM memories WHERE user_id = ?", (clean_user_id,))
-            conn.commit()
+        with db.connection() as conn:
+            cur = conn.execute("DELETE FROM memories WHERE user_id = %s", (clean_user_id,))
             deleted = int(cur.rowcount if cur.rowcount is not None else 0)
-        self._mirror_json()
         return deleted
 
     def _count_all(self) -> int:
-        with self._lock, self._conn() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
-        return int(row[0] if row else 0)
+        with db.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()
+        return int(row["n"] if row else 0)
 
     def count_by_user(self, user_id: str) -> int:
-        with self._lock, self._conn() as conn:
+        with db.connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE user_id = ?", (user_id,)
+                "SELECT COUNT(*) AS n FROM memories WHERE user_id = %s", (user_id,)
             ).fetchone()
-        return int(row[0] if row else 0)
-
-    def _get_one(self, conn: sqlite3.Connection, rowid: int) -> sqlite3.Row:
-        return conn.execute("SELECT * FROM memories WHERE id = ?", (rowid,)).fetchone()
+        return int(row["n"] if row else 0)
 
     @staticmethod
-    def _row_to_dict(row: Optional[sqlite3.Row]) -> Dict[str, Any]:
-        if row is None:
+    def _row_to_dict(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not row:
             return {}
-        keys = row.keys()
         return {
-            "id": row["id"],
+            "id": int(row["id"]),
             "user_id": row["user_id"],
             "text": row["text"],
             "emotion": row["emotion"],
-            "intensity": row["intensity"],
+            "intensity": float(row["intensity"]),
             "summary": row["summary"],
             "narrative": row["narrative"],
-            "imprint": row["imprint"] if "imprint" in keys else "",
+            "imprint": row.get("imprint", "") or "",
             "created_at": row["created_at"],
         }
-
-    def _mirror_json(self) -> None:
-        """把最近 50 条镜像写入 memories.json，便于人工查看与迁移。"""
-        try:
-            with self._lock, self._conn() as conn:
-                rows = conn.execute(
-                    "SELECT * FROM memories ORDER BY id DESC LIMIT 50"
-                ).fetchall()
-            data = [self._row_to_dict(r) for r in rows]
-            with open(config.MEMORY_JSON, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
 
     _SEED_RECORDS = [
         ("今天面试有点紧张，手心都在出汗。", "anxious", 0.62, "用户感到明显的焦虑", "雾气在海面缓缓散开，礁石安静地待在原地。焦虑像潮水涨了又退，跟着岛屿的呼吸，慢慢数一次浪花。"),
@@ -174,20 +118,22 @@ class MemoryService:
         """为指定 user_id 注入种子记忆。
         - force=False：仅当该用户当前无记忆时注入（幂等，避免新身份重复触发）。
         - 返回实际注入的条数。
+        建议锁 + 同事务内查重，序列化并发首访，避免重复种子。
         """
         clean = (user_id or "").strip() or "demo-user"
-        if not force and self.count_by_user(clean) > 0:
-            return 0
-        with self._lock, self._conn() as conn:
+        with db.connection() as conn, conn.cursor() as cur:
+            db.advisory_xact_lock(cur, f"seed:{clean}")
+            if not force:
+                cur.execute("SELECT COUNT(*) AS n FROM memories WHERE user_id = %s", (clean,))
+                if int(cur.fetchone()["n"]) > 0:
+                    return 0
             for text, emotion, intensity, summary, narrative in self._SEED_RECORDS:
                 created_at = datetime.utcnow().isoformat() + "Z"
-                conn.execute(
+                cur.execute(
                     "INSERT INTO memories (user_id, text, emotion, intensity, summary, narrative, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                     (clean, text, emotion, intensity, summary, narrative, created_at),
                 )
-            conn.commit()
-        self._mirror_json()
         return len(self._SEED_RECORDS)
 
     # 「时光机·一键回望」专用：一段跨约两周、有起有伏的真实感轨迹。
@@ -234,23 +180,24 @@ class MemoryService:
         """为「时光机·一键回望」注入一段跨天、有起伏的演示轨迹，created_at 倒推回填、含 imprint。
         - force=True（默认）：先清空该 user_id 旧记忆再注入，保证轨迹纯净可复现（仅用于专用 demo 身份）。
         - force=False：仅当该用户当前无记忆时注入。
-        返回实际注入条数。"""
+        返回实际注入条数。
+        建议锁让 DELETE + INSERT 在同一事务内串行化：即便前端 StrictMode 并发双调用，
+        也只会留下恰好一套 11 条轨迹（否则两次 DELETE/INSERT 交错会插成 22 条）。"""
         clean = (user_id or "").strip() or "demo-timeline"
-        if not force and self.count_by_user(clean) > 0:
-            return 0
         now = datetime.utcnow()
-        # DELETE + INSERT 放进同一个锁块做原子重置：即便前端在 StrictMode 下并发双调用，
-        # 也只会留下恰好一套 11 条轨迹（否则两次 DELETE/INSERT 交错会插成 22 条）。
-        with self._lock, self._conn() as conn:
+        with db.connection() as conn, conn.cursor() as cur:
+            db.advisory_xact_lock(cur, f"timeline:{clean}")
+            if not force:
+                cur.execute("SELECT COUNT(*) AS n FROM memories WHERE user_id = %s", (clean,))
+                if int(cur.fetchone()["n"]) > 0:
+                    return 0
             if force:
-                conn.execute("DELETE FROM memories WHERE user_id = ?", (clean,))
+                cur.execute("DELETE FROM memories WHERE user_id = %s", (clean,))
             for days_ago, text, emotion, intensity, summary, narrative, imprint in self._TIMELINE_SEED:
                 created_at = (now - timedelta(days=days_ago)).isoformat() + "Z"
-                conn.execute(
+                cur.execute(
                     "INSERT INTO memories (user_id, text, emotion, intensity, summary, narrative, imprint, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (clean, text, emotion, intensity, summary, narrative, imprint, created_at),
                 )
-            conn.commit()
-        self._mirror_json()
         return len(self._TIMELINE_SEED)

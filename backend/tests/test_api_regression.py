@@ -7,11 +7,16 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import psycopg
 from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# 用独立的测试库，永不触碰开发库。可用 TEST_DATABASE_URL 覆盖。
+# 先决条件：createdb xinyu_test（pgvector 扩展非必需——测试以 VECTOR_ENABLED=0 运行）。
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://localhost:5432/xinyu_test")
 
 
 def _purge_app_modules() -> None:
@@ -20,12 +25,27 @@ def _purge_app_modules() -> None:
             del sys.modules[name]
 
 
-def _load_app(tmpdir: str, cors_origins: str = "http://127.0.0.1:5173") -> tuple[Any, Any]:
+def _reset_db() -> None:
+    """清空所有表，保证用例间隔离、可独立复现（重载 app 时 db.init_db 会重新建表）。"""
+    with psycopg.connect(TEST_DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS memory_vectors, memories, artifacts, phrases CASCADE")
+        conn.commit()
+
+
+def _load_app(tmpdir: Any = None, cors_origins: str = "http://127.0.0.1:5173") -> tuple[Any, Any]:
+    # 关闭上一个用例可能残留的连接池，避免反复重载累积连接/后台线程。
+    if "app.db" in sys.modules:
+        try:
+            sys.modules["app.db"].close_pool()
+        except Exception:
+            pass
+
     os.environ["LLM_PROVIDER"] = "mock"
-    os.environ["MEMORY_DB"] = str(Path(tmpdir) / "memories.db")
-    os.environ["MEMORY_JSON"] = str(Path(tmpdir) / "memories.json")
-    os.environ["CHROMA_ENABLED"] = "0"
+    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+    os.environ["VECTOR_ENABLED"] = "0"  # 测试不依赖本地 embedding 模型，语义检索走「最近记忆」回退
     os.environ["CORS_ORIGINS"] = cors_origins
+    _reset_db()
     _purge_app_modules()
 
     from app.main import app, memory_service  # pylint: disable=import-outside-toplevel
@@ -111,19 +131,6 @@ class ApiRegressionTest(unittest.TestCase):
             self.assertEqual(deleted, 2)
             self.assertEqual(memory_service.get_all("clear-me"), [])
             self.assertEqual(len(memory_service.get_all("keep-me")), 1)
-
-    def test_custom_memory_paths_create_parent_directories(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            nested = Path(tmp) / "nested" / "data"
-            app, _ = _load_app(str(nested))
-            with TestClient(app) as client:
-                response = client.post(
-                    "/api/reflect",
-                    json={"user_id": "custom-path-user", "text": "今天还算平静"},
-                )
-                self.assertEqual(response.status_code, 200)
-            self.assertTrue((nested / "memories.db").exists())
-            self.assertTrue((nested / "memories.json").exists())
 
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

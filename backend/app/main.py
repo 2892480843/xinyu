@@ -8,13 +8,14 @@ import base64
 import logging
 import threading
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from app import config
+from app import config, db
 from app.schemas import (
     AgentTraceItem,
     ArtifactItem,
@@ -41,6 +42,7 @@ from app.services.emotion_service import EmotionService
 from app.services.island_ritual_service import IslandRitualService, GLYPH_CHARS
 from app.services.island_state_service import EMOTION_ZH, IslandStateService
 from app.services.llm_provider import get_provider
+from app.services.embedding_service import EmbeddingService
 from app.services.memory_service import MemoryService
 from app.services.narrative_service import NarrativeService
 from app.services.safety_service import SafetyService
@@ -56,7 +58,15 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("xinyu")
 
-app = FastAPI(title="心屿 Xinyu API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动即确保 Postgres 连接池/ schema 就绪；关停时归还连接池。
+    db.init_db()
+    yield
+    db.close_pool()
+
+
+app = FastAPI(title="心屿 Xinyu API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,7 +81,8 @@ emotion_service = EmotionService(provider)
 narrative_service = NarrativeService(provider)
 safety_service = SafetyService()
 memory_service = MemoryService()
-vector_memory_service = VectorMemoryService()
+embedding_service = EmbeddingService()
+vector_memory_service = VectorMemoryService(embedding_service)
 island_state_service = IslandStateService()
 ritual_service = IslandRitualService()
 artifact_service = ArtifactService()
