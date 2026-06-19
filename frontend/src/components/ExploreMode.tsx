@@ -512,6 +512,60 @@ function Wishes({
   );
 }
 
+// 心灵印记收集物:每条历史记忆 → 一枚发光印记(颜色随情绪),散落岛上。走近即拾起,弹出来源卡。
+interface Imprint {
+  emotion: string;
+  label: string;
+  color: string;
+  when: string;
+  words: string;
+  line: string;
+}
+function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<THREE.Vector3>; imprints: Imprint[]; onPick: (i: number) => void }) {
+  const refs = useRef<(THREE.Group | null)[]>([]);
+  const taken = useRef<boolean[]>(imprints.map(() => false));
+  const spots = useMemo(
+    () =>
+      imprints.map((_, i) => {
+        const ang = hash2(i * 1.7 + 13, 7.7) * Math.PI * 2;
+        const rad = (0.3 + hash2(i * 2.3 + 5, 3.3) * 0.55) * WALK_RADIUS;
+        return { x: Math.cos(ang) * rad, z: Math.sin(ang) * rad };
+      }),
+    [imprints],
+  );
+  const mats = useMemo(() => imprints.map((im) => new THREE.MeshStandardMaterial({ color: im.color, emissive: im.color, emissiveIntensity: 2.6, toneMapped: false })), [imprints]);
+  useEffect(() => () => mats.forEach((m) => m.dispose()), [mats]);
+  useFrame((state) => {
+    const pos = posRef.current;
+    if (!pos) return;
+    spots.forEach((s, i) => {
+      if (taken.current[i]) return;
+      const g = refs.current[i];
+      if (g) {
+        g.position.y = exGroundY(s.x, s.z) + 0.7 + Math.sin(state.clock.elapsedTime * 1.6 + i) * 0.12;
+        g.rotation.y += 0.015;
+      }
+      if (Math.hypot(pos.x - s.x, pos.z - s.z) < 2.6) {
+        taken.current[i] = true;
+        if (g) g.visible = false;
+        onPick(i);
+      }
+    });
+  });
+  return (
+    <>
+      {spots.map((s, i) => (
+        <group key={i} ref={(el) => { refs.current[i] = el; }} position={[s.x, exGroundY(s.x, s.z) + 0.7, s.z]}>
+          <mesh material={mats[i]}>
+            <octahedronGeometry args={[0.26, 0]} />
+          </mesh>
+          <pointLight color={imprints[i].color} intensity={2.4} distance={3} decay={1.6} />
+        </group>
+      ))}
+    </>
+  );
+}
+
 // 程序生成的小镇:房子 + 店招/雨棚 + 路 + 护栏 + 树/灌木 + 路牌/灯/售货机/邮筒/长椅/木箱。
 // toon 平涂,墨线由后期统一勾。
 function Town({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string }) {
@@ -1782,6 +1836,8 @@ function ExploreScene({
   onWhale,
   onBottle,
   bottleNotes,
+  imprints,
+  onPickImprint,
 }: {
   visual: SceneVisual;
   inputRef: React.RefObject<Input>;
@@ -1794,6 +1850,8 @@ function ExploreScene({
   onWhale: () => void;
   onBottle: (i: number) => void;
   bottleNotes?: string[];
+  imprints: Imprint[];
+  onPickImprint: (i: number) => void;
 }) {
   const terrain = useMemo(() => buildExploreTerrain(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
@@ -1883,7 +1941,7 @@ function ExploreScene({
       <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={onNear} />
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
-      <Wishes posRef={posRef} color={visual.accent} onCollect={onCollect} total={total} />
+      {imprints.length > 0 ? <MemoryImprints posRef={posRef} imprints={imprints} onPick={onPickImprint} /> : <Wishes posRef={posRef} color={visual.accent} onCollect={onCollect} total={total} />}
 
       {/* 手绘后期:墨线 + 色阶 + 纸纹 */}
       <EffectComposer>
@@ -1976,11 +2034,15 @@ function SwatchRow({ label, colors, value, onPick }: { label: string; colors: st
   );
 }
 
-export default function ExploreMode({ visual, onExit, emotion, bottleNotes }: { visual: SceneVisual; onExit: () => void; emotion?: string; bottleNotes?: string[] }) {
+export default function ExploreMode({ visual, onExit, emotion, bottleNotes, imprints = [] }: { visual: SceneVisual; onExit: () => void; emotion?: string; bottleNotes?: string[]; imprints?: Imprint[] }) {
   const inputRef = useRef<Input>({ x: 0, y: 0 });
   const keys = useRef<Set<string>>(new Set());
   const total = 5;
   const [collected, setCollected] = useState(0);
+  const [pickedImprints, setPickedImprints] = useState<number[]>([]); // 已拾起的心灵印记下标
+  const imp = imprints;
+  const [shownImprint, setShownImprint] = useState<Imprint | null>(null); // 当前展开的来源卡
+  const hasImprints = imp.length > 0;
   const [nearNpc, setNearNpc] = useState(-1); // 当前可搭话的 NPC(-1=无),由场景内 onNear 回报
   const [giftedIds, setGiftedIds] = useState<number[]>([]); // 已送过心愿的 NPC
   const [avatar, setAvatar] = useState<Avatar>(loadAvatar); // 你捏的人物外观(本地保存)
@@ -2043,6 +2105,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes }: { 
 
   const sky = `linear-gradient(to bottom, ${visual.skyTop} 0%, ${visual.skyMid} 48%, ${visual.skyBottom} 82%)`;
   const done = collected >= total;
+  const imprintsDone = hasImprints && pickedImprints.length >= imp.length;
   const allGifted = giftedIds.length >= NPC_TOTAL; // 送完岛上所有人 → 庆祝
   const hearts = useMemo(
     () =>
@@ -2066,17 +2129,24 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes }: { 
         frameloop="always"
       >
         <Suspense fallback={null}>
-          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => setCollected((c) => c + 1)} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} />
+          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => setCollected((c) => c + 1)} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} />
         </Suspense>
       </Canvas>
 
       {/* 任务 HUD */}
       <div className="absolute inset-x-0 top-0 flex justify-center" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
         <div className="panel-glass-2 rounded-card px-5 py-2.5 text-center">
-          <p className="text-caption tracking-[0.28em] text-white/55">{done ? "心愿都收齐了" : "拾起岛上的心愿"}</p>
-          <p className="font-display text-[18px] tracking-wider text-white/90">
-            {done ? "✦ 谢谢你来岛上走走 ✦" : `心愿 ${collected} / ${total}`}
-          </p>
+          {hasImprints ? (
+            <>
+              <p className="text-caption tracking-[0.28em] text-white/55">{imprintsDone ? "印记都拾起了" : "拾起岛上的心灵印记"}</p>
+              <p className="font-display text-[18px] tracking-wider text-white/90">{imprintsDone ? "✦ 你走过的每一刻，都还在 ✦" : `心灵印记 ${pickedImprints.length} / ${imp.length}`}</p>
+            </>
+          ) : (
+            <>
+              <p className="text-caption tracking-[0.28em] text-white/55">{done ? "心愿都收齐了" : "拾起岛上的心愿"}</p>
+              <p className="font-display text-[18px] tracking-wider text-white/90">{done ? "✦ 谢谢你来岛上走走 ✦" : `心愿 ${collected} / ${total}`}</p>
+            </>
+          )}
           {giftedIds.length > 0 && (
             <p className="text-caption text-white/55 mt-0.5">{allGifted ? "你温暖了岛上的每一个人 ♡" : `已把心愿分给 ${giftedIds.length} / ${NPC_TOTAL} 个岛上的人 ♡`}</p>
           )}
@@ -2169,6 +2239,26 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes }: { 
           <div className="panel-glass-2 rounded-card px-7 py-5 text-center max-w-[18rem]">
             <p className="font-display text-[20px] tracking-wider text-white/90">这座岛，因你而暖</p>
             <p className="text-caption text-white/65 mt-2 leading-relaxed">你把心愿分给了岛上的每一个人。<br />他们会替你，把这份温柔留在这儿。</p>
+          </div>
+        </div>
+      )}
+
+      {/* 心灵印记来源卡:拾起一枚印记 → 看见那天的自己 */}
+      {shownImprint && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/35 px-4" onClick={() => setShownImprint(null)}>
+          <div
+            className="panel-glass-2 rounded-card p-5 w-[20rem] max-w-[92vw] text-center"
+            style={{ borderTop: `2px solid ${shownImprint.color}` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-caption text-white/55">
+              {shownImprint.when}的你 · <span style={{ color: shownImprint.color }}>{shownImprint.label}</span>
+            </p>
+            <p className="font-serif text-[15px] text-white/90 mt-2 leading-relaxed">「{shownImprint.words}」</p>
+            <p className="text-caption text-white/70 mt-3 leading-relaxed">{shownImprint.line}</p>
+            <button onClick={() => setShownImprint(null)} className="btn-primary mt-4 w-full">
+              收下这枚印记
+            </button>
           </div>
         </div>
       )}
