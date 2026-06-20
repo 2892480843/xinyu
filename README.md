@@ -55,6 +55,14 @@
     <td align="center"><sub>上车兜风：林间土路驾驶地图（巡游长公路 · 街机手感 · 车尾尾焰）</sub></td>
     <td align="center"><sub>暮色天灯：夜里向岛屿放飞天灯，化作夜空里的暖光</sub></td>
   </tr>
+  <tr>
+    <td align="center" width="50%"><img src="docs/screenshots/14-fishing-bay.jpg" alt="拾海垂钓" width="410"></td>
+    <td align="center" width="50%"><img src="docs/screenshots/15-windchime-night.jpg" alt="风铃心曲" width="410"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>拾海垂钓：走到海湾抛竿 · 等咬钩 · 收线，留下今天的收获</sub></td>
+    <td align="center"><sub>风铃心曲：在夜里按提示敲响五根风铃，奏出只属于你的心曲</sub></td>
+  </tr>
 </table>
 
 <table>
