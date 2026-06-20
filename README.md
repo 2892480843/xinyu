@@ -35,6 +35,19 @@
 
 <table>
   <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/09-beach-bay.jpg" alt="海湾鸟瞰" width="260"></td>
+    <td align="center" width="33%"><img src="docs/screenshots/10-beach-day.jpg" alt="海滩日常" width="260"></td>
+    <td align="center" width="33%"><img src="docs/screenshots/11-beach-eggs.jpg" alt="海岸奇遇彩蛋" width="260"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>海湾鸟瞰：沙滩 · 棕榈 · 篝火 · 小船</sub></td>
+    <td align="center"><sub>海滩日常：沙堡 · 遮阳伞 · 沙滩椅</sub></td>
+    <td align="center"><sub>海岸奇遇：贝壳 · 海螺 · 藏宝箱 · 螃蟹</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
     <td align="center" width="33%"><img src="docs/screenshots/02-input-mobile.png" alt="倾诉入口" width="230"></td>
     <td align="center" width="33%"><img src="docs/screenshots/03-narrative-tired.png" alt="AI 治愈叙事" width="230"></td>
     <td align="center" width="33%"><img src="docs/screenshots/04-safety-net.png" alt="安全网" width="230"></td>
