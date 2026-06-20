@@ -48,6 +48,17 @@
 
 <table>
   <tr>
+    <td align="center" width="50%"><img src="docs/screenshots/12-drive-forest.jpg" alt="开车兜风" width="410"></td>
+    <td align="center" width="50%"><img src="docs/screenshots/13-lantern-night.jpg" alt="暮色天灯" width="410"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>上车兜风：林间土路驾驶地图（巡游长公路 · 街机手感 · 车尾尾焰）</sub></td>
+    <td align="center"><sub>暮色天灯：夜里向岛屿放飞天灯，化作夜空里的暖光</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
     <td align="center" width="33%"><img src="docs/screenshots/02-input-mobile.png" alt="倾诉入口" width="230"></td>
     <td align="center" width="33%"><img src="docs/screenshots/03-narrative-tired.png" alt="AI 治愈叙事" width="230"></td>
     <td align="center" width="33%"><img src="docs/screenshots/04-safety-net.png" alt="安全网" width="230"></td>
