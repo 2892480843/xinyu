@@ -33,6 +33,12 @@ TENCENT_TTS_REGION = os.getenv("TENCENT_TTS_REGION", "ap-guangzhou").strip()
 TENCENT_TTS_VOICE_TYPE = int(os.getenv("TENCENT_TTS_VOICE_TYPE", "101016"))  # 默认温柔女声，可按需替换
 TENCENT_TTS_TIMEOUT = float(os.getenv("TENCENT_TTS_TIMEOUT", "8"))
 
+# 阿里云 CosyVoice 语音合成（DashScope 非实时 HTTP）。与腾讯云并存，
+# 用 TTS_PROVIDER 选择走哪个；留空时自动挑配了密钥的那一个（都配了优先 aliyun）。
+# 密钥请写进 backend/.env（已被 .gitignore 忽略），不要进代码 / git。
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "").strip().lower()  # "" | "tencent" | "aliyun"
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 # —— PostgreSQL 持久化 ——

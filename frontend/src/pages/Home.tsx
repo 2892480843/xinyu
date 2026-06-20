@@ -559,14 +559,20 @@ export default function Home() {
           </motion.div>
         </div>
         {identity && (
-          <div className="mt-3 flex items-start justify-between gap-2">
+          <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-start justify-between gap-2">
             <UserBadge identity={identity} onClear={handleClearIdentity} onDeleteData={handleDeleteData} />
             <MindMap memories={memories} island={activeIsland} artifacts={artifacts} open={memOpen} onToggle={() => setMemOpen((v) => !v)} userId={identity.user_id} />
           </div>
         )}
       </motion.header>
 
-      {identity && <MusicControl music={result?.scene.music} />}
+      {/* 自由探索时固定治愈系纯音乐「澄澈空气」(calm)，退出后恢复情绪驱动曲目 */}
+      {identity && (
+        <MusicControl
+          music={exploreOpen ? "calm" : result?.scene.music}
+          emotion={result?.emotion}
+        />
+      )}
 
       {/* 主内容区 */}
       <main
@@ -614,20 +620,20 @@ export default function Home() {
                   岛屿记得你上次的 {EMOTION_META[memories[0].emotion]?.label ?? "心事"}，欢迎回来
                 </motion.p>
               )}
-              <div className="text-center mt-2 flex items-center justify-center gap-3 flex-wrap">
+              <div className="text-center mt-2 flex items-center justify-center gap-x-3 gap-y-1.5 flex-wrap">
                 {memories.length > 0 && (
-                  <button onClick={() => setReplayMode("self")} className="btn-link">
+                  <button onClick={() => setReplayMode("self")} className="btn-link py-1 px-1">
                     回望这些天 ›
                   </button>
                 )}
                 {memories.length > 0 && identity && <IslandAssistant userId={identity.user_id} />}
                 {(memories.length > 0 || artifacts.length > 0) && (
-                  <button onClick={() => setIslandMapOpen(true)} className="btn-link">
+                  <button onClick={() => setIslandMapOpen(true)} className="btn-link py-1 px-1">
                     登高望岛 ›
                   </button>
                 )}
                 {/* 自由探索不依赖历史,任何时候都能上岛走走 */}
-                <button onClick={() => setExploreOpen(true)} className="btn-link">
+                <button onClick={() => setExploreOpen(true)} className="btn-link py-1 px-1">
                   上岛走走 ›
                 </button>
               </div>

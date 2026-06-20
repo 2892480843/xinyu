@@ -276,7 +276,7 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
       </div>
 
       {/* 叙事文本 */}
-      <div ref={cardRef} className="panel-glass-2 relative overflow-hidden rounded-card-lg p-6">
+      <div ref={cardRef} className="panel-glass-2 relative overflow-hidden rounded-card-lg p-4 sm:p-6">
         {/* 手抚高光：柔光跟随指针，mix-blend screen 只在玻璃上泛光、不压暗正文 */}
         <motion.div
           aria-hidden
@@ -376,7 +376,7 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
 
       {done && (
         <motion.div
-          className="flex flex-wrap justify-center gap-3 mt-5"
+          className="flex flex-wrap justify-center gap-2 sm:gap-3 mt-5"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.3 }}

@@ -7,10 +7,26 @@ import { Effect, EffectAttribute } from "postprocessing";
 import * as THREE from "three";
 import type { SceneVisual } from "../lib/sceneMap";
 import type { SceneMotionMood } from "../lib/sceneMotion";
-import { requestCompanionChat } from "../lib/api";
+import { requestCompanionChat, fetchTtsVoices, type TtsVoice } from "../lib/api";
 import { hash2, islandHeight, valueNoise, smoothstep01, ISLAND_RADIUS, ISLAND_SIZE } from "../lib/islandTerrain";
-import { play as playSfx, chimeNote, startEngine, stopEngine, setEngineSpeed } from "../lib/sfx";
+import { play as playSfx, chimeNote, startEngine, stopEngine, setEngineSpeed, playJump, playLand } from "../lib/sfx";
+import { playSample } from "../lib/samples";
+import { setLocationZone, stopLocationAmbience, type LocationZone } from "../lib/locationAmbience";
+import { getPerfTier } from "../lib/perfTier";
+import type { PerfTier } from "../lib/perfTier";
+import { useIsTouch } from "../lib/device";
+import {
+  createCompanionVoice,
+  getCompanionLevel,
+  loadAutoVoice,
+  loadCompanionVoiceId,
+  saveAutoVoice,
+  saveCompanionVoiceId,
+  subscribeCompanionLevel,
+  type CompanionVoiceController,
+} from "../lib/companionVoice";
 import DriveScene from "./DriveScene";
+import VoiceInputButton from "./VoiceInputButton";
 import {
   COMPANION_FOODS,
   feedCompanion,
@@ -44,6 +60,105 @@ function exGroundY(wx: number, wz: number): number {
   return base + hills * HILLS * coast * villageFlat;
 }
 
+// ── 环岛柏油路「专属地面」:近路处把地形压平(车开起来又平又稳),远处退回原有丘陵 ──
+// 由 Town 在挂载时填入:roadCurvePts = 中心线采样(含平滑高度),roadHalfW = 路面半宽。
+// 这样驾驶逻辑、地形网格、路面贴图三处共用同一份「平路地面」→ 不颠、不穿模、不悬空。
+interface RoadGroundSample { x: number; z: number; y: number; }
+const roadGround: { pts: RoadGroundSample[]; halfW: number; flatW: number; blendW: number } = {
+  pts: [],
+  halfW: 3.0, // 路面半宽(与 ROAD_HALF_W 一致)
+  flatW: 5.0, // 路面 + 路肩内完全铺平的半宽
+  blendW: 14.0, // 超出 flatW 后向丘陵地形渐变过渡的半宽
+};
+// 给世界点 (wx,wz):若在路附近 → 返回该处「铺平后的路面高度」(顺路平滑,无高频丘陵);
+// 不在路附近返回 null。用最近中心线点的高度做基准,避免路面横截面又有起伏。
+function sampleRoadGround(wx: number, wz: number): { y: number; weight: number } | null {
+  const pts = roadGround.pts;
+  if (pts.length < 4) return null;
+  let bestI = -1;
+  let bestD2 = Infinity;
+  // 朴素最近邻(路仅 280 点;车/地形调用密集但每点只 O(280),可接受)
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i].x - wx;
+    const dz = pts[i].z - wz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD2) { bestD2 = d2; bestI = i; }
+  }
+  const d = Math.sqrt(bestD2);
+  if (d > roadGround.blendW) return null;
+  // 取最近点前后各一点的平均高度做横向基准(路宽方向上高度恒定,避免横截面起伏)
+  const a = pts[bestI];
+  const b = pts[(bestI + 1) % pts.length];
+  const yBase = (a.y + b.y) * 0.5;
+  // weight: flatW 内 = 1(完全平路);flatW..blendW 之间线性过渡到 0(回归丘陵)
+  const weight = d <= roadGround.flatW ? 1 : Math.max(0, 1 - (d - roadGround.flatW) / (roadGround.blendW - roadGround.flatW));
+  return { y: yBase, weight };
+}
+// 车辆/地形共用:近路处用路面高度,远路用 exGroundY。w 返回当前点的「平路权重」(0..1)。
+function groundYWithRoad(wx: number, wz: number): { y: number; roadW: number } {
+  const rg = sampleRoadGround(wx, wz);
+  if (!rg) return { y: exGroundY(wx, wz), roadW: 0 };
+  const g = exGroundY(wx, wz);
+  return { y: g + (rg.y - g) * rg.weight, roadW: rg.weight };
+}
+// 世界点到环路中心线的最近距离(朴素遍历 280 采样点)。供清除路带上的房子/树等障碍共用。
+function distToRoadCenter(wx: number, wz: number): number {
+  const pts = roadGround.pts;
+  let m = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const dx = pts[i].x - wx;
+    const dz = pts[i].z - wz;
+    const d = dx * dx + dz * dz;
+    if (d < m) m = d;
+  }
+  return Math.sqrt(m);
+}
+
+// 环岛路控制点(顺时针:正北→东北→东→南→西南→西→西北→回正北)。
+// 走 r≈115 的干净环带,已数值验证:路边到全部地标(浴场/街区/风车/灯塔/鸟居/码头…)最小间隙 > 14,不穿模。
+// 西北段外推绕开风车(-62,80);东南侧内收避开海湾海滩道具。起点在正北,对齐车出生点。
+const ROAD_CTRL_PTS: [number, number][] = [
+  [0, 118], [70, 98], [118, 40], [108, -35], [78, -95],
+  [20, -120], [-50, -118], [-100, -92], [-135, -45], [-140, 30],
+  [-108, 82], [-50, 112], [0, 118],
+];
+const ROAD_HALF_W = 3.0; // 路面半宽(整路宽 6,容得下车碰撞 1.35×2 + 余量)
+// 用控制点 + 闭合 CatmullRom 样条生成中心线采样,并赋予「平滑高度」:
+// 只跟岛屿大盘基底(低频) + 沿弧长的宏观缓起伏(2 个长波,坡度<4%)→ 有上下坡但不颠。
+// 在模块加载时立即算好并写入 roadGround.pts,保证 buildExploreTerrain / 车辆 / 路面贴图三处拿到的都是同一份。
+function buildRoadSamples(): { x: number; z: number; y: number; yaw: number }[] {
+  const curve = new THREE.CatmullRomCurve3(
+    ROAD_CTRL_PTS.map(([x, z]) => new THREE.Vector3(x, 0, z)),
+    true, // closed
+    "catmullrom",
+    0.5,
+  );
+  const N = 280;
+  const samples: { x: number; z: number; y: number; yaw: number }[] = [];
+  const p = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  // 基准面:取控制点处岛屿大盘的最低高度,让路整体顺接地势、不悬空
+  let baseFloor = Infinity;
+  for (const [x, z] of ROAD_CTRL_PTS) baseFloor = Math.min(baseFloor, islandHeight(x / EXS, -z / EXS) * EYS);
+  if (!Number.isFinite(baseFloor)) baseFloor = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    curve.getPointAt(t, p);
+    curve.getTangentAt(t, tan);
+    // 局部基底:跟随岛屿大盘(低频)微抬;大盘高出基准超 6 才显著抬高,保证路与周围地势顺接
+    const localBase = islandHeight(p.x / EXS, -p.z / EXS) * EYS;
+    const blend = Math.min(1, Math.max(0, (localBase - baseFloor) / 6));
+    const groundDatum = baseFloor + (localBase - baseFloor) * blend;
+    // 宏观缓起伏:整圈 2 个长波(幅值 2.5,坡度极缓),给「有上下坡」的手感,但不颠
+    const roll = (Math.sin(t * Math.PI * 2 * 2) + Math.sin(t * Math.PI * 2 * 2 + 1.7) * 0.5) * 2.5;
+    samples.push({ x: p.x, z: p.z, y: groundDatum + roll, yaw: Math.atan2(tan.x, tan.z) });
+  }
+  return samples;
+}
+// 模块加载即初始化(地形/车/路贴图都依赖它,必须早于 buildExploreTerrain 第一次调用)
+roadGround.pts = buildRoadSamples();
+roadGround.halfW = ROAD_HALF_W;
+
 // 建好的地形:按高度分区配色(草地 / 沙滩 / 水下),顶点色 + toon → 海岸自然过渡。
 function buildExploreTerrain(): THREE.BufferGeometry {
   const S = ISLAND_SIZE * EXS;
@@ -60,8 +175,10 @@ function buildExploreTerrain(): THREE.BufferGeometry {
   for (let i = 0; i < pos.count; i++) {
     const px = pos.getX(i);
     const py = pos.getY(i);
-    const h = exGroundY(px, -py); // 与角色贴地同一函数(含丘陵)→ 网格与地面一致
+    // 近环岛路处把地形顶点压向「平路地面」(weight 越高越平),让路面稳稳铺在平整地基上、不穿山不悬空
+    const { y: h, roadW } = groundYWithRoad(px, -py); // 与角色/车贴地同一套函数(含路平地)
     pos.setZ(i, h);
+    void roadW; // 配色仍按高度走;路面上自有一层柏油 mesh 覆盖,无需据 roadW 改色
     const rNorm = Math.hypot(px, py) / (ISLAND_RADIUS * EXS);
     const beachEdge = 0.71 + (valueNoise(px * 0.04, py * 0.04) - 0.5) * 0.08; // 起伏的沙岸线(不死板)
     const isBeach = rNorm > beachEdge && h < 2.2; // 外圈低地 = 沙滩带
@@ -116,7 +233,10 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
 }`;
 class SketchEffect extends Effect {
   constructor() {
-    super("SketchEffect", SKETCH_FRAG, { attributes: EffectAttribute.CONVOLUTION });
+    // 注意: 不用 CONVOLUTION —— postprocessing 6.39 + R3F 3.0.4 下 CONVOLUTION
+    // 会导致 final output pass 把画面渲染到离屏 target、不呈现到主 canvas(黑屏)。
+    // shader 本就手动用 inputBuffer + texelSize 做 3×3 邻域采样,无需 CONVOLUTION 机制。
+    super("SketchEffect", SKETCH_FRAG, { attributes: EffectAttribute.NONE });
   }
 }
 
@@ -141,11 +261,11 @@ interface CompanionActionSignal {
 }
 
 const WALK_RADIUS = ISLAND_RADIUS * EXS * 0.74; // 可走范围(留出海岸,随大岛自动放大)
-const PLAYER_SPEED = 34.0; // 移动速度(手感:加速平滑后这个值像轻快小跑)
+const PLAYER_SPEED = 26.0; // 移动速度(大岛散步式探索:从容可控,不赶)
 const JUMP_V = 11.0; // 起跳初速度
 const GRAVITY = 34.0; // 重力加速度(跳跃抛物);跳跃高度 ≈ V²/2g ≈ 1.8 单位
-const CAM_DIST = 10.0; // 相机跟在身后的距离
-const CAM_HEIGHT = 5.0; // 相机高度
+const CAM_DIST = 13.0; // 相机跟在身后的距离(大岛下稍远,看得广、角色不贴边)
+const CAM_HEIGHT = 6.2; // 相机高度(略抬高,丘陵起伏不挡视线)
 
 // 模块级临时向量(单 Player 实例,逐帧复用,避开 react-hooks 对组件内值变异的规则)
 const _fwd = new THREE.Vector3();
@@ -199,12 +319,13 @@ function resolveCollisions(grid: Map<string, Collider[]> | null, pos: THREE.Vect
 }
 const PLAYER_COL_R = 0.45; // 玩家碰撞半径
 
-// 汽车摆放(出生点正前方一处空地,最近房子 ~8.8 单位、不压房;视觉与碰撞共用同一坐标)
-const CAR_POS = { x: 0, z: 14, rot: -0.6 };
+// 汽车摆放:直接停在环路起点 (0,118) 的路面上,朝向沿路切线(指向下一个控制点 (70,98))。
+// 一上车就在柏油路上,踩油门即沿环线兜风,无需先开过草地/穿村。视觉与碰撞共用同一坐标。
+const CAR_POS = { x: 0, z: 118, rot: 1.85 };
 const CAR_SCALE = 0.05; // 原生约 98 长 → ~4.9 单位的车
 const CAR_Y_OFFSET = 15.47 * CAR_SCALE; // 轮底在原点下 15.47 → 抬起让轮子落地(≈0.77)
-const CAR_MAX_SPEED = 30; // 开车速度(比走路快)
-const CAR_TURN = 1.9; // 转向速率
+const CAR_MAX_SPEED = 36; // 开车速度(比走路快;路面平整后可放心提一点速,兜风更爽)
+const CAR_TURN = 2.1; // 转向速率(低速更灵活)
 // 可开的汽车状态(模块单例:DrivableCar 读、Player 写)。driving 时玩家坐车里、用输入开车
 const carState = { x: CAR_POS.x, z: CAR_POS.z, heading: CAR_POS.rot, speed: 0, turn: 0, driving: false };
 const sceneEnv = { night: false }; // 夜间标记(ExploreScene 写,DrivableCar 读 → 车灯只在夜里亮)
@@ -339,13 +460,16 @@ const MODELS = {
 Object.values(MODELS).forEach((u) => useGLTF.preload(u));
 
 // 陪伴精灵:跟随玩家漂浮的小灵兽(强化「情感陪伴」)。保留 glb 原材质(半透+发光),不套 toon。
+// 说话时：嘴部按音量开合（程序化合成「说话」动画，glb 无专门片段）+ 灯塔光随情绪变色。
 function Companion({
   posRef,
   action,
+  emotion,
   onInteract,
 }: {
   posRef: React.RefObject<THREE.Vector3>;
   action: CompanionActionSignal | null;
+  emotion?: string;
   onInteract?: () => void;
 }) {
   const { scene, animations } = useGLTF(MODELS.companion);
@@ -369,6 +493,21 @@ function Companion({
   }, [scene]);
   const ref = useRef<THREE.Group>(null);
   const lightRef = useRef<THREE.PointLight>(null);
+  // 嘴部/表情节点：说话时按音量开合，合成「说话」动画（glb 无 Speak 片段，靠程序化）
+  const mouthRef = useRef<THREE.Object3D[]>([]);
+  // 嘴部节点原始 scale，开合时围绕它缩放，不破坏模型默认比例
+  const mouthBaseScale = useRef<THREE.Vector3[]>([]);
+  useLayoutEffect(() => {
+    const names = ["XYPS_tiny_smile_left", "XYPS_tiny_smile_right", "XYPS_tiny_nose"];
+    const found: THREE.Object3D[] = [];
+    const base: THREE.Vector3[] = [];
+    names.forEach((n) => {
+      const node = obj.getObjectByName(n);
+      if (node) { found.push(node); base.push(node.scale.clone()); }
+    });
+    mouthRef.current = found;
+    mouthBaseScale.current = base;
+  }, [obj]);
   const { actions, mixer } = useAnimations(animations, ref);
   useEffect(() => {
     const idle = actions.IdleLoop;
@@ -394,6 +533,10 @@ function Companion({
       mixer.removeEventListener("finished", done);
     };
   }, [action, actions, mixer]);
+  // 预解析目标情绪色，useFrame 里只做 lerp，避免每帧 new Color / parse
+  const targetColor = useMemo(() => new THREE.Color(companionLightColor(emotion)), [emotion]);
+  const baseColor = useMemo(() => new THREE.Color(COMPANION_LIGHT_BASE), []);
+  const tmpColor = useMemo(() => new THREE.Color(), []);
   useFrame((s, dt) => {
     mixer.update(dt);
     const p = posRef.current;
@@ -401,12 +544,35 @@ function Companion({
     if (!p || !g) return;
     const t = s.clock.elapsedTime;
     const k = Math.min(1, dt * 2.5);
-    const ty = exGroundY(p.x, p.z) + 1.48 + Math.sin(t * 1.8) * 0.14;
+    // 说话音量(0..1)：云端音频接 AnalyserNode 采真实振幅，原生降级用节奏模拟。
+    // 据此让精灵随声「轻轻颤」+ 灯塔光随声脉动 —— 眼睛能看见「它在说话」。
+    const lvl = getCompanionLevel();
+    const talk = Math.min(1, lvl);
+    const ty = exGroundY(p.x, p.z) + 1.48 + Math.sin(t * 1.8) * 0.14 + talk * 0.12;
     g.position.x += (p.x + 1.15 - g.position.x) * k;
     g.position.z += (p.z + 1.15 - g.position.z) * k;
     g.position.y += (ty - g.position.y) * Math.min(1, dt * 3.5);
-    g.rotation.y = Math.sin(t * 0.5) * 0.35;
-    if (lightRef.current) lightRef.current.intensity = 1.25 + Math.sin(t * 2.4) * 0.25;
+    // 待机缓转；说话时叠一点高频抖动（像它在用力发声）
+    g.rotation.y = Math.sin(t * 0.5) * 0.35 + Math.sin(t * 22) * 0.05 * talk;
+    g.rotation.z = Math.sin(t * 18) * 0.04 * talk;
+    // 嘴部「说话」动画：按音量 + 轻微抖动开合（像在咬字），停了缓回原比例
+    // 嘴张开的程度由 level 主导；再叠一拍高频让开合不死板。闭嘴用 scale.y 收一点。
+    const mouths = mouthRef.current;
+    for (let i = 0; i < mouths.length; i++) {
+      const node = mouths[i];
+      const base = mouthBaseScale.current[i];
+      if (!node || !base) continue;
+      const open = talk * (0.7 + Math.abs(Math.sin(t * 14)) * 0.3); // 0..1
+      node.scale.y = base.y * (1 + open * 0.55);
+      node.scale.x = base.x * (1 - open * 0.12);
+    }
+    if (lightRef.current) {
+      // 灯塔光：待机呼吸脉动 + 说话时随音量明显加亮（像声音顺着光漏出来）
+      lightRef.current.intensity = 1.25 + Math.sin(t * 2.4) * 0.25 + talk * 2.2;
+      // 说话时颜色渐变到情绪色，停了缓回暖白；talk 权重做平滑过渡
+      tmpColor.copy(baseColor).lerp(targetColor, Math.min(1, talk * 1.4));
+      lightRef.current.color.lerp(tmpColor, Math.min(1, dt * 4));
+    }
   });
   return (
     <group
@@ -421,6 +587,25 @@ function Companion({
       <pointLight ref={lightRef} color="#ffe2a0" intensity={1.4} distance={4.2} decay={1.6} />
     </group>
   );
+}
+
+// 精灵说话时，灯塔光偏向当前情绪色（开心暖金、低落冷蓝…），停了回归暖白。
+// 颜色取自 sceneMap 各情绪 palette 的 celestial/暖光基调，克制温柔。
+const COMPANION_EMOTION_LIGHT: Record<string, string> = {
+  happy: "#ffd27a",
+  calm: "#aef0e6",
+  anxious: "#c9d4e0",
+  sad: "#9fb4e0",
+  tired: "#9fb4f0",
+  lonely: "#cdbae6",
+  angry: "#e6a08a",
+  helpless: "#9fb2c6",
+};
+const COMPANION_LIGHT_BASE = "#ffe2a0"; // 待机暖白光（与既有一致）
+
+function companionLightColor(emotion?: string): string {
+  if (!emotion) return COMPANION_LIGHT_BASE;
+  return COMPANION_EMOTION_LIGHT[emotion] ?? COMPANION_LIGHT_BASE;
 }
 
 function companionFallbackAction(name: CompanionAnimation): CompanionAnimation {
@@ -565,29 +750,33 @@ function DrivableCar({ grad }: { grad: THREE.Texture }) {
   const lights = useRef<THREE.Group>(null);
   const roll = useRef(0);
   const clk = useRef(0);
+  const gy = useRef(0); // 平滑后的车身贴地高度(跨帧阻尼,消除地形抖动)
   useFrame((_, dt) => {
     const o = g.current;
     if (!o) return;
     clk.current += dt;
-    const bob = carState.driving && Math.abs(carState.speed) > 0.5 ? Math.sin(clk.current * 13) * 0.04 : 0; // 悬挂微颠
-    o.position.set(carState.x, exGroundY(carState.x, carState.z) + CAR_Y_OFFSET + bob, carState.z);
-    // 顺着地形坡度躺平(exGroundY 有限差分求法线,analytic 无需射线)→ 上下坡不扎进地面;再叠转向侧倾
-    const e = 1.6;
-    const up = new THREE.Vector3(exGroundY(carState.x - e, carState.z) - exGroundY(carState.x + e, carState.z), 2 * e, exGroundY(carState.x, carState.z - e) - exGroundY(carState.x, carState.z + e)).normalize();
+    // 贴地高度用「路地面」(近路处压平) + 跨帧阻尼 → 在路上又稳又顺,不再随丘陵颠簸
+    const targetGY = groundYWithRoad(carState.x, carState.z).y;
+    gy.current += (targetGY - gy.current) * Math.min(1, dt * 12);
+    const bob = carState.driving && Math.abs(carState.speed) > 0.5 ? Math.sin(clk.current * 13) * 0.025 : 0; // 悬挂微颠(幅值小)
+    o.position.set(carState.x, gy.current + CAR_Y_OFFSET + bob, carState.z);
+    // 顺着路面坡度躺平(用路地面有限差分求法线,analytic 无需射线)→ 缓上下坡自然俯仰,路上接近水平
+    const e = 1.8;
+    const up = new THREE.Vector3(groundYWithRoad(carState.x - e, carState.z).y - groundYWithRoad(carState.x + e, carState.z).y, 2 * e, groundYWithRoad(carState.x, carState.z - e).y - groundYWithRoad(carState.x, carState.z + e).y).normalize();
     const fwd = new THREE.Vector3(Math.sin(carState.heading), 0, Math.cos(carState.heading));
     fwd.addScaledVector(up, -fwd.dot(up));
     if (fwd.lengthSq() < 1e-6) fwd.set(Math.sin(carState.heading), 0, Math.cos(carState.heading));
     fwd.normalize();
     const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
-    const tRoll = -carState.turn * 0.13 * Math.max(-1, Math.min(1, carState.speed / 8)); // 转向侧倾(随速度,倒车反向)
-    roll.current += (tRoll - roll.current) * Math.min(1, dt * 8);
+    const tRoll = -carState.turn * 0.11 * Math.max(-1, Math.min(1, carState.speed / 8)); // 转向侧倾(略收敛,更稳)
+    roll.current += (tRoll - roll.current) * Math.min(1, dt * 7);
     const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
     q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll.current));
-    o.quaternion.slerp(q, Math.min(1, dt * 10));
+    o.quaternion.slerp(q, Math.min(1, dt * 8)); // 姿态阻尼,过弯/起伏不突兀
     if (lights.current) lights.current.visible = carState.driving && sceneEnv.night; // 车头灯:只在夜里亮
   });
   return (
-    <group ref={g} position={[carState.x, exGroundY(carState.x, carState.z) + CAR_Y_OFFSET, carState.z]} rotation={[0, carState.heading, 0]}>
+    <group ref={g} position={[carState.x, groundYWithRoad(carState.x, carState.z).y + CAR_Y_OFFSET, carState.z]} rotation={[0, carState.heading, 0]}>
       <GltfProp url={MODELS.qiche} grad={grad} position={[0, 0, 0]} scale={CAR_SCALE} />
       <group ref={lights} visible={false}>
         <mesh position={[0.62, 0.62, 2.25]}><sphereGeometry args={[0.16, 8, 6]} /><meshBasicMaterial color="#fff6d8" toneMapped={false} /></mesh>
@@ -1038,6 +1227,7 @@ function Player({
   const airborne = useRef(false); // 是否腾空
   const sq = useRef(0); // 落地压扁量(衰减)
   const introT = useRef(0); // 开场俯冲运镜进度 0→1
+  const stepT = useRef(0); // 脚步/涉水音效冷却计时（限频，避免每帧触发）
   const { camera } = useThree();
 
   useFrame((s, dtRaw) => {
@@ -1067,7 +1257,7 @@ function Player({
       carState.turn = input.x; // 转向输入(车身侧倾用)
       const targetSpeed = -input.y * CAR_MAX_SPEED;
       carState.speed += (targetSpeed - carState.speed) * (1 - Math.pow(0.04, dt));
-      if (Math.abs(carState.speed) > 0.4) { const cf = Math.min(1, Math.abs(carState.speed) / CAR_MAX_SPEED); carState.heading += input.x * (CAR_TURN - cf * 0.9) * dt * (carState.speed >= 0 ? 1 : -1); } // 低速灵活、高速沉稳(像真车)
+      if (Math.abs(carState.speed) > 0.4) { const cf = Math.min(1, Math.abs(carState.speed) / CAR_MAX_SPEED); carState.heading += input.x * (CAR_TURN - cf * 0.7) * dt * (carState.speed >= 0 ? 1 : -1); } // 低速灵活、高速沉稳(像真车);高速衰减收一点,免得太钝
       carState.x += Math.sin(carState.heading) * carState.speed * dt;
       carState.z += Math.cos(carState.heading) * carState.speed * dt;
       // 车身多点采样(前/中/后)各自推出障碍 → 长车不穿模;撞到则减速,不硬穿
@@ -1078,15 +1268,16 @@ function Player({
         resolveCollisions(collidersRef?.current ?? null, _carTmp, { x: 0, z: 0 }, 1.35);
         if (Math.abs(_carTmp.x - px) > 1e-3 || Math.abs(_carTmp.z - pz) > 1e-3) { _hit = true; carState.x += _carTmp.x - px; carState.z += _carTmp.z - pz; }
       }
-      if (_hit) carState.speed *= 0.5;
+      if (_hit) carState.speed *= 0.75; // 撞墙减速更柔和(原 0.5 太顿),轻蹭不会急停
       setEngineSpeed(Math.abs(carState.speed) / CAR_MAX_SPEED); // 引擎低鸣随车速
       const cr = Math.hypot(carState.x, carState.z), cmax = WALK_RADIUS * 0.98;
-      if (cr > cmax) { carState.x *= cmax / cr; carState.z *= cmax / cr; carState.speed *= 0.3; }
-      pos.set(carState.x, exGroundY(carState.x, carState.z), carState.z);
-      const cb = 14, cu = 7.5; // 相机跟在车后上方
-      _camTarget.set(carState.x - Math.sin(carState.heading) * cb, exGroundY(carState.x, carState.z) + cu, carState.z - Math.cos(carState.heading) * cb);
-      camera.position.lerp(_camTarget, Math.min(1, dt * 2.6));
-      camera.lookAt(carState.x, exGroundY(carState.x, carState.z) + 1.3, carState.z);
+      if (cr > cmax) { carState.x *= cmax / cr; carState.z *= cmax / cr; carState.speed *= 0.4; }
+      const _cgy = groundYWithRoad(carState.x, carState.z).y; // 车贴地用路地面 → 在路上又稳又顺
+      pos.set(carState.x, _cgy, carState.z);
+      const cb = 13.5, cu = 7.2; // 相机跟在车后上方
+      _camTarget.set(carState.x - Math.sin(carState.heading) * cb, _cgy + cu, carState.z - Math.cos(carState.heading) * cb);
+      camera.position.lerp(_camTarget, Math.min(1, dt * 3.2)); // 镜头跟车更跟手(原 2.6 偏滞后)
+      camera.lookAt(carState.x, _cgy + 1.3, carState.z);
       return; // 跳过走路逻辑
     }
     g.visible = true;
@@ -1144,7 +1335,11 @@ function Player({
 
     // 贴地 + 跳跃:陆上随丘陵起伏,浅滩可没到小腿(WADE_FLOOR);腾空时按重力抛物
     const groundY = Math.max(exGroundY(pos.x, pos.z), WADE_FLOOR);
-    if (input.jump && !airborne.current) { vy.current = JUMP_V; airborne.current = true; }
+    if (input.jump && !airborne.current) {
+      vy.current = JUMP_V; airborne.current = true;
+      // 起跳音:采样优先(jump.m4a),未命中(首访/断网)回退合成嗖声。一次性消费,天然不连响。
+      if (!playSample("jump", { gain: 0.5, rate: 0.95 + Math.random() * 0.15 })) playJump();
+    }
     if (input.jump) input.jump = false; // 一次性消费
     if (input.wave) { waveT.current = 1.3; input.wave = false; } // 招手:仅 F 键 / ✋ 按钮触发
     const cc = cheerRef?.current ?? 0;                            // 拾取(计数变化)→ 欢呼
@@ -1160,11 +1355,30 @@ function Player({
     if (airborne.current) {
       vy.current -= GRAVITY * dt;
       pos.y += vy.current * dt;
-      if (pos.y <= groundY) { pos.y = groundY; vy.current = 0; airborne.current = false; sq.current = 1; } // 落地触发压扁
+      if (pos.y <= groundY) {
+        pos.y = groundY; vy.current = 0; airborne.current = false; sq.current = 1; // 落地触发压扁
+        // 落地音:涉水(脚在水面下)用水花声,否则闷响落地声。采样优先,未命中回退合成。
+        // 该分支仅在落地瞬间进入(下帧走 else),天然单次触发,不会连响。
+        if (pos.y < 0.02) {
+          if (!playSample("water_splash", { gain: 0.5, rate: 0.9 + Math.random() * 0.2 })) {
+            // 涉水无合成水花 → 用落地合成兜底(略轻)
+            playLand(0.2);
+          }
+        } else if (!playSample("land", { gain: 0.45 })) {
+          playLand(0.3);
+        }
+      }
     } else {
       pos.y = groundY;
     }
     const wading = !airborne.current && pos.y < 0.02; // 脚在水面以下 = 涉水
+    // 脚步 / 涉水音：移动中（gait 够大）按步频触发，涉水播水花、陆上播脚步。
+    // 采样未就绪时静默（无合成对应，断网可接受）。stepT 限频(慢走 0.46s/步、涉水 0.5s)。
+    stepT.current -= dt;
+    if (!airborne.current && gait > 0.25 && stepT.current <= 0) {
+      stepT.current = wading ? 0.5 : 0.46;
+      playSample(wading ? "water_splash" : "footstep", { gain: wading ? 0.5 : 0.6, rate: 0.9 + Math.random() * 0.2 });
+    }
     sq.current = Math.max(0, sq.current - dt * 3.5); // 压扁回弹衰减
     const breathe = !airborne.current && gait < 0.12 ? Math.sin(s.clock.elapsedTime * 1.6) * 0.012 : 0; // 待机呼吸起伏
     const bob = airborne.current ? 0 : Math.abs(Math.sin(walkPhase.current)) * 0.05 * gait; // 走路身体微颠
@@ -1243,15 +1457,24 @@ function Player({
     if (introT.current < 1) {
       const e = introT.current * introT.current * (3 - 2 * introT.current); // smoothstep 缓动
       const ang = ry + (1 - e) * 2.2; // 起始侧偏 → 收束到身后
-      const dist = CAM_DIST + (1 - e) * 120; // 起始远
-      const ht = CAM_HEIGHT + (1 - e) * 130; // 起始高
+      const dist = CAM_DIST + (1 - e) * 90; // 起始远(收束更平顺,不猛拉)
+      const ht = CAM_HEIGHT + (1 - e) * 100; // 起始高
       _camTarget.set(pos.x - Math.sin(ang) * dist, pos.y + ht, pos.z - Math.cos(ang) * dist);
       camera.position.lerp(_camTarget, Math.min(1, dt * 3.0));
     } else {
       _camTarget.set(pos.x - Math.sin(ry) * CAM_DIST, pos.y + CAM_HEIGHT, pos.z - Math.cos(ry) * CAM_DIST);
-      camera.position.lerp(_camTarget, Math.min(1, dt * 2.4));
+      // 轻量避障:相机若被丘陵/地形挡住(镜头处地面高于镜头 y),沿「角色→相机」方向抬一点、收近,
+      // 避免穿山/卡到地下。纯解析判断(用 groundYWithRoad,无射线),零额外开销。
+      const camGround = groundYWithRoad(_camTarget.x, _camTarget.z).y;
+      if (camGround > _camTarget.y - 0.5) {
+        const push = Math.min(4.5, (camGround - (_camTarget.y - 0.5)) * 1.6);
+        _camTarget.y += push;
+        _camTarget.x -= Math.sin(ry) * -push * 0.4; // 沿镜头方向靠近角色一点
+        _camTarget.z -= Math.cos(ry) * -push * 0.4;
+      }
+      camera.position.lerp(_camTarget, Math.min(1, dt * 3.0)); // 更跟手(原 2.4 偏滞后)
     }
-    camera.lookAt(pos.x, pos.y + 1.3, pos.z);
+    camera.lookAt(pos.x, pos.y + 1.5, pos.z);
 
     // 涉水时脚下泛起一圈圈涟漪
     if (ripple.current) {
@@ -1486,9 +1709,14 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
     [toonGrad],
   );
   const glow = useMemo(() => new THREE.MeshStandardMaterial({ color: "#ffe6a0", emissive: "#ffe6a0", emissiveIntensity: 2, toneMapped: false }), []);
+  // 环岛柏油路:深灰柏油路面 + 双黄中线 + 浅灰路肩,与步行石板路明显区分(车可开,纯视觉无碰撞)
+  const asphalt = useMemo(() => new THREE.MeshToonMaterial({ color: "#3a3d44", gradientMap: toonGrad }), [toonGrad]);
+  const asphaltStart = useMemo(() => new THREE.MeshToonMaterial({ color: "#4a4e57", gradientMap: toonGrad }), [toonGrad]); // 起点段稍亮,提示「这里上车」
+  const yellowLine = useMemo(() => new THREE.MeshBasicMaterial({ color: "#e8c34a", toneMapped: false }), []);
+  const shoulderMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#6b6f78", gradientMap: toonGrad }), [toonGrad]);
   useEffect(
-    () => () => [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, crop, hay, glow].forEach((m) => m.dispose()),
-    [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, crop, hay, glow],
+    () => () => [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, crop, hay, glow, asphalt, asphaltStart, yellowLine, shoulderMat].forEach((m) => m.dispose()),
+    [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, crop, hay, glow, asphalt, asphaltStart, yellowLine, shoulderMat],
   );
   // 浅滩礁石(岛外一圈水里)
   // 浅滩礁石(大岛外一圈水里)
@@ -1532,6 +1760,8 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       const r = WALK_RADIUS * (0.28 + hash2(i + 50, 2.3) * 0.58);
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
+      // 清掉落在环岛柏油路上的独立小屋(房子有碰撞,不清则车穿模撞墙)。路带 = 路面半宽 + 房子半径 + 余量
+      if (distToRoadCenter(x, z) < ROAD_HALF_W + 4) continue;
       out.push({
         x,
         z,
@@ -1572,6 +1802,14 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
     }
     return out;
   }, []);
+
+  // ── 环岛柏油路(车专属大环线) ──────────────────────────────────────────
+  // 中心线采样 + 平滑高度在模块加载时已算好(roadGround.pts),地形/车/路贴图三处共用同一份。
+  // 这里直接引用,不再重复计算,保证三者严格一致 → 路面不悬空、车不颠。
+  const ringRoad = useMemo(() => roadGround.pts as { x: number; z: number; y: number; yaw: number }[], []);
+
+
+  // 点到环路的最近距离:用模块级 distToRoadCenter(roadGround.pts 在模块加载时已填),不再单独 memo。
 
   // 护栏:大岛缘一整圈
   const fence = useMemo(() => {
@@ -1649,6 +1887,8 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       // 清出两座大地标周围的树(否则树会穿过浴场/街区)
       if (Math.hypot(x - BATH.x, z - BATH.z) < BATH.clear) continue;
       if (Math.hypot(x - BLOCK.x, z - BLOCK.z) < BLOCK.clear) continue;
+      // 清出环岛柏油路上的树(给车留出干净路面 + 两侧净空;树根在路外则保留作行道树)
+      if (distToRoadCenter(x, z) < ROAD_HALF_W + 2.8) continue;
       out.push({
         x,
         z,
@@ -1658,7 +1898,7 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       });
     }
     return out;
-  }, []);
+  }, []); // distToRoadCenter 为模块级稳定函数,无需入依赖
   // 障碍碰撞体:树(整株)+ 房子(占地)+ 大地标 → 空间网格,交给 Player 逐帧解算(玩家撞不进去)
   useEffect(() => {
     if (!collidersRef) return;
@@ -1731,9 +1971,12 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
   const gMushStem = useMemo(() => new THREE.CylinderGeometry(0.04, 0.055, 0.18, 6), []);
   const gMushCap = useMemo(() => new THREE.SphereGeometry(0.13, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), []); // 蘑菇伞盖(半球)
   const gLily = useMemo(() => new THREE.CircleGeometry(0.42, 9), []); // 荷叶
+  // 环岛柏油路几何:路面(宽 6) + 双黄中线短块 + 浅灰路肩(窄长条,非均匀缩放铺长)
+  const gAsphalt = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []); // 路面/路肩都用单位盒,在 InstancedField 里非均匀缩放(长 × 宽 × 厚)
+  const gRoadLine = useMemo(() => new THREE.BoxGeometry(0.16, 0.55, 1.0), []); // 中线短块(宽 0.16,沿路方向由 sv.z 伸缩长度)
   useEffect(
-    () => () => [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily].forEach((g) => g.dispose()),
-    [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily],
+    () => () => [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, gAsphalt, gRoadLine].forEach((g) => g.dispose()),
+    [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, gAsphalt, gRoadLine],
   );
 
   // 实例化布点(由散布数组换算到世界矩阵)
@@ -1832,6 +2075,56 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
   const pathItems = useMemo(() => pathTiles.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 0.02, p.z] as [number, number, number], s: 1, r: [-Math.PI / 2, 0, p.rot] as [number, number, number] })), [pathTiles]);
   const dashItems = useMemo(() => dashes.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 0.05, p.z] as [number, number, number], s: 1, r: [-Math.PI / 2, 0, p.rot] as [number, number, number] })), [dashes]);
 
+  // 环岛柏油路布点:路面/双黄中线/左右路肩 都从 ringRoad 采样派生。
+  // 路面用单位盒(gAsphalt)非均匀缩放 sv=[宽, 厚, 段长],本地 +Z 对齐前进方向 → 整体绕 Y 转 yaw。
+  // 起点附近一小段用 asphaltStart 稍亮材质,提示「车停在这里、从这里上环线」。
+  const ROAD_START_IDX = 6; // 距起点最近的采样点下标(让起点高亮段正好压在车出生点上方)
+  const roadSurfaceItems = useMemo(() => {
+    return ringRoad.map((s, i) => {
+      const seg = ringRoad[(i + 1) % ringRoad.length];
+      const len = Math.hypot(seg.x - s.x, seg.z - s.z) + 0.06; // 段长(+一点点避免接缝漏草地)
+      return {
+        p: [s.x, s.y + 0.04, s.z] as [number, number, number],
+        sv: [ROAD_HALF_W * 2, 0.16, len] as [number, number, number],
+        r: [0, s.yaw, 0] as [number, number, number],
+      };
+    });
+  }, [ringRoad]);
+  // 起点段(高亮)与主路段拆开,分别用 asphaltStart / asphalt 材质
+  const roadStartItems = useMemo(
+    () => roadSurfaceItems.filter((_, i) => Math.abs(i - ROAD_START_IDX) <= 3),
+    [roadSurfaceItems],
+  );
+  const roadMainItems = useMemo(
+    () => roadSurfaceItems.filter((_, i) => Math.abs(i - ROAD_START_IDX) > 3),
+    [roadSurfaceItems],
+  );
+  // 双黄中线:每隔一段放一块黄色短块(gRoadLine 沿本地 Z 缩成段长),取偶数采样点做成虚线感
+  const roadLineItems = useMemo(() => {
+    const out: InstItem[] = [];
+    for (let i = 0; i < ringRoad.length; i += 2) {
+      const s = ringRoad[i];
+      const seg = ringRoad[(i + 1) % ringRoad.length];
+      const len = Math.hypot(seg.x - s.x, seg.z - s.z);
+      out.push({ p: [s.x, s.y + 0.13, s.z], sv: [0.16, 0.04, len * 0.9], r: [0, s.yaw, 0] });
+    }
+    return out;
+  }, [ringRoad]);
+  // 左右路肩:沿前进方向的法向偏移 ±ROAD_HALF_W,浅灰窄长条,勾出路面边界
+  const shoulderItems = useMemo(() => {
+    const out: InstItem[] = [];
+    for (let i = 0; i < ringRoad.length; i++) {
+      const s = ringRoad[i];
+      const seg = ringRoad[(i + 1) % ringRoad.length];
+      const len = Math.hypot(seg.x - s.x, seg.z - s.z) + 0.06;
+      const nx = Math.cos(s.yaw); // 右侧法向(前进方向顺时针 90°)
+      const nz = -Math.sin(s.yaw);
+      out.push({ p: [s.x + nx * ROAD_HALF_W, s.y + 0.05, s.z + nz * ROAD_HALF_W], sv: [0.5, 0.12, len], r: [0, s.yaw, 0] });
+      out.push({ p: [s.x - nx * ROAD_HALF_W, s.y + 0.05, s.z - nz * ROAD_HALF_W], sv: [0.5, 0.12, len], r: [0, s.yaw, 0] });
+    }
+    return out;
+  }, [ringRoad]);
+
   // 房子:用 glb 模型替换旧程序化方块屋(循环 7 种民居款,朝向村心,缩放由旧「体宽」派生)。
   // 灯塔看守屋不进循环(它专属灯塔旁,在 Village 里单独摆)。
   const houseProps = useMemo(() => {
@@ -1894,6 +2187,12 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
 
       {/* 路面方砖(实例化) */}
       <InstancedField geo={gPathTile} material={stone} items={pathItems} />
+
+      {/* 环岛柏油路(车专属大环线):路面 + 双黄中线 + 左右路肩。纯视觉无碰撞,车可自由碾过/偏离。 */}
+      <InstancedField geo={gAsphalt} material={asphalt} items={roadMainItems} />
+      <InstancedField geo={gAsphalt} material={asphaltStart} items={roadStartItems} />
+      <InstancedField geo={gRoadLine} material={yellowLine} items={roadLineItems} />
+      <InstancedField geo={gAsphalt} material={shoulderMat} items={shoulderItems} />
 
       {/* 岛缘护栏(实例化:柱 + 横杆) */}
       <InstancedField geo={gFencePost} material={wood} items={fencePosts} />
@@ -2762,6 +3061,64 @@ function FishingSpot({ posRef, onAtWater, casting }: { posRef: React.RefObject<T
   );
 }
 
+// 🌊🪵 位置感知音频：按玩家所在区域切换循环底噪 + 靠近地标触发点状音。
+// 区域判定用 exGroundY(高度) + bayMask(海湾) + 离心半径；地标用固定坐标+半径边沿触发。
+// 位置底噪与情绪底噪并行（lib/locationAmbience.ts 独立运行）；地标音走 envGain 独立常响。
+const POND = { x: WALK_RADIUS * 0.3, z: WALK_RADIUS * 0.3 }; // 池塘中心(~53,53)
+const BONFIRE = { x: -6, z: -3 }; // 篝火
+const LIGHTHOUSE = { x: -WALK_RADIUS * 0.92, z: -WALK_RADIUS * 0.3 }; // 灯塔(~-163,-53)
+const PIER = { x: WALK_RADIUS - 1.5, z: 0 }; // 码头(~176,0)
+function LocationAudio({ posRef, night }: { posRef: React.RefObject<THREE.Vector3>; night: boolean }) {
+  const zoneT = useRef(0); // 区域检查节流计时
+  const curZone = useRef<LocationZone | null>(null);
+  const foghornNear = useRef(false); const foghornCool = useRef(0); // 灯塔雾笛：边沿+冷却
+  const conchNear = useRef(false); const conchCool = useRef(0); // 码头海螺：边沿+冷却
+
+  useEffect(() => () => { stopLocationAmbience(); }, []); // 卸载即停
+
+  useFrame((_, dt) => {
+    const p = posRef.current; if (!p) return;
+
+    // —— 区域底噪：每 0.3s 判定一次，避免每帧切换 ——
+    zoneT.current -= dt;
+    if (zoneT.current <= 0) {
+      zoneT.current = 0.3;
+      const r = Math.hypot(p.x, p.z);
+      const gy = exGroundY(p.x, p.z);
+      const bay = bayMask(p.x, p.z);
+      // 优先级：小范围特殊区 → 大范围地貌
+      let zone: LocationZone;
+      if (Math.hypot(p.x - POND.x, p.z - POND.z) < 12) zone = "brook";
+      else if (Math.hypot(p.x - BONFIRE.x, p.z - BONFIRE.z) < 8) zone = "campfire";
+      else if (r > WALK_RADIUS * 1.05) zone = "ocean"; // 远海
+      else if ((bay > 0.32 && r > WALK_RADIUS * 0.78) || gy < 0.12) zone = "bay"; // 海湾/海滩
+      else if (gy > 4.5) zone = "mountain"; // 山地
+      else if (r > WALK_RADIUS * 0.45 && r <= WALK_RADIUS * 0.78) zone = "forest"; // 岛中外圈森林
+      else zone = night ? "meadow_night" : "meadow_day"; // 草地/村落
+      if (zone !== curZone.current) { curZone.current = zone; setLocationZone(zone, true); }
+    }
+
+    // —— 地标点状音：灯塔雾笛（进 12 半径，60s 冷却）——
+    const dLh = Math.hypot(p.x - LIGHTHOUSE.x, p.z - LIGHTHOUSE.z);
+    foghornCool.current -= dt;
+    const lhNear = dLh < 12;
+    if (lhNear && !foghornNear.current && foghornCool.current <= 0) {
+      playSample("foghorn_zone", { gain: 0.5 }); foghornCool.current = 60;
+    }
+    foghornNear.current = lhNear;
+
+    // —— 地标点状音：码头海螺（进 10 半径，45s 冷却）——
+    const dPi = Math.hypot(p.x - PIER.x, p.z - PIER.z);
+    conchCool.current -= dt;
+    const piNear = dPi < 10;
+    if (piNear && !conchNear.current && conchCool.current <= 0) {
+      playSample("conch_zone", { gain: 0.5 }); conchCool.current = 45;
+    }
+    conchNear.current = piNear;
+  });
+  return null;
+}
+
 // 🎐 风铃心曲:5 个散布风铃,走近(进入半径的瞬间)敲响其音;ExploreMode 比对目标曲序
 const CHIME_FREQS = [523.25, 587.33, 659.25, 783.99, 880.0]; // C D E G A 五声音阶
 // 引导光标:下一个该敲的风铃亮起脉动光环 + 光柱 + 点光 —— 玩家「跟着发光的风铃走」即可奏曲
@@ -2843,6 +3200,17 @@ function DistantGlows({ count }: { count: number }) {
   return <instancedMesh ref={ref} args={[geo, mat, 30]} frustumCulled={false} />;
 }
 
+// 加载态：首次进岛/弱网时模型未就绪，给一个居中提示，避免移动端白屏困惑。
+function ExploreLoading() {
+  return (
+    <Html center>
+      <div style={{ color: "#fff", textAlign: "center", whiteSpace: "nowrap", textShadow: "0 1px 8px rgba(0,0,0,.6)", fontSize: 15 }}>
+        岛屿正在浮出水面……
+      </div>
+    </Html>
+  );
+}
+
 function ExploreScene({
   visual,
   inputRef,
@@ -2874,6 +3242,7 @@ function ExploreScene({
   nextChime,
   lanternCount,
   onCar,
+  tier,
 }: {
   visual: SceneVisual;
   inputRef: React.RefObject<Input>;
@@ -2905,6 +3274,7 @@ function ExploreScene({
   nextChime?: number;
   lanternCount: number;
   onCar?: (s: "enter" | "exit" | null) => void;
+  tier: PerfTier;
 }) {
   const terrain = useMemo(() => buildExploreTerrain(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
@@ -3001,7 +3371,7 @@ function ExploreScene({
       </mesh>
 
       <Player inputRef={inputRef} posRef={posRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} />
-      <Companion posRef={posRef} action={companionAction} onInteract={onCompanionInteract} />
+      <Companion posRef={posRef} action={companionAction} emotion={emotion} onInteract={onCompanionInteract} />
       <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={(id) => { nearRef.current = id; onNear(id); }} />
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
@@ -3013,12 +3383,16 @@ function ExploreScene({
       <SkyLanterns launchRef={lanternLaunch} posRef={posRef} />
       <FishingSpot posRef={posRef} onAtWater={onAtWater} casting={fishingCasting} />
       <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
+      <LocationAudio posRef={posRef} night={visual.time === "night" || visual.stars} />
       {songDone && <Fireflies />}
 
-      {/* 手绘后期:墨线 + 色阶 + 纸纹 */}
-      <EffectComposer>
-        <primitive object={sketch} />
-      </EffectComposer>
+      {/* 手绘后期:墨线 + 色阶 + 纸纹。low 档(移动端/弱设备)跳过 Sobel 后期，
+          直接用 toon 材质的卡通感——Sobel 是本场景最大开销。?perf=high 仍可解锁。 */}
+      {tier !== "low" && (
+        <EffectComposer>
+          <primitive object={sketch} />
+        </EffectComposer>
+      )}
     </>
   );
 }
@@ -3109,29 +3483,49 @@ function SwatchRow({ label, colors, value, onPick }: { label: string; colors: st
 function CompanionPanel({
   state,
   message,
+  speaking,
   secret,
   talkText,
   busy,
+  autoVoice,
+  voices,
+  ttsConfigured,
+  voiceId,
+  previewVoice,
+  onToggleAutoVoice,
+  onPickVoice,
+  onPreviewVoice,
   onTalkTextChange,
   onFeed,
   onTalk,
   onPet,
   onRest,
   onRename,
+  onSpeakMessage,
   onClose,
   onDismissSecret,
 }: {
   state: CompanionState;
   message: string;
+  speaking: boolean;
   secret: CompanionSecretId | null;
   talkText: string;
   busy: boolean;
+  autoVoice: boolean;
+  voices: TtsVoice[];
+  ttsConfigured: boolean | null;
+  voiceId: string | null;
+  previewVoice: string | null;
+  onToggleAutoVoice: () => void;
+  onPickVoice: (id: string) => void;
+  onPreviewVoice: (id: string) => void;
   onTalkTextChange: (text: string) => void;
   onFeed: (food: CompanionFoodId) => void;
   onTalk: () => void;
   onPet: () => void;
   onRest: () => void;
   onRename: (name: string) => void;
+  onSpeakMessage: () => void;
   onClose: () => void;
   onDismissSecret: () => void;
 }) {
@@ -3142,7 +3536,7 @@ function CompanionPanel({
       className="panel-glass-2 absolute z-10 rounded-card p-3 text-white/85"
       style={{
         position: "absolute",
-        top: "calc(7.2rem + env(safe-area-inset-top))",
+        top: "calc(4.2rem + env(safe-area-inset-top))",
         right: "calc(1.2rem + env(safe-area-inset-right))",
         width: "min(22rem, calc(100vw - 2.2rem))",
         maxHeight: "calc(100vh - 9rem)",
@@ -3168,6 +3562,15 @@ function CompanionPanel({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleAutoVoice}
+            className="chip"
+            aria-label={autoVoice ? "关闭精灵自动语音" : "开启精灵自动语音"}
+            title={autoVoice ? "精灵会自动说给你听（点此关闭）" : "精灵暂不自动开口（点此开启）"}
+          >
+            {autoVoice ? "🔊 语音" : "🔇 语音"}
+          </button>
           <button type="button" onClick={onPet} className="chip" aria-label="摸摸精灵">
             抚光
           </button>
@@ -3197,14 +3600,63 @@ function CompanionPanel({
         ))}
       </div>
 
+      {/* 音色选择：配了云端 TTS 才显示清单（可试听 + 单选）；否则提示用系统语音 */}
+      {ttsConfigured === false ? (
+        <p className="mt-3 rounded-card bg-white/8 px-3 py-2 text-caption leading-relaxed text-white/50">
+          🎙️ 云端音色未启用，精灵暂时用系统自带声音朗读。
+        </p>
+      ) : voices.length > 0 && (
+        <div className="mt-3">
+          <p className="text-caption tracking-[0.18em] text-white/45">精灵的嗓音</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {voices.map((v) => {
+              const active = voiceId === v.id;
+              const previewing = previewVoice === v.id && speaking;
+              return (
+                <div
+                  key={v.id}
+                  className={`flex items-center gap-1 rounded-full border px-2 py-1 transition ${active ? "border-[#ffe2a0]/55 bg-[#ffe2a0]/12" : "border-white/12 bg-white/8"}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onPickVoice(v.id)}
+                    title={active ? `已选：${v.label}（再点用回默认）` : `选这个：${v.desc}`}
+                    className="text-[12px] text-white/85"
+                  >
+                    <span className={active ? "text-[#ffe7b5]" : ""}>{v.label}</span>
+                    <span className="ml-1 text-caption text-white/40">{v.desc}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onPreviewVoice(v.id)}
+                    disabled={busy}
+                    title={previewing ? "停止试听" : "试听"}
+                    className="text-[12px] leading-none text-white/55 transition hover:text-white/90 disabled:opacity-35"
+                    aria-label={previewing ? "停止试听" : `试听${v.label}`}
+                  >
+                    {previewing ? "■" : "▷"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-1 text-caption text-white/35">{voiceId === null ? "当前：默认嗓音" : "已选，再点同款可切回默认"}</p>
+        </div>
+      )}
+
       <div className="mt-3">
         <textarea
           value={talkText}
           onChange={(e) => onTalkTextChange(e.target.value)}
-          placeholder="跟它说一句话..."
+          placeholder="跟它说一句话，或点麦克风说出来..."
           rows={2}
           className="w-full resize-none rounded-card border border-white/12 bg-white/10 px-3 py-2 text-[13px] leading-relaxed text-white/85 outline-none placeholder:text-white/35"
         />
+        <div className="mt-2 flex items-center gap-2">
+          <div className="shrink-0">
+            <VoiceInputButton disabled={busy} onTranscript={onTalkTextChange} />
+          </div>
+        </div>
         <div className="mt-2 grid grid-cols-2 gap-2">
           <button type="button" onClick={onTalk} disabled={busy} className="btn-primary py-2 text-[13px] disabled:opacity-55">
             {busy ? "聆听中..." : "对话"}
@@ -3216,7 +3668,27 @@ function CompanionPanel({
       </div>
 
       <div className="mt-3 rounded-card bg-white/10 px-3 py-2">
-        <p className="text-[13px] leading-relaxed text-white/78">{message}</p>
+        <div className="flex items-start justify-between gap-2">
+          <p className="min-w-0 flex-1 text-[13px] leading-relaxed text-white/78">{message}</p>
+          <button
+            type="button"
+            onClick={onSpeakMessage}
+            disabled={!message.trim()}
+            className="shrink-0 text-[15px] leading-none text-white/55 transition hover:text-white/90 disabled:opacity-35"
+            aria-label={speaking ? "停止朗读" : "朗读这句"}
+            title={speaking ? "停止朗读" : "让它说给你听"}
+          >
+            {speaking ? "■" : "🔊"}
+          </button>
+        </div>
+        {speaking && (
+          <p className="mt-1 text-caption text-[#ffe2a0]/80">
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#ffe2a0]" />
+              正在说给你听…
+            </span>
+          </p>
+        )}
       </div>
 
       {state.unlockedSecrets.length > 0 && (
@@ -3242,6 +3714,20 @@ function CompanionPanel({
   );
 }
 
+// 极简菜单里的一行：图标 + 文字，点击触发动作。统一风格，hover/active 反馈。
+function MenuButton({ icon, label, onClick }: { icon: string; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 rounded-card px-2.5 py-2 text-left text-[13px] text-white/82 transition hover:bg-white/10 active:scale-[0.98]"
+    >
+      <span className="w-5 text-center text-[15px] leading-none">{icon}</span>
+      {label}
+    </button>
+  );
+}
+
 function secretLabel(secret: CompanionSecretId): string {
   switch (secret) {
     case "tideShell":
@@ -3259,6 +3745,8 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const inputRef = useRef<Input>({ x: 0, y: 0 });
   const keys = useRef<Set<string>>(new Set());
   const total = 5;
+  const isTouch = useIsTouch();
+  const tier = getPerfTier(); // 弱设备/移动端降档：去后期 + 降 dpr，避免卡顿（?perf=high 可强制解锁）
   const [collected, setCollected] = useState(0);
   const imp = imprints;
   const [pickedImprints, setPickedImprints] = useState<number[]>([]); // 已拾起的心灵印记下标
@@ -3278,6 +3766,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [expression, setExpression] = useState<string>(() => { try { return localStorage.getItem("xy_expr") || "auto"; } catch { return "auto"; } }); // 主角表情(auto 跟随状态 / 开心 / 平静 / 坚定 / 好奇)
   const [dressOpen, setDressOpen] = useState(false); // 换装面板开关
   const [mapMenu, setMapMenu] = useState(false); // 上车后「选地图」菜单
+  const [menuOpen, setMenuOpen] = useState(false); // 左上极简菜单(收纳低频功能)
   const [forestDrive, setForestDrive] = useState(false); // 进入林间土路驾驶场景(独立 Canvas 覆盖层)
   useEffect(() => { carEnterCb = () => setMapMenu(true); return () => { carEnterCb = null; }; }, []);
   const [whaleFound, setWhaleFound] = useState(false); // 🐋 彩蛋:发现鲸落之海
@@ -3289,9 +3778,129 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [companionSecret, setCompanionSecret] = useState<CompanionSecretId | null>(null);
   const [companionOpen, setCompanionOpen] = useState(false);
   const [companionThinking, setCompanionThinking] = useState(false);
+  const [autoVoice, setAutoVoice] = useState<boolean>(() => loadAutoVoice());
+  const [companionSpeaking, setCompanionSpeaking] = useState(false);
+  // 音色：ttsVoices 为后端可选清单（未配置云端 TTS 时为空 → 用系统语音，UI 给降级提示）；
+  // voiceId 为用户当前选择（null = 后端默认音色）；previewVoice 为正在试听的那个 id。
+  const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
+  const [ttsConfigured, setTtsConfigured] = useState<boolean | null>(null);
+  const [voiceId, setVoiceId] = useState<string | null>(() => loadCompanionVoiceId());
+  const [previewVoice, setPreviewVoice] = useState<string | null>(null);
+  const voiceRef = useRef<CompanionVoiceController | null>(null);
+  useEffect(() => {
+    // 惰性初始化语音控制器（只建一次）；ref 不在 render 中访问，避免 lint 规则告警
+    if (!voiceRef.current) voiceRef.current = createCompanionVoice();
+  }, []);
+  // 首次打开精灵面板时拉一次音色清单（未配置云端 TTS 则 voices 为空）。
+  // provider 可能和上次不同（阿里云/腾讯云），旧的 voiceId 不在新清单里就清掉，
+  // 避免选了个当前 provider 不存在的音色。
+  useEffect(() => {
+    if (!companionOpen || ttsConfigured !== null) return;
+    let alive = true;
+    fetchTtsVoices().then((r) => {
+      if (!alive) return;
+      setTtsConfigured(r.configured);
+      setTtsVoices(r.voices);
+      setVoiceId((cur) => {
+        if (cur === null) return cur;
+        const stillValid = r.voices.some((v) => v.id === cur);
+        if (!stillValid) {
+          saveCompanionVoiceId(null);
+          return null;
+        }
+        return cur;
+      });
+    });
+    return () => { alive = false; };
+  }, [companionOpen, ttsConfigured]);
+  // 用音量总线判定「是否还在说」：level 归零持续一小段（留出说话间隙停顿）
+  // 才认定结束。比按字数估算时长准，且和 3D 随声动共用同一信号源。
+  const silentSinceRef = useRef<number>(0);
+  useEffect(() => {
+    const unsub = subscribeCompanionLevel((level) => {
+      if (level > 0.02) {
+        silentSinceRef.current = 0;
+      } else if (silentSinceRef.current === 0) {
+        silentSinceRef.current = Date.now();
+      } else if (Date.now() - silentSinceRef.current > 700) {
+        // 连续静音 0.7s → 这句说完了
+        setCompanionSpeaking(false);
+        setPreviewVoice(null);
+        silentSinceRef.current = 0;
+      }
+    });
+    return unsub;
+  }, []);
+  // 拿到一句「最终回复」就自动说给用户听（语音开关关闭时静默）。读出的是
+  // 那一刻的 message 文本，情绪取当前心情（与精灵语气一致）。
+  const speakCompanion = (text: string) => {
+    const ctrl = voiceRef.current;
+    if (!ctrl || !autoVoice) return;
+    const clean = (text || "").trim();
+    if (!clean) return;
+    silentSinceRef.current = 0;
+    setCompanionSpeaking(true);
+    void ctrl.speak(clean, emotion, voiceId);
+  };
+  const toggleCompanionVoice = () => {
+    setAutoVoice((v) => {
+      const next = !v;
+      saveAutoVoice(next);
+      if (!next) {
+        voiceRef.current?.stop();
+        setCompanionSpeaking(false);
+      }
+      return next;
+    });
+  };
+  // 试听某个音色：用一句固定的温柔样例，按该音色读出来。
+  const handlePreviewVoice = (id: string) => {
+    const ctrl = voiceRef.current;
+    if (!ctrl) return;
+    if (previewVoice === id && companionSpeaking) {
+      ctrl.stop();
+      setCompanionSpeaking(false);
+      setPreviewVoice(null);
+      return;
+    }
+    silentSinceRef.current = 0;
+    setPreviewVoice(id);
+    setCompanionSpeaking(true);
+    void ctrl.speak("我在这里，陪你把这一刻慢慢放轻。", "calm", id);
+  };
+  const handlePickVoice = (id: string) => {
+    setVoiceId((cur) => {
+      const next = cur === id ? null : id; // 再点一次 = 用回默认音色
+      saveCompanionVoiceId(next);
+      return next;
+    });
+  };
+  const handleSpeakMessage = () => {
+    const ctrl = voiceRef.current;
+    if (!ctrl) return;
+    if (companionSpeaking) {
+      ctrl.stop();
+      setCompanionSpeaking(false);
+      setPreviewVoice(null);
+      return;
+    }
+    const clean = companionMessage.trim();
+    if (!clean) return;
+    silentSinceRef.current = 0;
+    setCompanionSpeaking(true);
+    void ctrl.speak(clean, emotion, voiceId);
+  };
   useEffect(() => {
     saveCompanionState(companionState, typeof window === "undefined" ? undefined : window.localStorage);
   }, [companionState]);
+  // 关闭精灵面板 / 卸载探索模式时停掉语音，避免人走了它还在说
+  useEffect(() => {
+    if (!companionOpen) {
+      voiceRef.current?.stop();
+      setCompanionSpeaking(false);
+    }
+  }, [companionOpen]);
+  useEffect(() => () => { voiceRef.current?.stop(); }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
@@ -3389,6 +3998,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     setCompanionSecret(result.unlockedNow[0] ?? null);
     triggerCompanionAction(result.unlockedNow.length ? "SecretTwirl" : result.animation);
     playSfx(result.unlockedNow.length ? "reveal" : "shell");
+    speakCompanion(result.reply);
   };
   const handleCompanionTalk = async () => {
     if (companionThinking) return;
@@ -3401,6 +4011,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       setCompanionMessage(result.reply);
       triggerCompanionAction(result.unlockedNow.length ? "SecretTwirl" : result.animation);
       playSfx(result.unlockedNow.length ? "reveal" : "chime");
+      speakCompanion(result.reply);
       return;
     }
     setCompanionThinking(true);
@@ -3421,21 +4032,27 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     if (ai?.reply) {
       setCompanionMessage(ai.reply);
       triggerCompanionAction(result.unlockedNow.length ? "SecretTwirl" : normalizeCompanionAnimation(ai.animation));
+      speakCompanion(ai.reply);
       if (ai.safety.triggered) playSfx("settle");
       return;
     }
     setCompanionMessage(`它认真听完「${said}」。${result.reply}`);
     triggerCompanionAction(result.unlockedNow.length ? "SecretTwirl" : result.animation);
+    speakCompanion(result.reply);
   };
   const handleCompanionPet = () => {
-    setCompanionMessage(`${companionState.name}轻轻蹭了蹭你的身边，灯塔光像呼吸一样亮了一下。`);
+    const reply = `${companionState.name}轻轻蹭了蹭你的身边，灯塔光像呼吸一样亮了一下。`;
+    setCompanionMessage(reply);
     triggerCompanionAction("BondGlow");
     playSfx("tap");
+    speakCompanion(reply);
   };
   const handleCompanionRest = () => {
-    setCompanionMessage(`${companionState.name}陪你安静地漂着。这里不需要证明什么，停一会儿也很好。`);
+    const reply = `${companionState.name}陪你安静地漂着。这里不需要证明什么，停一会儿也很好。`;
+    setCompanionMessage(reply);
     triggerCompanionAction("SleepFloat");
     playSfx("settle");
+    speakCompanion(reply);
   };
   const handleCompanionRename = (name: string) => {
     setCompanionState((state) => renameCompanion(state, name));
@@ -3512,64 +4129,78 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     <div className="fixed inset-0 z-[70] overflow-hidden" style={{ background: sky }}>
       <Canvas
         gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-        dpr={[1, 1.75]}
-        camera={{ position: [0, 150, 290], fov: 50, near: 0.1, far: 3400 }}
+        dpr={tier === "low" ? [1, 1.25] : [1, 1.75]}
+        camera={{ position: [0, 150, 290], fov: 55, near: 0.1, far: 3400 }}
         frameloop="always"
       >
-        <Suspense fallback={null}>
-          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} forceNight={night} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} />
+        <Suspense fallback={<ExploreLoading />}>
+          <ExploreScene visual={visual} inputRef={inputRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} forceNight={night} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} tier={tier} />
         </Suspense>
       </Canvas>
 
       <button
         type="button"
         onClick={() => { setCompanionOpen((open) => !open); playSfx("tap"); }}
-        className="panel-glass-2 absolute z-10 flex items-center gap-2 rounded-full px-4 py-2 font-display text-[14px] tracking-wider text-white/85 active:scale-95 transition-transform"
-        style={{ right: "calc(1.2rem + env(safe-area-inset-right))", top: "calc(4.4rem + env(safe-area-inset-top))" }}
+        className="panel-glass-2 absolute z-10 flex items-center gap-1.5 rounded-full px-3 py-2 font-display text-[13px] tracking-wider text-white/85 active:scale-95 transition-transform"
+        style={{ right: "calc(1.2rem + env(safe-area-inset-right))", top: "calc(1.2rem + env(safe-area-inset-top))" }}
         aria-label={companionOpen ? "收起专属精灵" : "打开专属精灵"}
       >
         <span className="text-[#ffe2a0]">✦</span>
         <span>精灵</span>
-        <span className="text-caption text-white/45">C</span>
       </button>
 
       {companionOpen && (
         <CompanionPanel
           state={companionState}
           message={companionMessage}
+          speaking={companionSpeaking}
           secret={companionSecret}
           talkText={companionTalkText}
           busy={companionThinking}
+          autoVoice={autoVoice}
+          voices={ttsVoices}
+          ttsConfigured={ttsConfigured}
+          voiceId={voiceId}
+          previewVoice={previewVoice}
+          onToggleAutoVoice={toggleCompanionVoice}
+          onPickVoice={handlePickVoice}
+          onPreviewVoice={handlePreviewVoice}
           onTalkTextChange={setCompanionTalkText}
           onFeed={handleCompanionFeed}
           onTalk={handleCompanionTalk}
           onPet={handleCompanionPet}
           onRest={handleCompanionRest}
           onRename={handleCompanionRename}
+          onSpeakMessage={handleSpeakMessage}
           onClose={() => setCompanionOpen(false)}
           onDismissSecret={() => setCompanionSecret(null)}
         />
       )}
 
-      {/* 任务 HUD */}
-      <div className="absolute inset-x-0 top-0 flex justify-center" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
-        <div className="panel-glass-2 rounded-card px-5 py-2.5 text-center">
+      {/* 任务 HUD：主进度突出，次要发现（心愿/鲸落/漂流瓶）收成一行淡出，避免堆叠多行 */}
+      <div className="absolute inset-x-0 top-0 flex justify-center px-3" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
+        <div className="panel-glass-2 rounded-card px-4 py-2 text-center max-w-[92vw]">
           {hasImprints ? (
             <>
-              <p className="text-caption tracking-[0.28em] text-white/55">{imprintsDone ? "印记都拾起了" : "拾起岛上的心灵印记"}</p>
-              <p className="font-display text-[18px] tracking-wider text-white/90">{imprintsDone ? "✦ 你走过的每一刻，都还在 ✦" : `心灵印记 ${pickedImprints.length} / ${imp.length}`}</p>
+              <p className="text-caption tracking-[0.24em] text-white/55">{imprintsDone ? "印记都拾起了" : "拾起岛上的心灵印记"}</p>
+              <p className="font-display text-[17px] tracking-wider text-white/90 sm:text-[18px]">{imprintsDone ? "✦ 你走过的每一刻，都还在 ✦" : `心灵印记 ${pickedImprints.length} / ${imp.length}`}</p>
             </>
           ) : (
             <>
-              <p className="text-caption tracking-[0.28em] text-white/55">{done ? "心愿都收齐了" : "拾起岛上的心愿"}</p>
-              <p className="font-display text-[18px] tracking-wider text-white/90">{done ? "✦ 谢谢你来岛上走走 ✦" : `心愿 ${collected} / ${total}`}</p>
+              <p className="text-caption tracking-[0.24em] text-white/55">{done ? "心愿都收齐了" : "拾起岛上的心愿"}</p>
+              <p className="font-display text-[17px] tracking-wider text-white/90 sm:text-[18px]">{done ? "✦ 谢谢你来岛上走走 ✦" : `心愿 ${collected} / ${total}`}</p>
             </>
           )}
-          {giftedIds.length > 0 && (
-            <p className="text-caption text-white/55 mt-0.5">{allGifted ? "你温暖了岛上的每一个人 ♡" : `已把心愿分给 ${giftedIds.length} / ${NPC_TOTAL} 个岛上的人 ♡`}</p>
+          {/* 次要发现：合并成一行、更淡，不再各自占一行 */}
+          {((giftedIds.length > 0) || whaleFound || bottles.length > 0) && (
+            <p className="text-caption text-white/40 mt-0.5 truncate">
+              {[
+                giftedIds.length > 0 ? (allGifted ? "温暖了所有人 ♡" : `心愿 ${giftedIds.length}/${NPC_TOTAL}`) : "",
+                whaleFound ? "🐋鲸落" : "",
+                bottles.length > 0 ? `🍾漂流瓶 ${bottles.length}/${BOTTLE_ANGLES.length}` : "",
+              ].filter(Boolean).join(" · ")}
+            </p>
           )}
-          {whaleFound && <p className="text-caption text-white/55 mt-0.5">🐋 鲸落之海 · 已发现</p>}
-          {bottles.length > 0 && <p className="text-caption text-white/55 mt-0.5">🍾 漂流瓶 {bottles.length} / {BOTTLE_ANGLES.length} · 拾到陌生人的留言</p>}
         </div>
       </div>
 
@@ -3595,23 +4226,42 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         </div>
       )}
 
-      {/* 退出 */}
-      <button
-        onClick={onExit}
-        className="btn-link absolute z-10 text-white/70"
-        style={{ top: "calc(1.4rem + env(safe-area-inset-top))", right: "calc(1.4rem + env(safe-area-inset-right))" }}
-      >
-        回到岸上
-      </button>
-
-      {/* 捏人 / 换装入口 */}
-      <button
-        onClick={() => setDressOpen(true)}
-        className="btn-link absolute z-10 text-white/70"
-        style={{ top: "calc(1.4rem + env(safe-area-inset-top))", left: "calc(1.4rem + env(safe-area-inset-left))" }}
-      >
-        ✎ 捏人
-      </button>
+      {/* 左上极简菜单：低频功能（捏人/昼夜/天灯/种花/回到岸上）收进 ☰，平时只留一个圆按钮 */}
+      <div className="absolute z-20" style={{ left: "calc(1.2rem + env(safe-area-inset-left))", top: "calc(1.2rem + env(safe-area-inset-top))" }}>
+        <button
+          type="button"
+          onClick={() => { setMenuOpen((v) => !v); playSfx("tap"); }}
+          aria-label={menuOpen ? "收起菜单" : "打开菜单"}
+          aria-expanded={menuOpen}
+          className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 active:scale-90 transition-transform"
+        >
+          <span className="text-[18px] leading-none">{menuOpen ? "✕" : "☰"}</span>
+        </button>
+        {menuOpen && (
+          <>
+            {/* 点空白处收起 */}
+            <div className="fixed inset-0 z-[-1]" onClick={() => setMenuOpen(false)} />
+            <div
+              className="panel-glass-2 mt-2 w-[11rem] max-w-[calc(100vw-2.4rem)] rounded-card p-1.5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MenuButton icon="✎" label="捏人" onClick={() => { setDressOpen(true); setMenuOpen(false); }} />
+              <MenuButton icon={night ? "🌙" : "☀️"} label={night ? "切白天" : "切夜晚"} onClick={() => { setNight((v) => !v); playSfx("tap"); }} />
+              <MenuButton icon="🏮" label="放天灯" onClick={() => { setLanternOpen(true); setMenuOpen(false); }} />
+              <button
+                type="button"
+                onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.plant = true; }}
+                onClick={() => setMenuOpen(false)}
+                className="flex w-full items-center gap-2.5 rounded-card px-2.5 py-2 text-left text-[13px] text-white/82 transition hover:bg-white/10 active:scale-[0.98]"
+              >
+                <span className="w-5 text-center text-[15px] leading-none">🌱</span>种花
+              </button>
+              <div className="my-1 h-px bg-white/10" />
+              <MenuButton icon="↩" label="回到岸上" onClick={onExit} />
+            </div>
+          </>
+        )}
+      </div>
 
       {/* 换装面板:左侧实时预览 + 色卡,选完即时上身、本地保存 */}
       {dressOpen && (
@@ -3676,40 +4326,28 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         className="absolute text-caption text-white/45"
         style={{ right: "calc(1.6rem + env(safe-area-inset-right))", bottom: "calc(2rem + env(safe-area-inset-bottom))" }}
       >
-        WASD / 方向键 移动 · 空格跳跃 · 左下摇杆
+        {isTouch ? "左下摇杆移动 · 右侧跳跃 / 招手" : "WASD / 方向键 移动 · 空格跳跃 · 左下摇杆"}
       </p>
 
-      {/* 跳跃按钮(右下,触屏) */}
-      <button
-        onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.jump = true; }}
-        className="absolute z-10 flex items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
-        style={{
-          right: "calc(1.9rem + env(safe-area-inset-right))",
-          bottom: "calc(5.4rem + env(safe-area-inset-bottom))",
-          width: 66,
-          height: 66,
-          touchAction: "none",
-        }}
-        aria-label="跳跃"
-      >
-        <span className="text-[20px] leading-none">⤴</span>
-      </button>
-
-      {/* 招手按钮(右下,触屏;键盘 F) */}
-      <button
-        onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.wave = true; }}
-        className="absolute z-10 flex items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
-        style={{
-          right: "calc(1.9rem + env(safe-area-inset-right))",
-          bottom: "calc(12.6rem + env(safe-area-inset-bottom))",
-          width: 58,
-          height: 58,
-          touchAction: "none",
-        }}
-        aria-label="招手"
-      >
-        <span className="text-[19px] leading-none">✋</span>
-      </button>
+      {/* 右下动作按钮组(触屏):招手 + 跳跃，统一 44 圆 */}
+      <div className="absolute z-10 flex flex-col items-center gap-2.5" style={{ right: "calc(1.4rem + env(safe-area-inset-right))", bottom: "calc(5rem + env(safe-area-inset-bottom))" }}>
+        <button
+          onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.wave = true; }}
+          className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
+          style={{ touchAction: "none" }}
+          aria-label="招手"
+        >
+          <span className="text-[17px] leading-none">✋</span>
+        </button>
+        <button
+          onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.jump = true; }}
+          className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
+          style={{ touchAction: "none" }}
+          aria-label="跳跃"
+        >
+          <span className="text-[17px] leading-none">⤴</span>
+        </button>
+      </div>
 
       {/* 送完所有人:满岛飘心 + 收尾 */}
       {allGifted && (
@@ -3751,13 +4389,6 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       )}
 
       {/* —— 新玩法 HUD —— */}
-      {/* 左侧竖排:昼夜 / 放天灯 / 种花 */}
-      <div className="absolute z-10 flex flex-col gap-2" style={{ left: "calc(1.5rem + env(safe-area-inset-left))", top: "calc(4.8rem + env(safe-area-inset-top))" }}>
-        <button onClick={() => { setNight((v) => !v); playSfx("tap"); }} aria-label="昼夜切换" className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 active:scale-90 transition-transform"><span className="text-[18px] leading-none">{night ? "🌙" : "☀️"}</span></button>
-        <button onClick={() => setLanternOpen(true)} aria-label="放天灯" className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 active:scale-90 transition-transform"><span className="text-[18px] leading-none">🏮</span></button>
-        <button onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.plant = true; }} aria-label="种花" className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform" style={{ touchAction: "none" }}><span className="text-[18px] leading-none">🌱</span></button>
-      </div>
-
       {/* 海湾岸边:垂钓按钮(底部居中,避开送心愿) */}
       {atWater && nearNpc < 0 && (
         <div className="absolute inset-x-0 flex justify-center px-4" style={{ bottom: "calc(2.4rem + env(safe-area-inset-bottom))" }}>

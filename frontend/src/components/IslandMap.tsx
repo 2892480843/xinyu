@@ -94,8 +94,8 @@ export default function IslandMap({ island, artifacts, onClose }: Props) {
       {/* 关闭 */}
       <button
         onClick={onClose}
-        className="btn-link absolute z-20 text-white/55"
-        style={{ top: "calc(1.6rem + env(safe-area-inset-top))", right: "calc(1.4rem + env(safe-area-inset-right))" }}
+        className="btn-link absolute z-20 text-white/55 py-2 px-2"
+        style={{ top: "calc(1.2rem + env(safe-area-inset-top))", right: "calc(1rem + env(safe-area-inset-right))" }}
       >
         回到岸上
       </button>

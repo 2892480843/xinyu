@@ -4,6 +4,19 @@
 //
 // 信号链：每个音源同时走「干声」与「湿声(混响)」两路，最终都汇入 masterGain，
 // 因此一个静音开关即可同时停掉干湿两路；湿声给整体一层柔和的海岛回响空气感。
+//
+// 真实采样层（2026-06 集成）：`play()` 对 chime/ripple/collect/bloom/page/inscribe/
+// settle/whoosh 这 8 个音效「采样优先 + 合成降级」——命中 samples.ts 缓存则播真实录音，
+// 未命中（首访 / 断网 / 解码失败）立即回退本文件合成版。其余音效（wave/shell/breath/
+// 这样既提升沉浸感，又保留断网可跑的离线韧性（路演硬要求）。
+
+// 采样池（循环依赖是安全的：两模块顶层都不执行对方代码，仅在运行时互调函数）。
+import { playSample, type SampleName } from "./samples";
+
+// 有真实采样可替代的 8 个音效名；命中缓存时优先播采样，否则 fall through 到合成。
+const SAMPLED_NAMES: ReadonlySet<SampleName> = new Set<SampleName>([
+  "chime", "ripple", "collect", "bloom", "page", "inscribe", "settle", "whoosh",
+]);
 
 type SfxName =
   | "chime"
@@ -68,6 +81,17 @@ function ensure(): AudioContext | null {
   // iOS / 浏览器自动暂停时需要用户手势唤醒
   if (ctx.state === "suspended") ctx.resume().catch(() => {});
   return ctx;
+}
+
+// 暴露全局 AudioContext 与 masterGain，供 samples.ts / ambience.ts 复用同一音路
+// （共享静音联动：所有采样 / 氛围底噪都汇入这个 masterGain）。
+export function getAudioContext(): AudioContext | null {
+  return ensure();
+}
+export function getMasterGain(): GainNode | null {
+  // ensure() 会把 ctx / masterGain 一并建好。
+  void ensure();
+  return masterGain;
 }
 
 export function setSfxMuted(next: boolean) {
@@ -148,6 +172,22 @@ export function stopEngine() {
   setTimeout(() => { try { e.osc.stop(); e.sub.stop(); e.osc.disconnect(); e.sub.disconnect(); e.filt.disconnect(); e.gain.disconnect(); } catch { /* ignore */ } }, 350);
 }
 
+// 起跳音合成降级（采样 jump.m4a 未命中时用）：短促上扬正弦扫频 + 一点空气感。
+// env 类采样本不受静音联动（走 envGain），但合成降级这里仍走 masterGain（随音乐静音）——
+// 断网时用户若已静音，自然不该再冒一声「嗖」。
+export function playJump() {
+  if (muted) return;
+  tone({ freq: 240, duration: 0.18, attack: 0.004, type: "sine", gain: 0.22, reverb: 0.18 });
+  tone({ freq: 480, duration: 0.14, attack: 0.004, type: "sine", gain: 0.12, startAt: 0.03, reverb: 0.18 });
+}
+
+// 落地音合成降级（采样 land.m4a 未命中时用）：低频闷响——噪声 burst 垫底 + 110Hz 短尾。
+export function playLand(gain = 0.3) {
+  if (muted) return;
+  noiseBurst({ duration: 0.12, filterFreq: 360, gain: gain * 0.6 });
+  tone({ freq: 110, duration: 0.22, attack: 0.004, type: "triangle", gain: gain * 0.5, reverb: 0.15 });
+}
+
 // 频率滑音 tone（whoosh / 上行点亮等用）。
 function sweep(opts: {
   from: number;
@@ -218,6 +258,10 @@ function noiseBurst(opts: {
 }
 
 export function play(name: SfxName) {
+  // 采样优先：有真实采样的音效，命中缓存则播采样；未命中（首访/断网）回退下方合成。
+  if (SAMPLED_NAMES.has(name as SampleName) && playSample(name as SampleName)) {
+    return;
+  }
   switch (name) {
     case "chime":
       // 5 度叠加铃音：C5 + G5 + C6，带回响余韵

@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { resolveMusicTrack } from "../lib/musicMap";
 import { setSfxMuted } from "../lib/sfx";
+import { setAmbience, setAmbienceMuted } from "../lib/ambience";
+import { setLocationAmbienceMuted } from "../lib/locationAmbience";
 import { useImmersion } from "../hooks/useImmersion";
 import { useSkin3d } from "../hooks/useSkin3d";
 
 interface Props {
   music: string | undefined;
+  /** 当前情绪 key（sad/anxious/tired/...），驱动氛围底噪层。 */
+  emotion?: string;
 }
 
 const FADE_STEP_MS = 40;
@@ -14,14 +18,30 @@ const FADE_DURATION_MS = 650;
 const MIN_VOLUME = 0;
 const DEFAULT_VOLUME = 0.36;
 
-export default function MusicControl({ music }: Props) {
+// 自动播放策略：首次 play() 若被浏览器拒绝（非文件错误），挂起等待用户手势重试，
+// 而非直接判失败。监听器全局只注册一次。
+let autoplayArmed = false;
+function armAutoplayRetry() {
+  if (autoplayArmed || typeof window === "undefined") return;
+  autoplayArmed = true;
+  const trigger = () => {
+    window.dispatchEvent(new CustomEvent("xinyu:audio-gesture"));
+  };
+  window.addEventListener("pointerdown", trigger, { once: true });
+  window.addEventListener("keydown", trigger, { once: true });
+}
+
+export default function MusicControl({ music, emotion }: Props) {
   const track = useMemo(() => resolveMusicTrack(music), [music]);
   const { calmMode, setCalmMode } = useImmersion();
   const { wanted: skin3dOn, supported: skin3dOk, setSkin3d } = useSkin3d();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fadeTimerRef = useRef<number | null>(null);
   const volumeRef = useRef(DEFAULT_VOLUME);
-  const [enabled, setEnabled] = useState(false);
+  const autoplayBlockedRef = useRef<string | null>(null); // autoplay 被拦时记下的待播 src
+  // 默认开启：用户在身份门点「进入心屿」时已产生用户手势，autoplay 通常被允许；
+  // 若浏览器仍拒绝，play().catch 会自动 setEnabled(false) 优雅降级，不报错。
+  const [enabled, setEnabled] = useState(true);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const available = failedSrc !== track.src;
@@ -65,8 +85,17 @@ export default function MusicControl({ music }: Props) {
     if (!audio) return;
     audio.volume = enabled ? volume : MIN_VOLUME;
     // SFX 跟随音乐开关：音乐关 = SFX 静音；保持答辩场地的"一键静音"约定
-    setSfxMuted(!enabled || volume === 0);
+    const shouldMute = !enabled || volume === 0;
+    setSfxMuted(shouldMute);
+    // 氛围底噪同样跟随：一键静音覆盖 BGM + SFX + 情绪底噪 + 位置底噪 四层
+    setAmbienceMuted(shouldMute);
+    setLocationAmbienceMuted(shouldMute);
   }, [volume, enabled]);
+
+  // 情绪变化 → 切换氛围底噪（跟随音乐开关 enabled）
+  useEffect(() => {
+    setAmbience(emotion, enabled);
+  }, [emotion, enabled]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -88,8 +117,15 @@ export default function MusicControl({ music }: Props) {
             fadeTo(volumeRef.current);
           })
           .catch(() => {
-            setFailedSrc(track.src);
-            setEnabled(false);
+            // 区分「autoplay 被拒」与「真正加载失败」：被拒时 audio.error 为 null。
+            if (audio.error) {
+              setFailedSrc(track.src);
+              setEnabled(false);
+            } else {
+              // autoplay 被拦截：挂起，等首个用户手势时由 effect 重试。
+              armAutoplayRetry();
+              autoplayBlockedRef.current = track.src;
+            }
           });
       }
     };
@@ -110,6 +146,25 @@ export default function MusicControl({ music }: Props) {
 
     loadAndMaybePlay();
   }, [track.src, enabled, failedSrc, fadeTo]);
+
+  // 自动播放被拦后的手势重试：用户首次交互时重播被挂起的 BGM。
+  useEffect(() => {
+    const onGesture = () => {
+      const audio = audioRef.current;
+      if (!audio || !autoplayBlockedRef.current) return;
+      const src = autoplayBlockedRef.current;
+      autoplayBlockedRef.current = null;
+      audio.src = src;
+      audio.currentTime = 0;
+      audio.volume = MIN_VOLUME;
+      audio
+        .play()
+        .then(() => fadeTo(volumeRef.current))
+        .catch(() => { /* 仍失败则放弃，等用户手动点播放 */ });
+    };
+    window.addEventListener("xinyu:audio-gesture", onGesture);
+    return () => window.removeEventListener("xinyu:audio-gesture", onGesture);
+  }, [fadeTo]);
 
   const toggle = () => {
     const audio = audioRef.current;

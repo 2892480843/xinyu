@@ -65,7 +65,8 @@ from app.services.vector_memory_service import VectorMemoryService
 from app.services.welcome_back_service import WelcomeBackService
 from app.services.revision_service import RevisionService
 from app.services.phrase_service import PhraseService
-from app.services.tts_service import TTSService
+from app.services.tts_service import TTSService, tts_voice_options
+from app.services.aliyun_tts_service import AliyunTTSService, aliyun_voice_options
 from app.services import scene_map
 from app.services.companion_prompt import COMPANION_PROMPT_VERSION
 
@@ -106,6 +107,24 @@ welcome_back_service = WelcomeBackService()
 revision_service = RevisionService()
 phrase_service = PhraseService()
 tts_service = TTSService()
+aliyun_tts_service = AliyunTTSService()
+
+
+def resolve_tts_provider() -> Optional[str]:
+    """返回当前生效的 TTS provider：'aliyun' / 'tencent' / None（都未配置）。
+    优先用 TTS_PROVIDER 显式指定；未指定时按密钥自动挑（都配了优先 aliyun）。"""
+    pref = config.TTS_PROVIDER
+    if pref in {"aliyun", "tencent"}:
+        if pref == "aliyun" and aliyun_tts_service.configured():
+            return "aliyun"
+        if pref == "tencent" and tts_service.configured():
+            return "tencent"
+        # 显式指定但密钥没配 → 落到自动
+    if aliyun_tts_service.configured():
+        return "aliyun"
+    if tts_service.configured():
+        return "tencent"
+    return None
 WS_STAGE_PAUSE_SECONDS = 0.12
 
 # 岛屿低语去重缓冲：每 user 保留最近 5 条已说过的话，传给 LLM 让它避免雷同
@@ -652,24 +671,53 @@ def delete_identity(user_id: str) -> Dict[str, Any]:
 class TtsRequest(BaseModel):
     text: str
     emotion: str = "calm"
+    voice: Optional[str] = None  # 音色 id（腾讯云数字 / 阿里云字符串）；None 用默认
+
+
+@app.get("/api/tts/voices")
+def list_tts_voices() -> Dict[str, Any]:
+    """可选音色清单 + 当前生效 provider + 是否已配置云端 TTS。
+    按 provider 返回对应清单（阿里云字符串 id / 腾讯云数字 id）。
+    未配置任何密钥时 voices 为空 + configured=false，前端据此显示降级提示。"""
+    provider = resolve_tts_provider()
+    if provider == "aliyun":
+        voices = aliyun_voice_options()
+    elif provider == "tencent":
+        voices = tts_voice_options()
+    else:
+        voices = []
+    return {"configured": provider is not None, "provider": provider, "voices": voices}
 
 
 @app.post("/api/tts")
 def synthesize_tts(req: TtsRequest) -> Dict[str, Any]:
-    """情感语音合成：配置腾讯云 TTS 密钥时返回云端情感音色音频(base64 mp3)；
-    未配置或调用失败时返回 configured/ok=false，前端据此降级为浏览器原生合成。"""
+    """情感语音合成：按当前 provider（阿里云 CosyVoice / 腾讯云）合成 mp3 音频(base64)；
+    未配置或调用失败时返回 configured/ok=false，前端据此降级为浏览器原生合成。
+    voice 为音色 id；为空则用默认音色（腾讯云传数字、阿里云传字符串，统一经 str 透传）。"""
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text 不能为空")
     text = text[:500]
-    if not tts_service.configured():
-        return {"configured": False, "ok": False}
-    audio = tts_service.synthesize(text, (req.emotion or "calm"))
+    provider = resolve_tts_provider()
+    if provider is None:
+        return {"configured": False, "ok": False, "provider": None}
+    if provider == "aliyun":
+        audio = aliyun_tts_service.synthesize(text, (req.emotion or "calm"), req.voice)
+    else:
+        # 腾讯云 VoiceType 是 int：前端统一传 str，这里转回 int
+        voice_int = None
+        if req.voice:
+            try:
+                voice_int = int(req.voice)
+            except (TypeError, ValueError):
+                voice_int = None
+        audio = tts_service.synthesize(text, (req.emotion or "calm"), voice_int)
     if not audio:
-        return {"configured": True, "ok": False}
+        return {"configured": True, "ok": False, "provider": provider}
     return {
         "configured": True,
         "ok": True,
+        "provider": provider,
         "mime": "audio/mp3",
         "audio_base64": base64.b64encode(audio).decode("ascii"),
     }

@@ -4,6 +4,7 @@ import VoiceInputButton from "./VoiceInputButton";
 import { ISLAND_HINTS } from "../lib/islandVoice";
 import { EASE_IN_OUT_QUART, SPRING_TAP } from "../lib/motion";
 import { play as playSfx } from "../lib/sfx";
+import { useIsTouch } from "../lib/device";
 
 interface Props {
   onSubmit: (text: string, ephemeral: boolean) => void;
@@ -29,6 +30,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
   const [submitting, setSubmitting] = useState(false);
   const textControls = useAnimationControls();
   const isDev = import.meta.env.DEV;
+  const isTouch = useIsTouch();
 
   const submit = async () => {
     const t = text.trim();
@@ -118,11 +120,11 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
             }}
             placeholder="岛屿正在聆听……把此刻的心情说给它听"
             disabled={loading || submitting}
-            className="w-full h-24 bg-transparent text-mist-100 placeholder:text-mist-400 font-serif text-base leading-relaxed outline-none px-2 pt-1 disabled:opacity-60"
+            className="w-full h-20 sm:h-24 bg-transparent text-mist-100 placeholder:text-mist-400 font-serif text-base leading-relaxed outline-none px-2 pt-1 disabled:opacity-60"
           />
         </motion.div>
 
-        <div className="flex items-center justify-between gap-2 mt-1 px-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 mt-1 px-1">
           <div className="flex flex-wrap gap-1.5">
             {QUICK.map((q) => (
               <button
@@ -143,7 +145,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
             whileHover={{ y: -1, scale: 1.02 }}
             whileTap={{ scale: 0.96 }}
             transition={SPRING_TAP}
-            className="btn-primary shrink-0"
+            className="btn-primary shrink-0 w-full sm:w-auto mt-1 sm:mt-0"
           >
             {loading || submitting ? "岛屿回应中……" : ISLAND_HINTS.submit}
           </motion.button>
@@ -181,10 +183,11 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
         >
-          <p className="text-caption text-mist-400">{ISLAND_HINTS.hotkey}</p>
+          {/* 快捷键提示仅桌面端显示——触屏有显式的「说给岛屿」按钮 */}
+          {!isTouch && <p className="text-caption text-mist-400">{ISLAND_HINTS.hotkey}</p>}
           {onGlyph && (
             <>
-              <span className="text-mist-600 text-[10px]">·</span>
+              {!isTouch && <span className="text-mist-600 text-[10px]">·</span>}
               <button
                 type="button"
                 onClick={onGlyph}

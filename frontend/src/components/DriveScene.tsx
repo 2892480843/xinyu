@@ -1,14 +1,24 @@
 /* eslint-disable react-hooks/immutability -- R3F frame loops intentionally mutate Three.js objects. */
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 import { startEngine, stopEngine, setEngineSpeed, play as playSfx } from "../lib/sfx";
+import { getPerfTier } from "../lib/perfTier";
+import { useIsTouch } from "../lib/device";
+import { loadRoadMask, type RoadMask } from "../lib/roadMask";
+
+// BVH 加速对 123MB 林间土路模型的射线检测(贴地/出生落点);否则裸递归射线每帧遍历整棵场景图,拖垮帧率。
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // 第二张「可开车地图」:林间土路(~117MB → 只在进入此地图时按需加载,绝不预载)。自带 Canvas,与岛场景隔离。
 // 不穿模:贴地用车头/车尾/中心三点射线取「最高地面」+ 顺坡法线躺平;前向射线挡住树/岩/陡壁(斜坡放行)。
 const ROAD_URL = "/models/free_dirt_road_through_forest.glb";
+const MASK_URL = "/models/dirt_road_mask.json";
 const QICHE_URL = "/models/qiche.glb";
 const CAR_SCALE = 0.05;
 const CAR_LIFT = 0.6; // 贴地抬升
@@ -34,8 +44,8 @@ const _basis = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _qBank = new THREE.Quaternion();
 const _zAxis = new THREE.Vector3(0, 0, 1);
-const _fdir = new THREE.Vector3();
 const _dm = new THREE.Matrix4();
+const _g2 = { x: 0, z: 0 }; // 车道护栏:指向路内的单位方向(复用,避免每帧分配)
 
 function makeToonGrad() {
   const d = new Uint8Array([96, 96, 96, 255, 178, 178, 178, 255, 255, 255, 255, 255]);
@@ -65,6 +75,15 @@ function ForestRoad({ roadRef }: { roadRef: RefObject<THREE.Object3D | null> }) 
       if (m.isMesh) {
         m.castShadow = false;
         m.receiveShadow = false;
+        // 给每块几何体建 BVH:之后贴地/落点射线走加速结构,O(log n) 而非遍历全部三角面。
+        const geo = m.geometry as unknown as { boundsTree?: unknown; computeBoundsTree?: () => void; attributes?: { position?: unknown } };
+        if (geo && !geo.boundsTree && geo.attributes?.position) {
+          try {
+            geo.computeBoundsTree?.();
+          } catch {
+            /* 建树失败则退化为普通递归射线 */
+          }
+        }
       }
     });
     return c;
@@ -79,7 +98,7 @@ function ForestRoad({ roadRef }: { roadRef: RefObject<THREE.Object3D | null> }) 
 }
 
 // 汽车(卡通化 + 暖橙红,与岛上黄车区分)+ 驾驶 + 三点贴地不穿模 + 前向挡障 + 车尾扬尘 + 追尾相机 + 引擎声
-function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null>; roadRef: RefObject<THREE.Object3D | null> }) {
+function DriveCar({ inputRef, roadRef, mask }: { inputRef: RefObject<DriveInput | null>; roadRef: RefObject<THREE.Object3D | null>; mask: RoadMask | null }) {
   const { scene } = useGLTF(QICHE_URL);
   const carGrad = useMemo(() => makeToonGrad(), []);
   const car = useMemo(() => {
@@ -104,7 +123,13 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
   const st = useRef({ x: 0, z: 0, heading: 0, speed: 0, clk: 0 });
   const groundY = useRef(0);
   const found = useRef(false);
-  const ray = useMemo(() => new THREE.Raycaster(), []);
+  const ray = useMemo(() => {
+    const r = new THREE.Raycaster();
+    (r as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true; // BVH:只取最近命中,免排序更快
+    return r;
+  }, []);
+  const maskRef = useRef<RoadMask | null>(mask);
+  maskRef.current = mask; // 每帧 render 同步最新 mask,供 useFrame 闭包读取
   const dustGeo = useMemo(() => new THREE.SphereGeometry(0.45, 6, 5), []);
   const dustMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#cab39a", transparent: true, opacity: 0.5, depthWrite: false }), []);
   const puffs = useRef(Array.from({ length: 20 }, () => ({ x: 0, y: -999, z: 0, life: 0, sz: 0 })));
@@ -114,7 +139,15 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
   useEffect(() => {
     startEngine();
     playSfx("whoosh");
-    return () => stopEngine();
+    // 林间环境底噪（循环，低音量铺底）。文件缺失/断网时静默，不阻断。
+    const amb = new Audio("/audio/ambience/wind_forest.m4a");
+    amb.loop = true;
+    amb.volume = 0;
+    amb.play().then(() => { amb.volume = 0.4; }).catch(() => { /* 静默降级 */ });
+    return () => {
+      stopEngine();
+      amb.pause();
+    };
   }, []);
   useEffect(() => () => { dustGeo.dispose(); dustMat.dispose(); }, [dustGeo, dustMat]);
 
@@ -143,29 +176,17 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
     s.clk += dt;
     const road = roadRef.current;
 
-    // 首次落地:全图宽网格高空起射,取「较低 40% 命中」= 地面(树冠/背景在上方),
-    // 把车出生点挪到地面群中心 + 取其高度 → 一定落在地面上(背景把 bbox 中心撑偏到空地,故不能用原点)
-    if (!found.current && road) {
-      const hits: { x: number; z: number; y: number }[] = [];
-      const R = FIT_SIZE * 0.46;
-      const step = R / 6;
-      for (let dx = -R; dx <= R; dx += step) {
-        for (let dz = -R; dz <= R; dz += step) {
-          const y = castGround(dx, dz, 2000, 4000); // 高空起射
-          if (y !== null) hits.push({ x: dx, z: dz, y });
-        }
-      }
-      if (hits.length) {
-        const ys = hits.map((h) => h.y).sort((a, b) => a - b);
-        const lo = ys[Math.floor((ys.length - 1) * 0.4)]; // 较低 40% 高度 = 地面
-        const ground = hits.filter((h) => h.y <= lo);
-        let sx = 0, sz = 0, sy = 0;
-        for (const h of ground) { sx += h.x; sz += h.z; sy += h.y; }
-        s.x = sx / ground.length;
-        s.z = sz / ground.length;
-        groundY.current = sy / ground.length;
-        found.current = true;
-      }
+    // 首次落地:从车道遮罩取「路的一端」当出生点,朝路面延伸方向;再一次射线取该点地面高度。
+    const mask = maskRef.current;
+    if (!found.current && road && mask) {
+      const sp = mask.findSpawn();
+      s.x = sp.x;
+      s.z = sp.z;
+      s.heading = sp.heading;
+      const y = castGround(sp.x, sp.z, 2000, 4000);
+      groundY.current = y ?? 0;
+      _tiltN.set(0, 1, 0);
+      found.current = true;
     }
 
     // 油门/刹车(平滑,松手缓滑停);倒车上限低
@@ -180,34 +201,43 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
     s.heading += inp.x * turnRate * dt * (s.speed >= 0 ? 1 : -1);
 
     // 试探前进位置
-    const nx = s.x + Math.sin(s.heading) * s.speed * dt;
-    const nz = s.z + Math.cos(s.heading) * s.speed * dt;
+    const mvx = Math.sin(s.heading) * s.speed * dt;
+    const mvz = Math.cos(s.heading) * s.speed * dt;
+    let nx = s.x + mvx;
+    let nz = s.z + mvz;
 
-    // 前向挡障:车前打一条射线,撞到接近垂直的面(树/岩/陡壁,法线偏横)→ 挡住;斜坡(法线偏上)放行
-    let blocked = false;
-    if (road && Math.abs(s.speed) > 0.5) {
-      const dir = s.speed >= 0 ? 1 : -1;
-      _fdir.set(Math.sin(s.heading) * dir, 0, Math.cos(s.heading) * dir);
-      _o.set(s.x, groundY.current + 1.0, s.z);
-      ray.set(_o, _fdir);
-      ray.far = 2.2;
-      const fh = ray.intersectObject(road, true);
-      if (fh.length && fh[0].face) {
-        _hitN.copy(fh[0].face.normal).transformDirection(fh[0].object.matrixWorld);
-        if (Math.abs(_hitN.y) < 0.5) blocked = true; // 仅近乎垂直的面(树/岩/壁)才挡,斜坡放行
+    // 车道软护栏:用遮罩 SDF 把车关在土路上。越过路缘时去掉「出墙」那段位移、只留切向 →
+    // 贴着路缘滑行(不急停,弯道也能开完);万一钻出再沿梯度拉回。比逐帧射线挡障稳得多也快得多。
+    if (mask) {
+      const margin = Math.min(1.0, mask.maxHalfWidth * 0.45); // 离路缘留白(窄路自适应收紧)
+      if (mask.sampleSdf(nx, nz) < margin) {
+        mask.gradTo(nx, nz, _g2);
+        if (_g2.x === 0 && _g2.z === 0) mask.gradTo(s.x, s.z, _g2); // 梯度退化:改用当前位置取向
+        const out = mvx * -_g2.x + mvz * -_g2.z; // 位移投到「出路」方向的量
+        if (out > 0) {
+          nx += _g2.x * out; // 抵消出墙分量,只保留沿路缘切向
+          nz += _g2.z * out;
+        }
+        if (mask.sampleSdf(nx, nz) < 0.2) {
+          mask.gradTo(nx, nz, _g2); // 仍在缘外:沿梯度硬拉回路内,杜绝钻出车道
+          nx += _g2.x * 0.5;
+          nz += _g2.z * 0.5;
+        }
+        s.speed *= 0.9; // 擦缘轻微减速,给边界反馈但不卡死
       }
-    }
-    if (blocked) s.speed *= 0.25;
-    else {
       s.x = nx;
       s.z = nz;
-    }
-    const lim = FIT_SIZE * 0.5;
-    const r = Math.hypot(s.x, s.z);
-    if (r > lim) {
-      s.x *= lim / r;
-      s.z *= lim / r;
-      s.speed *= 0.35;
+    } else {
+      // 遮罩未就绪/缺失:退化为圆形边界兜底,至少别开出地图
+      s.x = nx;
+      s.z = nz;
+      const lim = FIT_SIZE * 0.5;
+      const rr = Math.hypot(s.x, s.z);
+      if (rr > lim) {
+        s.x *= lim / rr;
+        s.z *= lim / rr;
+        s.speed *= 0.35;
+      }
     }
 
     // 贴地:车头/中心/车尾三点取「最高地面」→ 任何一处都不扎进坡;中心法线定姿态
@@ -289,6 +319,41 @@ function DriveCar({ inputRef, roadRef }: { inputRef: RefObject<DriveInput | null
   );
 }
 
+// 调试:把遮罩判定为「路面」的格子稀疏铺成红点(贴地),?roaddbg 开启,肉眼核对车道是否压在土路上。
+function RoadDebug({ mask, roadRef }: { mask: RoadMask; roadRef: RefObject<THREE.Object3D | null> }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const done = useRef(false);
+  const ray = useMemo(() => new THREE.Raycaster(), []);
+  const geo = useMemo(() => new THREE.SphereGeometry(0.8, 6, 5), []);
+  const mat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#ff2d2d", transparent: true, opacity: 0.85 }), []);
+  const pts = useMemo(() => {
+    const arr: Array<[number, number]> = [];
+    const stride = 3;
+    for (let r = 0; r < mask.res; r += stride)
+      for (let c = 0; c < mask.res; c += stride)
+        if (mask.on[r * mask.res + c]) arr.push([mask.min + (c + 0.5) * mask.cell, mask.min + (r + 0.5) * mask.cell]);
+    return arr;
+  }, [mask]);
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  useFrame(() => {
+    if (done.current) return;
+    const road = roadRef.current;
+    const im = ref.current;
+    if (!road || !im) return;
+    for (let i = 0; i < pts.length; i++) {
+      const [x, z] = pts[i];
+      ray.set(_o.set(x, 2000, z), _down);
+      ray.far = 4000;
+      const h = ray.intersectObject(road, true);
+      _dm.makeTranslation(x, (h.length ? h[0].point.y : 0) + 0.6, z);
+      im.setMatrixAt(i, _dm);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    done.current = true;
+  });
+  return <instancedMesh ref={ref} args={[geo, mat, pts.length]} frustumCulled={false} />;
+}
+
 // 触屏控制:左侧转向(◄ ►)、右侧油门/刹车(▲ ▼);键盘 A左 D右 W前 S后 + 方向键同(共用 inputRef)。
 function HoldBtn({ label, onActive, style }: { label: string; onActive: (on: boolean) => void; style: React.CSSProperties }) {
   return (
@@ -307,8 +372,31 @@ function HoldBtn({ label, onActive, style }: { label: string; onActive: (on: boo
 
 export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<DriveInput | null>; onExit: () => void }) {
   const roadRef = useRef<THREE.Object3D | null>(null);
+  const [mask, setMask] = useState<RoadMask | null>(null);
   const steer = useRef(0);
   const gas = useRef(0);
+  const isTouch = useIsTouch();
+  const tier = getPerfTier();
+  const roadDebug = useMemo(() => {
+    try {
+      return new URLSearchParams(window.location.search).has("roaddbg");
+    } catch {
+      return false;
+    }
+  }, []);
+  useEffect(() => {
+    let live = true;
+    loadRoadMask(MASK_URL)
+      .then((m) => {
+        if (live) setMask(m);
+      })
+      .catch(() => {
+        /* 遮罩缺失:退化为无车道约束的自由驾驶,不阻断 */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
   const apply = () => {
     if (inputRef.current) {
       inputRef.current.x = steer.current;
@@ -354,7 +442,7 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
   }, [inputRef]);
   return (
     <div className="fixed inset-0 z-40" style={{ background: "linear-gradient(to bottom,#9fc6da,#cfe3ea)" }}>
-      <Canvas camera={{ position: [0, 9, 18], fov: 56 }} dpr={[1, 1.7]} gl={{ antialias: true }}>
+      <Canvas camera={{ position: [0, 9, 18], fov: 56 }} dpr={tier === "low" ? [1, 1.25] : [1, 1.7]} gl={{ antialias: true }}>
         <color attach="background" args={["#bcd9e6"]} />
         <fog attach="fog" args={["#bcd9e6", 160, 540]} />
         <ambientLight intensity={0.9} />
@@ -372,19 +460,20 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
           }
         >
           <ForestRoad roadRef={roadRef} />
-          <DriveCar inputRef={inputRef} roadRef={roadRef} />
+          <DriveCar inputRef={inputRef} roadRef={roadRef} mask={mask} />
+          {roadDebug && mask && <RoadDebug mask={mask} roadRef={roadRef} />}
         </Suspense>
       </Canvas>
 
       <button
         onClick={onExit}
-        className="btn-link absolute z-10 text-white/85"
-        style={{ top: "calc(1.4rem + env(safe-area-inset-top))", right: "calc(1.4rem + env(safe-area-inset-right))" }}
+        className="btn-link absolute z-10 text-white/85 py-2 px-2"
+        style={{ top: "calc(1rem + env(safe-area-inset-top))", right: "calc(1rem + env(safe-area-inset-right))" }}
       >
         ↩ 回到岛上
       </button>
       <div className="absolute z-10 panel-glass-1 rounded-full px-4 py-1.5 text-caption text-white/80" style={{ top: "calc(1.4rem + env(safe-area-inset-top))", left: "calc(1.4rem + env(safe-area-inset-left))" }}>
-        🌲 林间土路 · A左 D右 W前 S后(方向键同)
+        🌲 林间土路 · {isTouch ? "左侧◄►转向 · 右侧▲▼油门" : "A左 D右 W前 S后(方向键同)"}
       </div>
 
       {/* 触屏:左转向 右油门 */}

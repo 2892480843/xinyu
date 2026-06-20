@@ -39,6 +39,35 @@ _EMOTION_SPEED = {
 }
 
 
+# 精选音色清单：贴合「温柔陪伴」调性，供前端做音色选择。
+# id 为腾讯云 VoiceType；default=True 的那个会在用户未选择时使用。
+# 只列常用、稳定的一批，避免把几百个音色一股脑塞给用户。
+TTS_VOICES = [
+    {"id": 101016, "label": "智瑜", "desc": "温柔女声", "gender": "female", "default": True},
+    {"id": 101001, "label": "智瑜（通用）", "desc": "通用女声", "gender": "female"},
+    {"id": 101013, "label": "智言", "desc": "亲和女声", "gender": "female"},
+    {"id": 101018, "label": "智融", "desc": "温暖女声", "gender": "female"},
+    {"id": 101015, "label": "智言（标准）", "desc": "标准女声", "gender": "female"},
+    {"id": 101019, "label": "智芸", "desc": "知性女声", "gender": "female"},
+    {"id": 101023, "label": "智楠", "desc": "稳重男声", "gender": "male"},
+    {"id": 101022, "label": "智言（男）", "desc": "沉稳男声", "gender": "male"},
+    {"id": 101020, "label": "智团", "desc": "清亮少年", "gender": "male"},
+]
+
+
+def tts_voice_options() -> list:
+    """返回可选音色清单（深拷贝，避免外部误改模块常量）。"""
+    return [dict(v) for v in TTS_VOICES]
+
+
+def default_voice_type() -> int:
+    """返回默认音色 id（标记 default 的那个，回落到配置项）。"""
+    for v in TTS_VOICES:
+        if v.get("default"):
+            return int(v["id"])
+    return int(config.TENCENT_TTS_VOICE_TYPE)
+
+
 def _sign(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
@@ -55,25 +84,30 @@ class TTSService:
     def speed_for(self, emotion: str) -> float:
         return _EMOTION_SPEED.get(emotion, 0.0)
 
-    def synthesize(self, text: str, emotion: str = "calm") -> Optional[bytes]:
-        """合成音频字节（mp3）。未配置或任何失败均返回 None，交由前端降级。"""
+    def synthesize(self, text: str, emotion: str = "calm", voice: Optional[int] = None) -> Optional[bytes]:
+        """合成音频字节（mp3）。未配置或任何失败均返回 None，交由前端降级。
+
+        voice: 腾讯云 VoiceType；为 None 时用默认音色。
+        """
         if not self.configured() or not (text or "").strip():
             return None
         try:
-            return self._call(text.strip()[:300], emotion)
+            return self._call(text.strip()[:300], emotion, voice)
         except Exception as e:  # 任何异常都降级，绝不影响主体验
             logger.warning("Tencent TTS 调用失败，降级浏览器原生: %s", e)
             return None
 
-    def _call(self, text: str, emotion: str) -> Optional[bytes]:
+    def _call(self, text: str, emotion: str, voice: Optional[int]) -> Optional[bytes]:
         secret_id = config.TENCENT_TTS_SECRET_ID
         secret_key = config.TENCENT_TTS_SECRET_KEY
         region = config.TENCENT_TTS_REGION
 
+        # 用户选了具体音色就用它；否则用清单默认值；再否则回落到环境配置项
+        voice_type = voice if voice else default_voice_type()
         params = {
             "Text": text,
             "SessionId": hashlib.md5((text + emotion).encode("utf-8")).hexdigest()[:32],
-            "VoiceType": config.TENCENT_TTS_VOICE_TYPE,
+            "VoiceType": voice_type,
             "Codec": "mp3",
             "Speed": self.speed_for(emotion),
             "Volume": 0,

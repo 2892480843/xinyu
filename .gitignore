@@ -17,6 +17,12 @@ frontend/node_modules/
 frontend/dist/
 frontend/shot-*.png
 
+# 音频素材原始存档（可由 public/audio/fetch_assets.py 重新抓取，不入版本库）
+frontend/public/audio/raw/
+
+# 大型模型素材源压缩包（解压后的 glb 已入库，源 zip 不入版本库）
+frontend/public/models/dutch-ship-medium.zip
+
 # Local env
 .env
 *.local

@@ -364,13 +364,14 @@ export async function fetchTimeline(user_id: string): Promise<TimelineStep[]> {
   }
 }
 
-/** 情感语音合成：配了腾讯云 TTS 密钥则返回云端情感音色音频(data URL)，否则返回 null 由前端降级浏览器原生。 */
-export async function synthesizeSpeech(text: string, emotion: string): Promise<string | null> {
+/** 情感语音合成：配了云端 TTS（阿里云 CosyVoice / 腾讯云）则返回情感音色音频(data URL)，
+ * 否则返回 null 由前端降级浏览器原生。voice 指定音色 id（字符串，腾讯云数字也以字符串传）；省略用默认。 */
+export async function synthesizeSpeech(text: string, emotion: string, voice?: string): Promise<string | null> {
   try {
     const res = await fetch(`${BASE}/api/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, emotion }),
+      body: JSON.stringify({ text, emotion, voice }),
     });
     if (!res.ok) return null;
     const d = await res.json();
@@ -378,6 +379,29 @@ export async function synthesizeSpeech(text: string, emotion: string): Promise<s
     return null;
   } catch {
     return null;
+  }
+}
+
+export interface TtsVoice {
+  id: string; // 阿里云为字符串音色名（如 longanrou），腾讯云为数字字符串（如 "101016"）
+  label: string;
+  desc: string;
+  gender: "female" | "male";
+  default?: boolean;
+}
+export interface TtsVoicesResponse {
+  configured: boolean;
+  provider?: "aliyun" | "tencent" | null;
+  voices: TtsVoice[];
+}
+/** 拉取可选音色清单 + 是否已配置云端 TTS。未配置时 voices 为空，UI 显示降级提示。 */
+export async function fetchTtsVoices(): Promise<TtsVoicesResponse> {
+  try {
+    const res = await fetch(`${BASE}/api/tts/voices`);
+    if (!res.ok) return { configured: false, voices: [] };
+    return await res.json();
+  } catch {
+    return { configured: false, voices: [] };
   }
 }
 
