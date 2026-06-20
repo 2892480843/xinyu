@@ -59,6 +59,35 @@
   </tr>
 </table>
 
+<p align="center"><sub><b>情绪 → 场景</b>：同一座岛屿会随你当下的情绪切换天空 / 海面 / 天气 —— 8 情绪 × 3 强度共 24 张本地插画底图（下为各情绪一档），运行时再叠加 CSS/SVG 与天气粒子</sub></p>
+
+<table>
+  <tr>
+    <td align="center" width="25%"><img src="frontend/public/scenes/happy-mid-warm-gold.png" alt="开心" width="200"></td>
+    <td align="center" width="25%"><img src="frontend/public/scenes/calm-high-glass-tide.png" alt="平静" width="200"></td>
+    <td align="center" width="25%"><img src="frontend/public/scenes/anxious-mid-mist-gray.png" alt="焦虑" width="200"></td>
+    <td align="center" width="25%"><img src="frontend/public/scenes/tired-mid-deep-indigo.png" alt="疲惫" width="200"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>开心 · 暖金烈日</sub></td>
+    <td align="center"><sub>平静 · 青碧帆影</sub></td>
+    <td align="center"><sub>焦虑 · 雾锁山影</sub></td>
+    <td align="center"><sub>疲惫 · 深靛月夜</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="25%"><img src="frontend/public/scenes/sad-mid-slate-blue.png" alt="难过" width="200"></td>
+    <td align="center" width="25%"><img src="frontend/public/scenes/lonely-high-moonlit-shore.png" alt="孤独" width="200"></td>
+    <td align="center" width="25%"><img src="frontend/public/scenes/angry-mid-deep-crimson.png" alt="愤怒" width="200"></td>
+    <td align="center" width="25%"><img src="frontend/public/scenes/helpless-mid-dark-slate.png" alt="无助" width="200"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>难过 · 石蓝夜雨</sub></td>
+    <td align="center"><sub>孤独 · 紫夜满月</sub></td>
+    <td align="center"><sub>愤怒 · 绯红风雨</sub></td>
+    <td align="center"><sub>无助 · 暗夜微光</sub></td>
+  </tr>
+</table>
+
 ## 当前范围
 
 AI 默认使用 **Mock 模式**，无需 API Key 即可完整跑通（情绪、叙事、印记、岛屿、安全均有降级兜底）。支持情绪：`sad`、`anxious`、`tired`、`lonely`、`calm`、`happy`、`angry`、`helpless`。

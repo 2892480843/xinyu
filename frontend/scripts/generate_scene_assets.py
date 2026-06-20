@@ -430,8 +430,9 @@ def draw_scene(key: str, spec: Dict) -> None:
         for i in range(12):
             x = random.randint(220, 1320)
             y = random.randint(250, 520)
-            draw.arc((x - 12, y - 9, x, y + 9), 40, 320, fill=(255, 248, 220, 135), width=2)
-            draw.arc((x, y - 9, x + 12, y + 9), 220, 140, fill=(255, 248, 220, 135), width=2)
+            # 远空海鸥剪影:两笔上凸浅弧拼成「⌒⌒」(原 40/320·220/140 把弧画成对开的 C,远看像 "CO",此处修正)
+            draw.arc((x - 12, y - 4, x + 1, y + 8), 200, 340, fill=(255, 248, 220, 135), width=2)
+            draw.arc((x - 1, y - 4, x + 12, y + 8), 200, 340, fill=(255, 248, 220, 135), width=2)
 
     if "rocks" in spec["motifs"] or "cliffs" in spec["motifs"]:
         for base_x in ([230, 330, 1220] if "rocks" in spec["motifs"] else [140, 220, 1260, 1380]):
