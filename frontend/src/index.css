@@ -111,27 +111,29 @@ textarea { resize: none; }
 /* 三档玻璃材质——纯 CSS，避免 @apply + 自定义 rgba 颜色编译问题。
    注：不强制 position: relative——交给 JSX 决定 fixed/absolute/relative，避免覆盖 Tailwind 的 .fixed。 */
 .panel-glass-1 {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  /* 深色底玻璃(最浅档)——白字在亮/忙碌的 3D 场景上也读得清；保留白色高光维持玻璃感。 */
+  background: rgba(12, 16, 34, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.06) inset,
-    0 8px 24px -12px rgba(8, 12, 28, 0.5);
+    0 1px 0 0 rgba(255, 255, 255, 0.08) inset,
+    0 8px 24px -12px rgba(8, 12, 28, 0.55);
 }
 
 .panel-glass-2 {
   /* 需要 position 锚定给 ::before 高光线；不在 fixed 容器里用 panel-glass-2 */
   position: relative;
-  background: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.04) 38%, rgba(255,255,255,0.04) 100%);
+  /* 深色底玻璃(中档)——顶部略亮一档留出立体高光，整体足够暗让正文在 3D 场景上清晰。 */
+  background: linear-gradient(180deg, rgba(22,28,52,0.48) 0%, rgba(11,15,32,0.50) 38%, rgba(11,15,32,0.52) 100%);
   border: 1px solid rgba(255, 255, 255, 0.18);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   box-shadow:
     0 1px 0 0 rgba(255, 255, 255, 0.12) inset,
     0 -1px 0 0 rgba(255, 255, 255, 0.04) inset,
-    0 24px 60px -20px rgba(8, 12, 28, 0.55),
-    0 8px 24px -12px rgba(8, 12, 28, 0.4);
+    0 24px 60px -20px rgba(8, 12, 28, 0.6),
+    0 8px 24px -12px rgba(8, 12, 28, 0.45);
 }
 .panel-glass-2::before {
   content: "";
@@ -163,6 +165,11 @@ textarea { resize: none; }
   border-top-left-radius: inherit;
   border-top-right-radius: inherit;
   pointer-events: none;
+}
+
+/* 漂浮在 3D 场景上、无面板托底的文字——加暗色投影描边，亮背景也读得清 */
+.text-on-scene {
+  text-shadow: 0 1px 8px rgba(8, 12, 28, 0.7), 0 0 3px rgba(8, 12, 28, 0.55);
 }
 
 /* 按钮系统 */
@@ -229,6 +236,69 @@ textarea { resize: none; }
   cursor: pointer;
 }
 .btn-link:hover { color: rgba(255, 255, 255, 0.96); }
+
+/* 「上岛走走」主行动召唤 —— 明亮糖果药丸 + 玻璃高光 + 光晕脉冲 + 声纳环 + 微光扫过,务求显眼 */
+.island-cta {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.95rem 2.7rem;
+  border-radius: 9999px;
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #0e2a36;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  cursor: pointer;
+  isolation: isolate;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: filter 0.2s ease, border-color 0.2s ease;
+}
+.island-cta:hover { filter: brightness(1.06) saturate(1.06); border-color: rgba(255, 255, 255, 0.92); }
+.island-cta__glow {
+  position: absolute;
+  inset: -12px;
+  border-radius: inherit;
+  z-index: -2;
+  pointer-events: none;
+}
+/* 声纳脉冲环:慢速外扩淡出,把目光引过来 */
+.island-cta__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1.5px solid rgba(255, 255, 255, 0.75);
+  z-index: -1;
+  pointer-events: none;
+}
+/* 微光扫过,clip 到药丸轮廓内 */
+.island-cta__shine {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  z-index: -1;
+  pointer-events: none;
+}
+.island-cta__shine::before {
+  content: "";
+  position: absolute;
+  top: -25%;
+  left: 0;
+  width: 55%;
+  height: 150%;
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.6) 50%, transparent 100%);
+  transform: translateX(-160%) skewX(-16deg);
+  animation: cta-shine 4.6s ease-in-out 1.2s infinite;
+}
+@keyframes cta-shine {
+  0% { transform: translateX(-160%) skewX(-16deg); }
+  20%, 100% { transform: translateX(330%) skewX(-16deg); }
+}
+.island-cta__emoji { font-size: 19px; }
+.island-cta__arrow { opacity: 0.8; font-size: 17px; }
 
 .chip {
   display: inline-flex;

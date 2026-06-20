@@ -968,11 +968,23 @@ function toonifyIsland(src: THREE.Object3D, grad: THREE.Texture) {
   return { root, accentMats };
 }
 
+// 卸载时释放 toon 克隆体里我们 new 出来的所有材质——几何体共享自缓存 GLTF，绝不在此 dispose。
+function disposeToonMaterials(root: THREE.Object3D) {
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    (Array.isArray(m.material) ? m.material : [m.material]).forEach((mat) => mat?.dispose());
+  });
+}
+
 function GlbIsland({ matsRef, animate }: { matsRef: React.MutableRefObject<THREE.MeshStandardMaterial[] | null>; animate: boolean }) {
   const { scene } = useGLTF(GLB_ISLAND_URL);
-  const { root, accentMats } = useMemo(() => toonifyIsland(scene, toonGradient()), [scene]);
+  const grad = useMemo(() => toonGradient(), []);
+  const { root, accentMats } = useMemo(() => toonifyIsland(scene, grad), [scene, grad]);
   // 渲染期写入：早于 EmotionTint 的 useLayoutEffect(apply(1))，确保首帧情绪辉光已吸附到位
   matsRef.current = accentMats;
+  // 卸载时释放本组件 new 出来的 toon 材质 + 渐变贴图（几何体共享自缓存 GLTF，不动）。
+  useEffect(() => () => { disposeToonMaterials(root); grad.dispose(); }, [root, grad]);
   const groupRef = useRef<THREE.Group>(null);
   useFrame((state) => {
     if (!animate || !groupRef.current) return;
@@ -1025,9 +1037,10 @@ function toonClone(src: THREE.Object3D, grad: THREE.Texture): THREE.Object3D {
 // 漂浮云朵：低多边形 puff，缓缓横移、循环回绕；由情绪天光重新染色。
 function Clouds({ animate }: { animate: boolean }) {
   const { scene } = useGLTF(BG_CLOUD_URL);
+  const grad = useMemo(() => toonGradient(), []);
   const items = useMemo(() => {
-    const grad = toonGradient();
     const variants = ["Cloud1", "Cloud2", "Cloud3"].map((n) => scene.getObjectByName(n)).filter(Boolean) as THREE.Object3D[];
+    if (variants.length === 0) return []; // glb 缺节点名 → 避免 toonClone(undefined) 抛错使整个 Canvas 崩
     const specs = [
       { v: 0, x: -3.6, y: 4.7, z: -13, s: 1.4, sp: 0.4 },
       { v: 2, x: 3.8, y: 5.2, z: -14, s: 1.6, sp: 0.3 },
@@ -1036,7 +1049,8 @@ function Clouds({ animate }: { animate: boolean }) {
       { v: 2, x: 6.2, y: 4.3, z: -12, s: 1.3, sp: 0.5 },
     ];
     return specs.map((sp) => ({ obj: toonClone(variants[sp.v] ?? variants[0], grad), x: sp.x, y: sp.y, z: sp.z, s: sp.s, sp: sp.sp }));
-  }, [scene]);
+  }, [scene, grad]);
+  useEffect(() => () => { items.forEach((it) => disposeToonMaterials(it.obj)); grad.dispose(); }, [items, grad]);
   const refs = useRef<(THREE.Group | null)[]>([]);
   useFrame((_, delta) => {
     if (!animate) return;
@@ -1061,8 +1075,8 @@ function Clouds({ animate }: { animate: boolean }) {
 // 小鸟群：glb 小鸟绕岛盘旋，翅膀拍动（WingL/WingR 子节点）。
 function GlbBirds({ count, animate }: { count: number; animate: boolean }) {
   const { scene } = useGLTF(BG_BIRD_URL);
+  const grad = useMemo(() => toonGradient(), []);
   const birds = useMemo(() => {
-    const grad = toonGradient();
     return Array.from({ length: count }, (_, i) => {
       const obj = toonClone(scene, grad);
       return {
@@ -1075,7 +1089,8 @@ function GlbBirds({ count, animate }: { count: number; animate: boolean }) {
         phase: i * 1.7,
       };
     });
-  }, [scene, count]);
+  }, [scene, count, grad]);
+  useEffect(() => () => { birds.forEach((b) => disposeToonMaterials(b.obj)); grad.dispose(); }, [birds, grad]);
   const refs = useRef<(THREE.Group | null)[]>([]);
   useFrame((state) => {
     if (!animate) return;
@@ -1110,7 +1125,9 @@ function GlbBirds({ count, animate }: { count: number; animate: boolean }) {
 // 海龟：在海面缓缓画圈巡游、半潜出水（倒影可见），前鳍轻划。
 function Turtle({ animate }: { animate: boolean }) {
   const { scene } = useGLTF(BG_TURTLE_URL);
-  const obj = useMemo(() => toonClone(scene, toonGradient()), [scene]);
+  const grad = useMemo(() => toonGradient(), []);
+  const obj = useMemo(() => toonClone(scene, grad), [scene, grad]);
+  useEffect(() => () => { disposeToonMaterials(obj); grad.dispose(); }, [obj, grad]);
   const flipL = useMemo(() => obj.getObjectByName("FlipperL") as THREE.Object3D | undefined, [obj]);
   const flipR = useMemo(() => obj.getObjectByName("FlipperR") as THREE.Object3D | undefined, [obj]);
   const ref = useRef<THREE.Group>(null);
@@ -1155,6 +1172,7 @@ function GlbSun({ setSunMesh, sunMatRef, initialCelestial }: { setSunMesh: (m: T
   sunMatRef.current = built.sunMat; // 渲染期写入，供 EmotionTint 逐帧染色
   useEffect(() => {
     if (built.core) setSunMesh(built.core);
+    return () => { built.sunMat.dispose(); };
   }, [built, setSunMesh]);
   return (
     <group position={[3.0, 3.1, -6]} rotation={[0, Math.PI, 0]} scale={1.05}>

@@ -177,7 +177,10 @@ export interface MemoryItem {
   created_at: string;
 }
 
-const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+// 生产构建走相对路径（与前端同源，由 Nginx 反代到后端，无跨域）；开发回退本机后端。
+// 注意 ??：仅在「未定义」时兜底；.env / .env.production 里的显式空值会被保留为相对路径，
+// 不会落回 localhost。PROD 兜底确保即使服务器上缺 env 文件，生产也不会硬编码 127.0.0.1:8000。
+const BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.PROD ? "" : "http://127.0.0.1:8000");
 // 流式逐阶段推送后，等待期间用户能看到导演台「信使逐个抵达」，长一点的等待是可接受的；
 // 后端单次 LLM 上限 30s，情绪+叙事两段串行，慢模型下需要给足窗口，否则 WS 会在叙事生成中途
 // 被掐断、白白回退 HTTP 重算（且重算可能得到不同情绪）。8s 处已有手动「先回去」可随时退出。
@@ -253,6 +256,7 @@ export function reflectStream(
   timeoutMs = WS_TIMEOUT_MS,
   ephemeral = false,
   request_id?: string,
+  onCancel?: (cancel: () => void) => void,
 ): Promise<ReflectResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -278,6 +282,18 @@ export function reflectStream(
     const timer = window.setTimeout(() => {
       settleReject(new Error("流式回应超时"));
     }, timeoutMs);
+
+    // 暴露「取消」句柄：用户中途返回时主动关闭 socket，并以 AbortError 结束，
+    // 调用方据此跳过 HTTP 降级、忽略迟到结果（不会把用户从输入态拽回）。
+    onCancel?.(() => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
+      const err = new Error("已取消");
+      err.name = "AbortError";
+      reject(err);
+    });
 
     try {
       socket = new WebSocket(resolveWsUrl("/ws/reflect"));

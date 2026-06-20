@@ -5,6 +5,7 @@ import { FEATURE_META } from "../lib/islandMeta";
 import FeatureGlyph from "./IslandFeatureIcons";
 import { useImmersion } from "../hooks/useImmersion";
 import { seedDemoTimeline, fetchTimeline, type TimelineStep } from "../lib/api";
+import { useModalDismiss } from "../hooks/useModalDismiss";
 
 // 模块级确定性星位，夜间步骤用；不在 render 里取随机，保证稳定
 const STARS = Array.from({ length: 36 }, (_, i) => {
@@ -63,6 +64,7 @@ export default function TimeMachine({ userId, demo, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [steps, setSteps] = useState<TimelineStep[]>([]);
   const [idx, setIdx] = useState(0);
+  useModalDismiss(true, onClose);
   // 拉数据 + 预加载所有步骤图片，保证延时动画不闪白。用局部 cancelled 标志，StrictMode 双调用安全。
   useEffect(() => {
     let cancelled = false;

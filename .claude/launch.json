@@ -21,6 +21,13 @@
       "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5180"],
       "port": 5180,
       "autoPort": false
+    },
+    {
+      "name": "frontend-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "preview", "--", "--host", "127.0.0.1", "--port", "4178", "--strictPort"],
+      "port": 4178,
+      "autoPort": false
     }
   ]
 }

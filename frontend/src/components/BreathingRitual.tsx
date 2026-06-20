@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { EASE_IN_OUT_QUART, SPRING_TAP } from "../lib/motion";
 import { play as playSfx } from "../lib/sfx";
@@ -76,12 +76,16 @@ export default function BreathingRitual({ emotionLabel, onComplete, onSkip }: Pr
     return () => window.clearTimeout(t);
   }, [step, cycle]);
 
+  // onComplete 是父级内联函数（每次 render 新引用）；存 ref 让完成计时器只依赖 step，
+  // 避免父组件重渲染时反复重置这枚 1.6s 计时器（会重复响 bloom，甚至永不触发完成）。
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => {
     if (step !== "done") return;
     playSfx("bloom"); // 仪式圆满落定
-    const t = window.setTimeout(onComplete, 1600);
+    const t = window.setTimeout(() => onCompleteRef.current(), 1600);
     return () => window.clearTimeout(t);
-  }, [step, onComplete]);
+  }, [step]);
 
   const activeKey = step === "invite" || step === "done" ? "inhale" : step;
   const scale = reducedMotion ? { outer: 1, mid: 1, inner: 1 } : STEP_SCALE[activeKey];

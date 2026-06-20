@@ -69,27 +69,42 @@ from app.services.tts_service import TTSService, tts_voice_options
 from app.services.aliyun_tts_service import AliyunTTSService, aliyun_voice_options
 from app.services import scene_map
 from app.services.companion_prompt import COMPANION_PROMPT_VERSION
+from app.services.healing_kb import KB_VERSION
 
 from pydantic import BaseModel
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+from app.observability import AccessLogMiddleware, configure_logging
+
+# 结构化日志 + request_id（替代 basicConfig）。LOG_FORMAT=json 时输出 JSON 行日志。
+configure_logging()
 logger = logging.getLogger("xinyu")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动即确保 Postgres 连接池/ schema 就绪；关停时归还连接池。
-    db.init_db()
+    # 启动即确保 Postgres 连接池/ schema 就绪并注入种子；关停时归还连接池。
+    # DB 暂时不可达时只记录告警、不阻断启动——后续请求会经 db.connection() 惰性重连，
+    # DB 恢复后自动可用（避免「部署瞬间 DB 抖动 → 整个服务起不来」）。
+    try:
+        db.init_db()
+        memory_service.ensure_demo_seed()
+    except Exception as e:
+        logger.warning("启动时 DB 初始化失败，将在首次请求时重试：%s", e)
     yield
     db.close_pool()
 
 
 app = FastAPI(title="心屿 Xinyu API", version="1.0.0", lifespan=lifespan)
 
+# 访问日志 / request_id / 异常兜底中间件。先加 → 处于 CORS 内层，
+# 这样它兜底返回的 500 仍会被外层 CORS 补上跨域响应头，浏览器才能读到错误体。
+app.add_middleware(AccessLogMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 # 组装服务（单例）
@@ -149,17 +164,21 @@ def _run_reflect_idempotent(
         if request_id in _reflect_cache:
             return _reflect_cache[request_id]
         lock = _reflect_inflight.setdefault(request_id, threading.Lock())
-    with lock:
+    try:
+        with lock:
+            with _reflect_cache_lock:
+                if request_id in _reflect_cache:
+                    return _reflect_cache[request_id]
+            result = _run_reflect(user_id, text, ephemeral=ephemeral)
+            with _reflect_cache_lock:
+                _reflect_cache[request_id] = result
+                while len(_reflect_cache) > _REFLECT_CACHE_MAX:
+                    _reflect_cache.popitem(last=False)
+            return result
+    finally:
+        # 无论成功或异常都清理 inflight 锁条目，避免 _run_reflect 抛错时永久残留（缓慢泄漏）。
         with _reflect_cache_lock:
-            if request_id in _reflect_cache:
-                return _reflect_cache[request_id]
-        result = _run_reflect(user_id, text, ephemeral=ephemeral)
-        with _reflect_cache_lock:
-            _reflect_cache[request_id] = result
-            while len(_reflect_cache) > _REFLECT_CACHE_MAX:
-                _reflect_cache.popitem(last=False)
             _reflect_inflight.pop(request_id, None)
-        return result
 
 
 class IslandActRequest(BaseModel):
@@ -324,20 +343,27 @@ def _classic_reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
         choices = [IslandChoice(**c) for c in ritual_service.get_choices(emotion, island_state.trend)]
 
     # —— 保存记忆（无痕模式下完全跳过，连向量库都不写）——
+    # 持久化失败不该让用户丢失已生成的叙事：降级为「本次不落库」，response 仍正常返回。
     saved_memory: Dict[str, Any] = {}
+    persisted = False
     if not ephemeral:
-        saved_memory = memory_service.save(
-            {
-                "user_id": user_id,
-                "text": text,
-                "emotion": emotion,
-                "intensity": intensity,
-                "summary": summary,
-                "narrative": narrative,
-                "imprint": imprint,
-            }
-        )
-        _try_add_vector_memory(saved_memory)
+        try:
+            saved_memory = memory_service.save(
+                {
+                    "user_id": user_id,
+                    "text": text,
+                    "emotion": emotion,
+                    "intensity": intensity,
+                    "summary": summary,
+                    "narrative": narrative,
+                    "imprint": imprint,
+                }
+            )
+            _try_add_vector_memory(saved_memory)
+            persisted = True
+        except Exception as exc:
+            logger.error("reflect 持久化失败，本次降级为不落库（仍返回叙事）：%s", exc)
+            saved_memory = {}
 
     logger.info(
         "reflect user=%s emotion=%s intensity=%.2f safety=%s growth=%s ephemeral=%s",
@@ -363,8 +389,8 @@ def _classic_reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
     # __final__ 先于 memory 事件 yield：此刻 save 已完成，让调用方立刻落缓存，
     # 这样即便随后推送 memory/done 失败（客户端断开），HTTP 回退命中缓存也不会二次落库。
     yield ("__final__", {"response": response, "saved": saved_memory})
-    # 无痕模式下不发 memory 事件（无记忆可言）
-    if not ephemeral:
+    # 无痕模式（或持久化失败降级）下不发 memory 事件（无记忆可言）
+    if not ephemeral and persisted:
         yield ("memory", {"memory": saved_memory})
 
 
@@ -476,12 +502,18 @@ def _agent_reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
     choices = [] if (safety.triggered or ephemeral) else [IslandChoice(**c) for c in ritual_service.get_choices(emotion, island_state.trend)]
 
     saved_memory: Dict[str, Any] = {}
+    persisted = False
     if not ephemeral:
-        saved_memory = memory_service.save({
-            "user_id": user_id, "text": text, "emotion": emotion, "intensity": intensity,
-            "summary": summary, "narrative": narrative, "imprint": imprint,
-        })
-        _try_add_vector_memory(saved_memory)
+        try:
+            saved_memory = memory_service.save({
+                "user_id": user_id, "text": text, "emotion": emotion, "intensity": intensity,
+                "summary": summary, "narrative": narrative, "imprint": imprint,
+            })
+            _try_add_vector_memory(saved_memory)
+            persisted = True
+        except Exception as exc:
+            logger.error("reflect[agent] 持久化失败，本次降级为不落库（仍返回叙事）：%s", exc)
+            saved_memory = {}
 
     logger.info("reflect[agent] user=%s emotion=%s intensity=%.2f safety=%s growth=%s steps=%s ephemeral=%s",
                 user_id, emotion, intensity, safety.triggered, island_state.growth_level, composed.get("steps", 0), ephemeral)
@@ -492,7 +524,7 @@ def _agent_reflect_pipeline(user_id: str, text: str, ephemeral: bool = False):
         memory_hint=memory_hint, safety=safety, ephemeral=ephemeral, echo_phrase=echo_phrase,
     )
     yield ("__final__", {"response": response, "saved": saved_memory})
-    if not ephemeral:
+    if not ephemeral and persisted:
         yield ("memory", {"memory": saved_memory})
 
 
@@ -570,6 +602,7 @@ def health():
         "provider": config.LLM_PROVIDER,
         "model": config.OPENAI_MODEL if config.LLM_PROVIDER == "openai" else "mock",
         "emotions": scene_map.list_emotions(),
+        "healing_kb": KB_VERSION,
     }
 
 
@@ -820,11 +853,14 @@ def companion_chat(req: CompanionChatRequest) -> CompanionChatResponse:
     name = (req.companion_name or "微光").strip()[:8] or "微光"
     recent = memory_service.get_recent(user_id, 5)
     analyzed = emotion_service.analyze(text, recent[:3])
-    emotion = (req.emotion or analyzed.get("emotion") or "calm").strip().lower()
-    if emotion not in EMOTION_ZH:
-        emotion = analyzed.get("emotion", "calm")
+    server_emotion = (analyzed.get("emotion") or "calm").strip().lower()
     intensity = float(analyzed.get("intensity", 0.5) or 0.5)
-    safety = safety_service.check(emotion, intensity, text)
+    # 回复语气可由客户端 emotion 着色，但安全门恒用「服务端分析」的情绪+强度，
+    # 绝不被客户端传入的 emotion 绕过（否则可用 emotion="happy" 关掉阈值安全网）。
+    emotion = (req.emotion or server_emotion or "calm").strip().lower()
+    if emotion not in EMOTION_ZH:
+        emotion = server_emotion
+    safety = safety_service.check(server_emotion, intensity, text)
     if safety.triggered:
         reply = (
             f"{name}把灯塔光停在你身边：先别独自扛着。"

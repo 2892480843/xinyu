@@ -45,10 +45,23 @@ def _load_app(tmpdir: Any = None, cors_origins: str = "http://127.0.0.1:5173") -
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     os.environ["VECTOR_ENABLED"] = "0"  # 测试不依赖本地 embedding 模型，语义检索走「最近记忆」回退
     os.environ["CORS_ORIGINS"] = cors_origins
+    # 隔离 TTS 密钥:本机 backend/.env 可能配了阿里云(DASHSCOPE_API_KEY)或腾讯云密钥,
+    # 会污染「未配置时降级」类断言(load_dotenv() 会在 config 重载时把这些值写回 os.environ,
+    # 故仅在重载前 pop 不够)。先清环境变量,再在重载后直接置空 config 模块属性,
+    # 使 configured() 恒返回假、TTS 恒为未配置,测试不依赖本机真实密钥。
+    for _k in ("TENCENT_TTS_SECRET_ID", "TENCENT_TTS_SECRET_KEY", "DASHSCOPE_API_KEY", "TTS_PROVIDER"):
+        os.environ.pop(_k, None)
     _reset_db()
     _purge_app_modules()
 
     from app.main import app, memory_service  # pylint: disable=import-outside-toplevel
+    from app import config as _config  # pylint: disable=import-outside-toplevel
+
+    # config 已被 load_dotenv() 用 .env 覆盖;这里把 TTS 相关属性强制置空,与服务实际读取口径一致。
+    _config.DASHSCOPE_API_KEY = ""
+    _config.TENCENT_TTS_SECRET_ID = ""
+    _config.TENCENT_TTS_SECRET_KEY = ""
+    _config.TTS_PROVIDER = ""
 
     return app, memory_service
 
@@ -185,8 +198,12 @@ class ApiRegressionTest(unittest.TestCase):
                 self.assertTrue(payload["reply"])
                 self.assertLessEqual(len(payload["reply"]), 120)
                 self.assertFalse(payload["safety"]["triggered"])
-                self.assertIn(payload["animation"], {"TalkListen", "BondGlow", "Joyful", "Worried"})
-                self.assertEqual(payload["prompt_version"], "xinyu-companion-v1")
+                # v3 允许的动画集合(含新增 SingSong / SleepFloat)
+                self.assertIn(
+                    payload["animation"],
+                    {"TalkListen", "BondGlow", "Joyful", "Worried", "SingSong", "SleepFloat"},
+                )
+                self.assertEqual(payload["prompt_version"], "xinyu-companion-v3")
 
     def test_companion_chat_degrades_high_risk_message_to_safety_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -414,12 +431,18 @@ class ApiRegressionTest(unittest.TestCase):
 
     def test_ws_streams_director_stages_progressively_in_order(self) -> None:
         """WebSocket 应逐阶段流式推送：5 个 agent 事件按导演台顺序出现，
-        且情绪/记忆/环境在最慢的叙事之前先流出（前端据此让信使逐个点亮）。"""
+        且情绪/记忆/环境在最慢的叙事之前先流出（前端据此让信使逐个点亮）。
+
+        选低强度疲惫文本（「今天工作了一天，觉得有点累」→ tired/0.60）：
+        安全阈值 0.85 扩到全部负面情绪后，原样例「今天加班好累，很疲惫」因含
+        两个程度副词（好/很）被判 tired/0.86 ≥ 0.85 触发安全、叙事被正确置空，
+        不再适合验证「叙事正常流出」。这里换一条稳定的低强度疲惫输入。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/reflect") as ws:
-                    ws.send_json({"user_id": "ws-user", "text": "今天加班好累，很疲惫"})
+                    ws.send_json({"user_id": "ws-user", "text": "今天工作了一天，觉得有点累"})
                     events = []
                     while True:
                         msg = ws.receive_json()

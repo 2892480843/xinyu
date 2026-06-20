@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 class ReflectRequest(BaseModel):
     user_id: str = Field(default="demo-user")
-    text: str
+    text: str = Field(max_length=2000)  # 硬上限：防绕过前端直接打 API 造成 LLM 成本爆炸/注入放大
     # 无痕模式：勾选后岛屿不写记忆、不更新岛屿状态、不留物件——情绪陪伴价值 100%，数据价值 0%
     ephemeral: bool = False
     # 幂等键：客户端每次提交生成一个唯一 id；WS 超时回退 HTTP 时带同一个 id，
@@ -147,8 +147,8 @@ class PhraseListResponse(BaseModel):
 class AddPhraseRequest(BaseModel):
     user_id: str = "demo-user"
     emotion: str
-    content: str
-    attribution: str = ""
+    content: str = Field(max_length=500)
+    attribution: str = Field(default="", max_length=80)
 
 
 class GlyphDynamics(BaseModel):
@@ -181,7 +181,7 @@ class CompanionChatRequest(BaseModel):
     """专属精灵对话：前端带上本地精灵状态，后端只负责生成安全、入戏的一句回应。"""
 
     user_id: str = "demo-user"
-    message: str
+    message: str = Field(max_length=1000)
     companion_name: str = "微光"
     affinity: int = 0
     emotion: str = "calm"
@@ -230,14 +230,14 @@ class MemoryListResponse(BaseModel):
 
 class ChatTurn(BaseModel):
     role: str  # "user" | "assistant"
-    content: str
+    content: str = Field(max_length=2000)
 
 
 class IslandChatRequest(BaseModel):
     """主页多轮对话（P2）：带上整段对话历史，岛屿/精灵多轮回应。"""
 
     user_id: str = "demo-user"
-    messages: List[ChatTurn] = Field(default_factory=list)
+    messages: List[ChatTurn] = Field(default_factory=list, max_length=60)  # 限制历史轮数，防超长上下文
 
 
 class IslandChatResponse(BaseModel):
@@ -250,7 +250,7 @@ class AgentAskRequest(BaseModel):
     """常驻 AI 助手（P3）：用户随时提问，agent 调记忆/统计工具作答。"""
 
     user_id: str = "demo-user"
-    question: str
+    question: str = Field(max_length=2000)
 
 
 class AgentAskResponse(BaseModel):

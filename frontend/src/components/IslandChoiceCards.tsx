@@ -70,7 +70,7 @@ export default function IslandChoiceCards({ userId, choices, onActed, onInscribe
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.7, delay: 0.2 }}
     >
-      <p className="text-caption text-mist-400 tracking-[0.28em] mb-3 px-1">在岛上，你想——</p>
+      <p className="text-caption text-mist-200 text-on-scene tracking-[0.28em] mb-3 px-1">在岛上，你想——</p>
 
       <AnimatePresence mode="wait">
         {!acted ? (
@@ -135,7 +135,7 @@ export default function IslandChoiceCards({ userId, choices, onActed, onInscribe
                   <span className="relative font-serif text-mist-100 text-[14px] leading-snug">{c.stance}</span>
                   <span className="relative text-mist-400 text-caption mt-1.5 leading-relaxed">{c.ritual}</span>
                   <motion.span
-                    className="relative mt-2 text-mist-500 group-hover:text-mist-200 text-caption transition-colors"
+                    className="relative mt-2 text-mist-300 group-hover:text-mist-100 text-caption transition-colors"
                     animate={isBusy ? { opacity: [0.3, 1, 0.3] } : {}}
                     transition={isBusy ? { duration: 1.2, repeat: Infinity } : {}}
                   >

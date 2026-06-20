@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import IslandScene from "../components/IslandScene";
+import ErrorBoundary from "../components/ErrorBoundary";
 // 真 3D 旗舰皮按需加载——three.js 体积大，不开 3D 的用户绝不付出这份 bundle
 const Island3D = lazy(() => import("../components/Island3D"));
 // 自由探索模式(可走动小人)——按需加载,和 3D 同属重型 chunk
@@ -140,7 +141,7 @@ export default function Home() {
     onGlyph: () => identity && setGlyphOpen(true),
     onToggleMindMap: () => setMemOpen((v) => !v),
     onShortcutsHelp: () => setShortcutsOpen(true),
-  });
+  }, !exploreOpen);
 
   const onTitleTap = () => {
     const now = Date.now();
@@ -257,6 +258,13 @@ export default function Home() {
   // 场景视觉：优先用最终结果，其次流式过程中的 scene，最后默认
   const activeScene = result?.scene ?? liveScene;
   const visual = activeScene ? resolveScene(activeScene.palette) : DEFAULT_VISUAL;
+  // 「上岛走走」光晕强度随情绪联动：明亮→灿烂大光晕快脉冲；低沉→微弱慢呼吸,克制而安静
+  const ctaGlow = {
+    bright:   { peak: 1.0,  base: 0.55, dur: 2.4, scale: 1.14, breathe: 1.05, ringOpacity: 0.6, ringScale: 1.55, ringDur: 2.2 },
+    soothe:   { peak: 0.82, base: 0.42, dur: 3.6, scale: 1.08, breathe: 1.03, ringOpacity: 0.5, ringScale: 1.5,  ringDur: 2.9 },
+    restless: { peak: 0.9,  base: 0.5,  dur: 1.9, scale: 1.1,  breathe: 1.04, ringOpacity: 0.55, ringScale: 1.5, ringDur: 1.8 },
+    heavy:    { peak: 0.5,  base: 0.26, dur: 5.0, scale: 1.04, breathe: 1.02, ringOpacity: 0.34, ringScale: 1.4, ringDur: 4.6 },
+  }[visual.motion];
   // 岛屿元素：最终结果 > 流式 island > 回访 island
   const activeIsland = result?.island_state ?? liveIsland ?? island;
   const sceneFeatures = activeIsland?.features ?? [];
@@ -331,6 +339,10 @@ export default function Home() {
     }
   };
 
+  // 跟踪当前活跃的 reflect 请求：用户中途取消 / 再次提交后，忽略旧请求的迟到结果与流事件。
+  const activeReqRef = useRef<string | null>(null);
+  const cancelStreamRef = useRef<(() => void) | null>(null);
+
   const handleSubmit = async (text: string, ephemeral = false) => {
     if (!identity) return;
     setError(null);
@@ -347,22 +359,30 @@ export default function Home() {
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    activeReqRef.current = requestId;
     try {
-      const res = await reflectStream(identity.user_id, text, handleStreamEvent, undefined, ephemeral, requestId);
+      const res = await reflectStream(
+        identity.user_id, text, handleStreamEvent, undefined, ephemeral, requestId,
+        (cancel) => { cancelStreamRef.current = cancel; },
+      );
+      if (activeReqRef.current !== requestId) return; // 已取消/被新提交取代：忽略迟到结果
       setResult(res);
       setIsland(res.island_state);
       setPhase(res.safety.triggered ? "safety" : shouldOfferBreathing(res) ? "breathing" : "narrative");
       loadMemories();
     } catch (e) {
+      if (activeReqRef.current !== requestId) return; // 取消导致的 reject：不降级、不报错
       try {
         setLoadingText("海雾起了一会儿，岛屿换一条路过来……");
         const res = await reflect(identity.user_id, text, ephemeral, requestId);
+        if (activeReqRef.current !== requestId) return;
         setResult(res);
         setIsland(res.island_state);
         setLiveAgents(res.agent_trace); // HTTP 回退时一次性展示导演台
         setPhase(res.safety.triggered ? "safety" : shouldOfferBreathing(res) ? "breathing" : "narrative");
         loadMemories();
       } catch (fallbackError) {
+        if (activeReqRef.current !== requestId) return;
         const err = fallbackError ?? e;
         setError(err instanceof Error ? err.message : "岛屿走神了一下");
         setErrorKind(classifyError(err));
@@ -438,9 +458,16 @@ export default function Home() {
         // 真 3D 旗舰皮：r3f Canvas 接管背景（自带相机视差，不套 CSS 倾斜舞台）。
         // 加载 three chunk 期间回退到 CSS 场景，无黑屏闪烁；animate 仍由 immersive 门控。
         <div className="fixed inset-0" style={{ zIndex: 0 }} aria-hidden>
-          <Suspense fallback={<IslandScene visual={visual} features={sceneFeatures} />}>
-            <Island3D visual={visual} features={sceneFeatures} animate={immersive} />
-          </Suspense>
+          {/* 3D 崩溃（WebGL 上下文丢失/着色器异常）就地降级到 CSS 场景，绝不牵连整页；
+              visual 变化时复位重试（换情绪后也许不再崩）。 */}
+          <ErrorBoundary
+            fallback={<IslandScene visual={visual} features={sceneFeatures} />}
+            resetKey={visual}
+          >
+            <Suspense fallback={<IslandScene visual={visual} features={sceneFeatures} />}>
+              <Island3D visual={visual} features={sceneFeatures} animate={immersive} />
+            </Suspense>
+          </ErrorBoundary>
         </div>
       ) : (
         <div className="scene-stage fixed inset-0" style={{ zIndex: 0 }} aria-hidden>
@@ -569,7 +596,7 @@ export default function Home() {
       {/* 自由探索时固定治愈系纯音乐「澄澈空气」(calm)，退出后恢复情绪驱动曲目 */}
       {identity && (
         <MusicControl
-          music={exploreOpen ? "calm" : result?.scene.music}
+          music={exploreOpen ? "calm" : result?.scene?.music}
           emotion={result?.emotion}
         />
       )}
@@ -620,7 +647,43 @@ export default function Home() {
                   岛屿记得你上次的 {EMOTION_META[memories[0].emotion]?.label ?? "心事"}，欢迎回来
                 </motion.p>
               )}
-              <div className="text-center mt-2 flex items-center justify-center gap-x-3 gap-y-1.5 flex-wrap">
+              {/* 自由探索不依赖历史,任何时候都能上岛走走 —— 主行动召唤,明亮药丸 + 光晕脉冲 + 声纳环,光晕强度随情绪联动 */}
+              <div className="text-center mt-4">
+                <motion.button
+                  onClick={() => setExploreOpen(true)}
+                  className="island-cta"
+                  style={{
+                    background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)`,
+                    boxShadow: `0 16px 42px -10px ${visual.accent}, 0 3px 12px -3px ${visual.accent}cc, inset 0 1px 0 rgba(255,255,255,0.75)`,
+                  }}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0, scale: [1, ctaGlow.breathe, 1] }}
+                  transition={{
+                    opacity: { delay: 0.3, duration: 0.5 },
+                    y: { delay: 0.3, duration: 0.5 },
+                    scale: { delay: 1, duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" },
+                  }}
+                  whileHover={{ y: -2 }}
+                  whileTap={{ scale: 0.96 }}
+                >
+                  <motion.span
+                    className="island-cta__glow"
+                    style={{ background: `radial-gradient(ellipse at center, ${visual.accent} 0%, ${visual.accent}55 45%, transparent 72%)` }}
+                    animate={{ opacity: [ctaGlow.base, ctaGlow.peak, ctaGlow.base], scale: [1, ctaGlow.scale, 1] }}
+                    transition={{ duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" }}
+                  />
+                  <motion.span
+                    className="island-cta__ring"
+                    animate={{ scale: [1, ctaGlow.ringScale], opacity: [ctaGlow.ringOpacity, 0] }}
+                    transition={{ duration: ctaGlow.ringDur, repeat: Infinity, ease: "easeOut" }}
+                  />
+                  <span className="island-cta__shine" aria-hidden />
+                  <span className="island-cta__emoji" aria-hidden>🏝</span>
+                  上岛走走
+                  <span className="island-cta__arrow" aria-hidden>›</span>
+                </motion.button>
+              </div>
+              <div className="text-center mt-3 flex items-center justify-center gap-x-3 gap-y-1.5 flex-wrap">
                 {memories.length > 0 && (
                   <button onClick={() => setReplayMode("self")} className="btn-link py-1 px-1">
                     回望这些天 ›
@@ -632,10 +695,6 @@ export default function Home() {
                     登高望岛 ›
                   </button>
                 )}
-                {/* 自由探索不依赖历史,任何时候都能上岛走走 */}
-                <button onClick={() => setExploreOpen(true)} className="btn-link py-1 px-1">
-                  上岛走走 ›
-                </button>
               </div>
             </motion.div>
           )}
@@ -647,7 +706,7 @@ export default function Home() {
                 message={loadingText}
                 agentsDone={liveAgents.filter((a) => a.status === "done").length}
                 totalAgents={5}
-                onCancel={() => { setError(null); setPhase("input"); }}
+                onCancel={() => { cancelStreamRef.current?.(); activeReqRef.current = null; setError(null); setPhase("input"); }}
               />
               <AgentDirectorPanel agents={liveAgents} />
             </motion.div>
@@ -815,9 +874,12 @@ export default function Home() {
 
       {/* 自由探索：z-[70] 控制小人在岛上走动收集心愿 */}
       {exploreOpen && (
-        <Suspense fallback={null}>
-          <ExploreMode key={identity?.user_id ?? "guest"} visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} userId={identity?.user_id} />
-        </Suspense>
+        // 探索模式崩溃（WebGL 上下文丢失等）→ 自动退出回到岛屿主界面，而非整页失联。
+        <ErrorBoundary fallback={null} onError={() => setExploreOpen(false)}>
+          <Suspense fallback={null}>
+            <ExploreMode key={identity?.user_id ?? "guest"} visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} userId={identity?.user_id} />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </div>
   );

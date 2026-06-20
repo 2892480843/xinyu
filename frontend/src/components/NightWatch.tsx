@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { CartoonMoon } from "./CartoonMoon";
 
 const DISMISS_KEY = "xinyu.nightwatch.dismissed";
 const GOODNIGHT_HOLD_MS = 5000; // 晚安屏前 5 秒不暴露"回到岛屿"链接，避免误触
@@ -100,12 +101,20 @@ export function GoodnightScreen({ onWake }: GoodnightProps) {
       aria-label="晚安"
     >
       <motion.div
-        className="h-24 w-24 rounded-full bg-gradient-to-br from-amber-100/85 to-amber-300/70 shadow-[0_0_48px_rgba(252,211,77,0.35)] mb-8"
-        initial={{ scale: 0.85, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
+        className="mb-8"
+        initial={{ scale: 0.85, opacity: 0, y: 6 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
         transition={{ duration: 1.2, ease: "easeOut" }}
         aria-hidden="true"
-      />
+      >
+        {/* 温柔睡脸弯月 + 缓慢上下浮动(睡眠呼吸感) */}
+        <motion.div
+          animate={{ y: [0, -7, 0] }}
+          transition={{ duration: 6.5, repeat: Infinity, ease: "easeInOut" }}
+        >
+          <CartoonMoon size={172} />
+        </motion.div>
+      </motion.div>
       <p className="text-white/90 text-2xl tracking-[0.4em] mb-3">晚 安</p>
       <p className="text-white/55 text-sm leading-relaxed max-w-sm">
         岛屿替你把今天合上了。<br />

@@ -172,13 +172,57 @@ export function stopEngine() {
   setTimeout(() => { try { e.osc.stop(); e.sub.stop(); e.osc.disconnect(); e.sub.disconnect(); e.filt.disconnect(); e.gain.disconnect(); } catch { /* ignore */ } }, 350);
 }
 
-// 起跳音合成降级（采样 jump.m4a 未命中时用）：短促上扬正弦扫频 + 一点空气感。
-// env 类采样本不受静音联动（走 envGain），但合成降级这里仍走 masterGain（随音乐静音）——
-// 断网时用户若已静音，自然不该再冒一声「嗖」。
+// 起跳音：卡通「Q 弹 boing」——弹性上扬的腾起音，贴合治愈小岛的可爱基调。频率走一条「欠阻尼
+// 弹簧」曲线（从低快速上窜 → 过冲 → 阻尼震荡收敛回稳态），三角波暖体 + 一缕高八度亮泛音，约
+// 0.34s 的「啵嘤~」。现默认走此合成（不再优先真实 foley 采样 jump.m4a；采样文件保留备用，见
+// public/audio/proc_jump.py）。muted 时静默；汇入 masterGain → 随音乐一键静音联动。
 export function playJump() {
-  if (muted) return;
-  tone({ freq: 240, duration: 0.18, attack: 0.004, type: "sine", gain: 0.22, reverb: 0.18 });
-  tone({ freq: 480, duration: 0.14, attack: 0.004, type: "sine", gain: 0.12, startAt: 0.03, reverb: 0.18 });
+  const c = ensure();
+  if (!c || !masterGain || muted) return;
+  const t0 = c.currentTime;
+  const dur = 0.34;
+  // 欠阻尼二阶阶跃响应 y(t)：从 0 快速上窜、过冲(>1)、再阻尼震荡收敛到 1——这就是「啵嘤」的弹性。
+  const fBase = 175, fSpan = 300;        // 基频 175Hz → 稳态约 475Hz，过冲峰约 655Hz
+  const zeta = 0.16;                     // 阻尼比（越小越「Q」、回弹震荡越多）
+  const wn = 2 * Math.PI * 9;            // 自然角频率（上窜速度）
+  const wd = wn * Math.sqrt(1 - zeta * zeta);
+  const N = 96;
+  const fund = new Float32Array(N);
+  const oct = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const t = (i / (N - 1)) * dur;
+    const y = 1 - Math.exp(-zeta * wn * t) * (Math.cos(wd * t) + (zeta * wn / wd) * Math.sin(wd * t));
+    const f = fBase + fSpan * y;
+    fund[i] = f;
+    oct[i] = f * 2;
+  }
+  // 主体：三角波（暖而有弹性），频率沿弹簧曲线上窜回弹
+  const osc = c.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.setValueCurveAtTime(fund, t0, dur);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.26, t0 + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g).connect(masterGain);
+  // 高八度亮泛音：更轻更短，给 boing 一点清亮弹性的「叮」
+  const osc2 = c.createOscillator();
+  osc2.type = "sine";
+  osc2.frequency.setValueCurveAtTime(oct, t0, dur);
+  const g2 = c.createGain();
+  g2.gain.setValueAtTime(0.0001, t0);
+  g2.gain.exponentialRampToValueAtTime(0.08, t0 + 0.01);
+  g2.gain.exponentialRampToValueAtTime(0.0001, t0 + dur * 0.6);
+  osc2.connect(g2).connect(masterGain);
+  // 少量湿声融入海岛空气感（过多会糊掉弹性，故克制）
+  if (reverbSend) {
+    const send = c.createGain();
+    send.gain.value = 0.12;
+    g.connect(send).connect(reverbSend);
+  }
+  const stop = t0 + dur + 0.05;
+  osc.start(t0); osc.stop(stop);
+  osc2.start(t0); osc2.stop(stop);
 }
 
 // 落地音合成降级（采样 land.m4a 未命中时用）：低频闷响——噪声 burst 垫底 + 110Hz 短尾。
@@ -186,6 +230,79 @@ export function playLand(gain = 0.3) {
   if (muted) return;
   noiseBurst({ duration: 0.12, filterFreq: 360, gain: gain * 0.6 });
   tone({ freq: 110, duration: 0.22, attack: 0.004, type: "triangle", gain: gain * 0.5, reverb: 0.15 });
+}
+
+// 笛声单音（「吹笛子」动作用）：三角波为体（空心暖音，近竹笛/陶笛音色）+ 八度泛音添亮，
+// 叠 ~5Hz 轻颤音(vibrato) + 起音一缕气声，柔起柔落带海岛混响。一个动作里按五声音阶连成短句。
+export function playFluteNote(freq: number, dur = 0.55, gain = 0.24) {
+  const c = ensure();
+  if (!c || !masterGain || muted) return;
+  const t0 = c.currentTime;
+  // 主体：三角波 + 颤音 LFO（轻微音高起伏，吹奏的“气”感）
+  const osc = c.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.value = freq;
+  const vib = c.createOscillator();
+  vib.type = "sine";
+  vib.frequency.value = 5.2;
+  const vibAmt = c.createGain();
+  vibAmt.gain.value = freq * 0.006; // ±0.6% 颤音深度
+  vib.connect(vibAmt).connect(osc.frequency);
+  // 八度泛音：更轻更短，添一点笛子的亮泛音
+  const oc2 = c.createOscillator();
+  oc2.type = "sine";
+  oc2.frequency.value = freq * 2;
+  // 主增益包络：柔起 ~45ms → 持续 → 柔落（legato，音与音之间略叠）
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.045);
+  g.gain.setValueAtTime(gain, t0 + dur * 0.55);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  const g2 = c.createGain();
+  g2.gain.setValueAtTime(0.0001, t0);
+  g2.gain.exponentialRampToValueAtTime(gain * 0.28, t0 + 0.06);
+  g2.gain.exponentialRampToValueAtTime(0.0001, t0 + dur * 0.8);
+  osc.connect(g).connect(masterGain);
+  oc2.connect(g2).connect(masterGain);
+  // 湿声（海岛回响空气感）
+  if (reverbSend) {
+    const send = c.createGain();
+    send.gain.value = 0.32;
+    g.connect(send).connect(reverbSend);
+  }
+  // 起音气声：极短带通柔噪，模拟吹气的“呼”
+  noiseBurst({ duration: 0.13, filterFreq: Math.min(freq * 2.4, 4000), gain: 0.045, q: 0.7, reverb: 0.18 });
+  osc.start(t0); oc2.start(t0); vib.start(t0);
+  const stop = t0 + dur + 0.05;
+  osc.stop(stop); oc2.stop(stop); vib.stop(stop);
+}
+
+// 🎵 精灵哼唱：把一条治愈小调乐句逐音连奏成「唱给你听」的一小段。
+// 三角波暖体（近人声哼鸣「啦~」）+ 八度泛音添亮，柔起柔落带海岛混响。
+// seed 决定选哪条乐句（同一精灵每次唱略有不同）；返回这段的大致时长（秒），
+// 供 3D 精灵据此维持「唱歌态」摇摆与头顶飘音符。muted / 不支持时静默返回 0。
+const COMPANION_SONG_PHRASES: number[][] = [
+  [523.25, 587.33, 659.25, 587.33, 783.99, 659.25, 523.25],   // do re mi re sol mi do
+  [659.25, 587.33, 523.25, 587.33, 659.25, 659.25, 587.33],   // mi re do re mi mi re
+  [783.99, 659.25, 880.0, 783.99, 659.25, 587.33],            // sol mi la sol mi re
+  [523.25, 659.25, 783.99, 1046.5, 783.99, 659.25, 523.25],   // do mi sol do' sol mi do
+];
+export function playCompanionSong(seed = 0): number {
+  if (muted) return 0;
+  const c = ensure();
+  if (!c || !masterGain) return 0;
+  const phrase = COMPANION_SONG_PHRASES[Math.abs(Math.floor(seed)) % COMPANION_SONG_PHRASES.length];
+  const step = 0.4; // 每个音的时值
+  phrase.forEach((freq, i) => {
+    const at = i * step;
+    // 主体「啦~」：三角波暖音，柔起柔落，legato 略叠
+    tone({ freq, duration: step * 1.08, attack: 0.05, type: "triangle", gain: 0.17, startAt: at, reverb: 0.42 });
+    // 八度泛音：更轻更短，像歌声的亮泛音
+    tone({ freq: freq * 2, duration: step * 0.66, attack: 0.04, type: "sine", gain: 0.05, startAt: at + 0.02, reverb: 0.45 });
+  });
+  // 收尾一缕上扬微光，给「唱完了」一个温柔的尾音
+  tone({ freq: phrase[phrase.length - 1] * 2, duration: 0.5, attack: 0.06, type: "sine", gain: 0.06, startAt: phrase.length * step, reverb: 0.5 });
+  return phrase.length * step + 0.55;
 }
 
 // 频率滑音 tone（whoosh / 上行点亮等用）。
@@ -330,5 +447,56 @@ export function play(name: SfxName) {
       tone({ freq: 174.61, duration: 0.7, attack: 0.008, type: "sine", gain: 0.26, reverb: 0.3 });
       tone({ freq: 261.63, duration: 0.5, attack: 0.03, type: "sine", gain: 0.12, startAt: 0.05, reverb: 0.3 });
       break;
+  }
+}
+
+// 🏮 放天灯：一缕暖空气托起轻纸的升空气声 + 低频暖 swell —— 远而安静，贴合治愈基调。
+export function playLanternRelease() {
+  noiseBurst({ duration: 1.4, filterFreq: 480, filterTo: 1500, gain: 0.05, q: 0.7, reverb: 0.45 });
+  tone({ freq: 196, duration: 1.6, attack: 0.5, type: "sine", gain: 0.07, reverb: 0.4 });
+  tone({ freq: 587.33, duration: 1.2, attack: 0.25, type: "sine", gain: 0.04, startAt: 0.2, reverb: 0.5 });
+}
+
+// 🎵 放天灯小夜曲：music box（八音盒）音色的治愈短旋律 —— 放飞瞬间轻轻响起，温柔上行，
+// 像把心事托上夜空。零资产、断网可跑（与精灵哼唱同一即时合成思路）。
+// 八音盒音色：极快起音的纯音 + 八度 / 十二度泛音添金属亮泽 + 高混响余韵，清亮一「叮」。
+function musicBoxNote(freq: number, at: number, gain: number, dur: number) {
+  tone({ freq, duration: dur, attack: 0.002, type: "sine", gain, startAt: at, reverb: 0.5 });
+  tone({ freq: freq * 2, duration: dur * 0.6, attack: 0.002, type: "sine", gain: gain * 0.5, startAt: at + 0.004, reverb: 0.5 });
+  tone({ freq: freq * 3, duration: dur * 0.32, attack: 0.002, type: "sine", gain: gain * 0.16, startAt: at + 0.008, reverb: 0.45 });
+}
+// grand（放飞一片）：奏更长更丰满的一段——盘旋上行的主旋律 + 暖低音铺底 + 收尾高八度泛光。
+export function playLanternMelody(grand = false) {
+  if (muted || !ensure()) return;
+  // 五声音阶（C 宫：C D E G A）治愈旋律，整体上行 —— 呼应「放飞 / 升起」。
+  const E5 = 659.25, G5 = 783.99, A5 = 880.0, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, G6 = 1567.98;
+  const step = grand ? 0.32 : 0.3;
+  const lead = grand
+    ? [G5, A5, C6, D6, E6, D6, C6, A5, C6, D6, E6, G6]   // 盘旋上行到高处再轻落，像万灯齐升
+    : [E5, G5, A5, C6, A5, C6];                          // 一缕轻盈上扬
+  lead.forEach((f, i) => musicBoxNote(f, i * step, grand ? 0.12 : 0.15, grand ? 1.5 : 1.3));
+  if (grand) {
+    // 低音铺底：暖三角波长音，给乐段一层温柔厚度（C3 G3 A3 C4，每 ~2.6 拍一记）。
+    [130.81, 196.0, 220.0, 261.63].forEach((f, i) =>
+      tone({ freq: f, duration: 2.0, attack: 0.03, type: "triangle", gain: 0.05, startAt: i * step * 2.6, reverb: 0.4 }));
+    // 收尾：高八度泛光，给「升空完成」一个温柔句点。
+    musicBoxNote(E6, lead.length * step + 0.12, 0.1, 2.0);
+  }
+}
+
+// 🎆 烟花升空：细细的上行哨音（远、轻），给「它正飞上去」的预备感。
+export function playFireworkLaunch() {
+  sweep({ from: 300, to: 1500, duration: 1.0, type: "sine", gain: 0.05, reverb: 0.35 });
+  noiseBurst({ duration: 1.0, filterFreq: 300, filterTo: 1800, gain: 0.03, q: 0.6, reverb: 0.3 });
+}
+
+// 🎆 烟花绽放：低沉的「咚」+ 滤波气浪 + 一串错峰的细碎噼啪闪烁尾音。big 给更饱满的一击。
+export function playFireworkBurst(big = false) {
+  const g = big ? 1 : 0.78;
+  tone({ freq: big ? 62 : 78, duration: 0.55, attack: 0.004, type: "sine", gain: 0.2 * g, reverb: 0.45 });
+  noiseBurst({ duration: 0.5, filterFreq: 900, filterTo: 90, gain: 0.16 * g, q: 0.6, reverb: 0.4 });
+  tone({ freq: 1760, duration: 0.35, attack: 0.004, type: "sine", gain: 0.05 * g, startAt: 0.02, reverb: 0.55 });
+  for (let i = 0; i < 7; i++) {
+    noiseBurst({ duration: 0.05, filterFreq: 3200 + Math.random() * 2500, gain: 0.03 * g, startAt: 0.12 + i * 0.07 + Math.random() * 0.04, reverb: 0.2 });
   }
 }

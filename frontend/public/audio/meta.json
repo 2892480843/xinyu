@@ -170,17 +170,17 @@
       "m4a": "env/water_splash.m4a"
     },
     "env/jump": {
-      "source_file": "Boing raw.ogg",
-      "raw": "raw/env/jump.ogg",
+      "source_file": "Jump (Gravity Sound).mp3",
+      "raw": "raw/env/jump.mp3",
       "m4a": "env/jump.m4a",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ee/Boing_raw.ogg",
-      "mime": "application/ogg",
-      "size": 37846,
-      "artist": "cfork",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/7/71/Jump_%28Gravity_Sound%29.mp3",
+      "mime": "audio/mpeg",
+      "size": 19091,
+      "artist": "Gravity Sound",
       "license": "CC BY 4.0",
-      "license_url": "https://creativecommons.org/licenses/by/4.0/",
-      "desc_url": "https://commons.wikimedia.org/wiki/File:Boing_raw.ogg",
-      "description": "Boing raw"
+      "license_url": "https://creativecommons.org/licenses/by/4.0",
+      "desc_url": "https://commons.wikimedia.org/wiki/File:Jump_(Gravity_Sound).mp3",
+      "description": "\"Jump\" by Gravity Sound — a real push-off / launch foley with a fast attack-and-decay transient (spectral centroid ~2.5kHz, pitch does NOT sweep up). Cropped from the 1.0s original to the ~0.34s core impact (leading ~0.18s of silence removed so the sound fires the instant the player leaves the ground), with 4ms/60ms in/out fades and peak normalization (see proc_jump.py). Same author as footstep / collect / whoosh / wind_forest, for a unified timbre. Replaces the prior 0.30s procedurally-synthesized sine-sweep 'hop' (gen_jump.py), whose upward whistle felt mismatched against the launch; sfx.ts playJump() keeps a matching warm-thump synth as the offline fallback."
     },
     "env/land": {
       "source_file": "Dull thud.ogg",

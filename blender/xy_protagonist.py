@@ -21,6 +21,7 @@ OUT = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else
     "/Users/a111/chen/code/心屿/blender", "..", "frontend", "public", "models"))
 OFF = 0.40  # 上半身整体上移 + 腿加长 → 更高挑(约 5+ 头身,少年感)
+Q = 1.8     # 网格细分系数:所有圆柱/球/锥/壳段数 ×Q → 整体更圆滑精细,去低多边形棱角
 
 # --------------------------------------------------------------------------- #
 #  helpers                                                                     #
@@ -139,7 +140,7 @@ def add_box(V, F, M, cx, cy, cz, w, d, h, mi, rz=0.0, ry=0.0):  # CENTER
     for _ in range(6): M.append(mi)
 
 def add_cyl(V, F, M, cx, cy, cz, r, h, mi, sg=12, r2=None):
-    r2 = r if r2 is None else r2; o = len(V)
+    sg = max(8, round(sg * Q)); r2 = r if r2 is None else r2; o = len(V)
     for j in range(sg):
         a = 2 * math.pi * j / sg; V.append((cx + r * math.cos(a), cy + r * math.sin(a), cz))
     for j in range(sg):
@@ -151,7 +152,7 @@ def add_cyl(V, F, M, cx, cy, cz, r, h, mi, sg=12, r2=None):
         j2 = (j + 1) % sg; F.append((t, o + sg + j, o + sg + j2)); M.append(mi); F.append((b, o + j2, o + j)); M.append(mi)
 
 def add_cyl2(V, F, M, p0, p1, r, mi, sg=10, r2=None):
-    r2 = r if r2 is None else r2; p0 = Vector(p0); p1 = Vector(p1); ax = p1 - p0
+    sg = max(8, round(sg * Q)); r2 = r if r2 is None else r2; p0 = Vector(p0); p1 = Vector(p1); ax = p1 - p0
     if ax.length < 1e-6: return
     zc = ax.normalized(); up = Vector((0, 0, 1)) if abs(zc.z) < 0.9 else Vector((1, 0, 0))
     xc = zc.cross(up).normalized(); yc = zc.cross(xc).normalized(); o = len(V)
@@ -166,7 +167,7 @@ def add_cyl2(V, F, M, p0, p1, r, mi, sg=10, r2=None):
         j2 = (j + 1) % sg; F.append((t, o + sg + j, o + sg + j2)); M.append(mi); F.append((b, o + j2, o + j)); M.append(mi)
 
 def add_cone(V, F, M, cx, cy, cz, rb, h, mi, sg=8, rz=0.0):
-    ca, sa = math.cos(rz), math.sin(rz)
+    sg = max(6, round(sg * Q)); ca, sa = math.cos(rz), math.sin(rz)
     def P(px, py, pz): return (cx + (px * ca - py * sa), cy + (px * sa + py * ca), cz + pz)
     o = len(V)
     for j in range(sg):
@@ -176,7 +177,7 @@ def add_cone(V, F, M, cx, cy, cz, rb, h, mi, sg=8, rz=0.0):
         j2 = (j + 1) % sg; F.append((o + j, o + j2, ap)); M.append(mi); F.append((bc, o + j2, o + j)); M.append(mi)
 
 def add_ell(V, F, M, cx, cy, cz, rx, ry, rz, mi, sg=12, rg=8):
-    o = len(V); V.append((cx, cy, cz + rz))
+    sg = max(10, round(sg * Q)); rg = max(6, round(rg * Q)); o = len(V); V.append((cx, cy, cz + rz))
     for i in range(1, rg):
         phi = math.pi * i / rg; zc = math.cos(phi); sr = math.sin(phi)
         for j in range(sg):
@@ -191,7 +192,7 @@ def add_ell(V, F, M, cx, cy, cz, rx, ry, rz, mi, sg=12, rg=8):
     for j in range(sg): F.append((s, b0 + (j + 1) % sg, b0 + j)); M.append(mi)
 
 def add_shell(V, F, M, cx, cy, z_top, r_top, z_bot, r_bot, mi, a0, a1, seg=30, wavy=0.0):
-    o = len(V); n = seg + 1
+    seg = max(20, round(seg * Q)); o = len(V); n = seg + 1
     for i in range(n):
         a = a0 + (a1 - a0) * i / seg; V.append((cx + r_top * math.cos(a), cy + r_top * math.sin(a), z_top))
     for i in range(n):
@@ -246,7 +247,7 @@ def build():
     mb = MB()
     SKIN = mb.add("Skin", "#f4d6b8"); SKDK = mb.add("SkinDk", "#e6bd9a")
     HAIR = mb.add("Hair", "#2b3242"); HAIRH = mb.add("HairHi", "#3d4860")
-    EYE = mb.add("Eye", "#28324c"); EWHITE = mb.add("EyeWhite", "#f6f8fa"); EHI = mb.add("Emissive_EyeHi", "#ffffff", emit="#ffffff", es=0.6); EYELINE = mb.add("EyeLine", "#1c2336")
+    EYE = mb.add("Eye", "#28324c"); EWHITE = mb.add("EyeWhite", "#f6f8fa"); EHI = mb.add("Emissive_EyeHi", "#ffffff", emit="#ffffff", es=1.2); EYELINE = mb.add("EyeLine", "#1c2336")
     BLUSH = mb.add("Blush", "#f0a0a0"); MOUTH = mb.add("Mouth", "#8a4a48")
     CAPE = mb.add("Cape", "#f5eeda"); CAPESH = mb.add("CapeShade", "#e6dcc2"); HOOD = mb.add("Hood", "#efe6cf")
     TRIM = mb.add("Trim", mtl=wave_tex_mat("Decal_Wave", bg="#4fb0cc", fg="#eef9fc"))   # 更亮海玻璃蓝·白浪滚边
@@ -264,33 +265,42 @@ def build():
         parts.setdefault(n, ([], [], [])); return parts[n]
     HIP = 0.86 + OFF; SH = 1.28 + OFF                                          # hip / shoulder z
 
-    # ---------------- legs + boots (independent nodes) ---------------- #
-    for sx, nm in ((-1, "LegL"), (1, "LegR")):
+    # ---------------- legs: thigh(LegL/R, pivot=hip) + shin(ShinL/R, pivot=knee) ---------------- #
+    # 拆两段 → 游戏里小腿可绕膝相对大腿弯曲(真·屈膝),告别剪刀直棍。膝接缝由挽裤脚那圈盖住。
+    KNEE = 0.60
+    for sx, nm in ((-1, "LegL"), (1, "LegR")):                                            # 大腿(枢轴在髋)
         V, F, M = P(nm); x = 0.135 * sx
-        add_cyl2(V, F, M, (x, 0, HIP), (x, 0, 0.55), 0.135, SWIRL, 10, r2=0.12)         # thigh(整条卷纹)
-        add_cyl2(V, F, M, (x, 0, 0.55), (x, 0.0, 0.44), 0.138, TRIM, 12, r2=0.142)      # 挽裤脚(海浪纹)
-        add_cyl2(V, F, M, (x, 0.0, 0.46), (x, 0.03, 0.12), 0.125, BOOT, 10, r2=0.13)    # boot shaft
-        add_cyl(V, F, M, x, 0.03, 0.42, 0.135, 0.07, BOOTC, 10)                          # boot cuff
-        add_box(V, F, M, x, 0.12, 0.07, 0.16, 0.3, 0.13, BOOT)                           # foot
-        add_ell(V, F, M, x, 0.27, 0.06, 0.085, 0.09, 0.07, BOOT, 8, 5)                   # toe
-        add_box(V, F, M, x, 0.13, 0.005, 0.18, 0.34, 0.04, SOLE)                         # sole
+        add_cyl2(V, F, M, (x, 0, HIP), (x, 0, KNEE - 0.03), 0.135, SWIRL, 10, r2=0.122)   # thigh(整条卷纹)
+    for sx, snm in ((-1, "ShinL"), (1, "ShinR")):                                         # 小腿+靴(枢轴在膝)
+        V, F, M = P(snm); x = 0.135 * sx
+        add_cyl2(V, F, M, (x, 0, KNEE + 0.02), (x, 0.0, 0.44), 0.13, TRIM, 12, r2=0.144)  # 挽裤脚(海浪纹,盖膝缝)
+        add_cyl2(V, F, M, (x, 0.0, 0.46), (x, 0.03, 0.12), 0.125, BOOT, 10, r2=0.13)      # boot shaft
+        add_cyl(V, F, M, x, 0.03, 0.42, 0.135, 0.07, BOOTC, 10)                            # boot cuff
+        add_box(V, F, M, x, 0.12, 0.07, 0.16, 0.3, 0.13, BOOT)                             # foot
+        add_ell(V, F, M, x, 0.27, 0.06, 0.085, 0.09, 0.07, BOOT, 8, 5)                     # toe
+        add_box(V, F, M, x, 0.13, 0.005, 0.18, 0.34, 0.04, SOLE)                           # sole
         for lz in (0.18, 0.27, 0.36):
             add_box(V, F, M, x, 0.12, lz, 0.1, 0.03, 0.02, LACE)
 
-    # ---------------- arms (independent nodes; ArmR holds lantern) ---------------- #
-    hand = {}
-    for sx, nm in ((-1, "ArmL"), (1, "ArmR")):
+    # ---------------- arms: upper(ArmL/R, pivot=shoulder) + fore(ForeArmL/R, pivot=elbow) ---------------- #
+    # 拆两段 → 小臂可绕肘相对大臂弯曲(屈肘),摆臂自然带肘;灯笼随小臂(右)摆动。
+    hand = {}; ELB = {}
+    for sx, nm in ((-1, "ArmL"), (1, "ArmR")):                                           # 大臂(枢轴在肩)
         V, F, M = P(nm)
-        sh = (0.2 * sx, 0.0, SH); el = (0.31 * sx, 0.02, 0.88 + OFF); wr = (0.34 * sx, 0.06, 0.66 + OFF)
-        add_cyl2(V, F, M, sh, el, 0.1, INNER, 9, r2=0.085)                               # upper-arm sleeve
-        add_cyl2(V, F, M, el, wr, 0.082, INNER, 9, r2=0.07)                              # forearm sleeve
+        sh = (0.2 * sx, 0.0, SH); el = (0.31 * sx, 0.02, 0.88 + OFF)
+        add_cyl2(V, F, M, sh, el, 0.1, INNER, 9, r2=0.086)                               # upper-arm sleeve
+        ELB[sx] = el
+    for sx, fnm in ((-1, "ForeArmL"), (1, "ForeArmR")):                                  # 小臂+手(枢轴在肘)
+        V, F, M = P(fnm)
+        el = ELB[sx]; wr = (0.34 * sx, 0.06, 0.66 + OFF)
+        add_cyl2(V, F, M, el, wr, 0.084, INNER, 9, r2=0.07)                              # forearm sleeve(盖肘缝)
         add_cyl(V, F, M, wr[0], wr[1], wr[2] - 0.02, 0.075, 0.05, SKDK, 9)               # cuff band
         hpos = (wr[0], wr[1] + 0.02, wr[2] - 0.07)
         add_ell(V, F, M, hpos[0], hpos[1], hpos[2], 0.078, 0.088, 0.09, SKIN, 9, 6)      # hand (mitten)
         add_ell(V, F, M, hpos[0] - 0.05 * sx, hpos[1] + 0.02, hpos[2] + 0.012, 0.03, 0.042, 0.052, SKIN, 6, 5)  # thumb
         hand[sx] = hpos
-    # lantern hangs from the right hand (built into ArmR so it swings with the arm)
-    V, F, M = P("ArmR"); hx, hy, hz = hand[1]
+    # lantern hangs from the right fore-arm (built into ForeArmR so it swings with the forearm)
+    V, F, M = P("ForeArmR"); hx, hy, hz = hand[1]
     add_cyl2(V, F, M, (hx, hy, hz), (hx + 0.02, hy + 0.04, hz - 0.12), 0.012, BRASS, 5)
     lx, ly = hx + 0.02, hy + 0.04
     add_cyl(V, F, M, lx, ly, hz - 0.30, 0.07, 0.02, BRASS, 10)
@@ -371,7 +381,8 @@ def build():
             si = 1 if ex < 0 else -1
             add_ell(VV, FF, MM, ex, fy + 0.008, HZ + 0.012, 0.056, 0.032, eyeH, EWHITE, 10, 6)                       # 眼白
             add_ell(VV, FF, MM, ex, fy + 0.028, HZ + 0.006, 0.048, 0.03, eyeH * 0.9, EYE, 10, 6)                     # 虹膜
-            add_ell(VV, FF, MM, ex - 0.014 * si, fy + 0.05, HZ + max(0.03, eyeH * 0.5), 0.021, 0.013, 0.027, EHI, 7, 5)  # 高光
+            add_ell(VV, FF, MM, ex - 0.014 * si, fy + 0.05, HZ + max(0.03, eyeH * 0.5), 0.021, 0.013, 0.027, EHI, 7, 5)  # 主高光
+            add_ell(VV, FF, MM, ex + 0.02 * si, fy + 0.046, HZ - 0.014, 0.011, 0.008, 0.014, EHI, 6, 4)  # 第二小高光:眼神更水灵清亮
             add_box(VV, FF, MM, ex, fy + 0.042, HZ + lidZ, 0.094, 0.02, 0.02, EYELINE, rz=si * 0.12)                 # 上眼睑
             add_box(VV, FF, MM, ex, fy + 0.022, HZ + browZ, 0.08, 0.02, 0.016, HAIR, ry=si * browRy)                 # 眉(绕Y倾斜)
     V, F, M = P("Face_Cheerful"); add_eyes(V, F, M, 0.082, 0.084, 0.128, -0.06)           # 开心:大圆眼·眉微挑·张口笑
@@ -386,7 +397,9 @@ def build():
 
     # ---------------- assemble: objects + pivots + parenting ---------------- #
     pivots = {"body": (0, 0, 0), "LegL": (-0.135, 0, HIP), "LegR": (0.135, 0, HIP),
-              "ArmL": (-0.2, 0, SH), "ArmR": (0.2, 0, SH), "Cape": (0, 0, 1.24 + OFF),
+              "ShinL": (-0.135, 0, KNEE), "ShinR": (0.135, 0, KNEE),
+              "ArmL": (-0.2, 0, SH), "ArmR": (0.2, 0, SH), "ForeArmL": ELB[-1], "ForeArmR": ELB[1],
+              "Cape": (0, 0, 1.24 + OFF),
               "Face_Cheerful": (0, 0, 0), "Face_Calm": (0, 0, 0), "Face_Determined": (0, 0, 0), "Face_Curious": (0, 0, 0)}
     objs = {}
     for nm, (V, F, M) in parts.items():
@@ -395,13 +408,18 @@ def build():
         set_origin(ob, pivots[nm])                                # 先移原点(腿/披风变为局部居中)再 UV
         if nm == "Cape": uv_wrap(ob, "Decal_Wave", repeat=7.0)    # 斗篷海浪滚边 + 领口
         if nm == "body": uv_planar(ob, "Decal_Lighthouse")        # 背包灯塔徽记
-        if nm in ("LegL", "LegR"):
-            uv_wrap(ob, "Decal_Wave", repeat=5.0)        # 裤脚海浪滚边
-            uv_wrap(ob, "Decal_PantSwirl", repeat=4.0)   # 整条裤腿卷纹
+        if nm in ("LegL", "LegR"): uv_wrap(ob, "Decal_PantSwirl", repeat=4.0)   # 大腿裤卷纹
+        if nm in ("ShinL", "ShinR"): uv_wrap(ob, "Decal_Wave", repeat=5.0)      # 挽裤脚海浪滚边
         recalc(ob); objs[nm] = ob
     body = objs["body"]
+    # 一级:大腿/大臂/披风/4 表情 挂躯干(body 在原点,identity)
     for nm in ("LegL", "LegR", "ArmL", "ArmR", "Cape", "Face_Cheerful", "Face_Calm", "Face_Determined", "Face_Curious"):
         objs[nm].parent = body
+    bpy.context.view_layer.update()                               # 刷新 matrix_world,供二级 parent_inverse 取准
+    # 二级:小腿挂大腿、小臂挂大臂(parent_inverse 保持世界位姿;游戏内各自绕膝/肘旋转 → 屈膝屈肘)
+    for child, par in (("ShinL", "LegL"), ("ShinR", "LegR"), ("ForeArmL", "ArmL"), ("ForeArmR", "ArmR")):
+        objs[child].parent = objs[par]
+        objs[child].matrix_parent_inverse = objs[par].matrix_world.inverted()
     return body
 
 # --------------------------------------------------------------------------- #

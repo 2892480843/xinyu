@@ -33,7 +33,7 @@ export default function AgentDirectorPanel({ agents, done }: Props) {
   return (
     <div className="w-full max-w-md mx-auto mt-4">
       <motion.p
-        className="text-center text-mist-400 text-caption tracking-[0.32em] mb-1 font-serif"
+        className="text-center text-mist-200 text-on-scene text-caption tracking-[0.32em] mb-1 font-serif"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.8, delay: 0.2 }}
@@ -41,7 +41,7 @@ export default function AgentDirectorPanel({ agents, done }: Props) {
         岛屿派出了 5 位信使
       </motion.p>
       <motion.p
-        className="text-center text-mist-500 text-[10px] tracking-[0.2em] mb-3"
+        className="text-center text-mist-300 text-on-scene text-[10px] tracking-[0.2em] mb-3"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.8, delay: 0.5 }}
@@ -126,7 +126,7 @@ export default function AgentDirectorPanel({ agents, done }: Props) {
                 <div className="relative flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-serif text-mist-100 text-[13px]">{meta.name}</span>
-                    <span className="text-mist-500 text-caption">· {meta.role}</span>
+                    <span className="text-mist-300 text-caption">· {meta.role}</span>
                   </div>
                   <motion.p
                     className="text-mist-300 text-caption leading-snug truncate mt-0.5"

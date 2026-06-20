@@ -5,6 +5,7 @@ import { FEATURE_META, EMOTION_COLOR } from "../lib/islandMeta";
 import FeatureGlyph from "./IslandFeatureIcons";
 import { useImmersion } from "../hooks/useImmersion";
 import { useParallax } from "../hooks/useParallax";
+import { useModalDismiss } from "../hooks/useModalDismiss";
 
 interface Props {
   island: IslandState | null;
@@ -26,6 +27,7 @@ interface MapNode {
 // 让人一眼看到「这是我养成的、独一无二的岛」。点击节点浮出它的来历/刻字。
 export default function IslandMap({ island, artifacts, onClose }: Props) {
   const [selected, setSelected] = useState<MapNode | null>(null);
+  useModalDismiss(true, onClose);
 
   // 俯身沙盘：整图后仰成倾斜台面 + 指针环视。静海/reduced-motion 退回平面俯视（rotateX 归 0）。
   const { immersive } = useImmersion();

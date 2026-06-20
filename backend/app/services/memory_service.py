@@ -13,7 +13,12 @@ from app import db
 
 class MemoryService:
     def __init__(self) -> None:
-        db.init_db()
+        # 不在构造（import 时）连库——延迟到 app lifespan startup 显式初始化，
+        # 避免部署时 DB 短暂不可达导致模块 import 直接崩溃、整个进程起不来。
+        pass
+
+    def ensure_demo_seed(self) -> None:
+        """首次启动为 demo-user 注入种子记忆（幂等，仅当全库为空时）。由 app lifespan 调用。"""
         if self._count_all() == 0:
             self._seed()
 

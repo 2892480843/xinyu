@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>心屿 · 一座会回应你的岛屿</title>
+  <defs>
+    <linearGradient id="sky" x1="256" y1="0" x2="256" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#070b1e"/>
+      <stop offset=".52" stop-color="#141d40"/>
+      <stop offset="1" stop-color="#26315c"/>
+    </linearGradient>
+    <linearGradient id="water" x1="256" y1="330" x2="256" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2b3f74"/>
+      <stop offset="1" stop-color="#0d1738"/>
+    </linearGradient>
+    <radialGradient id="moon" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(340 152) rotate(90) scale(56)">
+      <stop offset="0" stop-color="#fffdf7"/>
+      <stop offset=".7" stop-color="#efe8ff"/>
+      <stop offset="1" stop-color="#d9cffb"/>
+    </radialGradient>
+    <radialGradient id="moonGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(340 152) rotate(90) scale(132)">
+      <stop offset="0" stop-color="#e9e2ff" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#e9e2ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hill" x1="256" y1="250" x2="256" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a2f63"/>
+      <stop offset="1" stop-color="#1c1638"/>
+    </linearGradient>
+    <radialGradient id="beacon" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(229 300) rotate(90) scale(34)">
+      <stop offset="0" stop-color="#ffe7ad" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#ffd27a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- night sky -->
+  <rect width="512" height="512" fill="url(#sky)"/>
+
+  <!-- stars -->
+  <g fill="#cdd6ff">
+    <circle cx="120" cy="96" r="3.2" opacity=".9"/>
+    <circle cx="186" cy="150" r="2.1" opacity=".7"/>
+    <circle cx="92" cy="190" r="2.4" opacity=".6"/>
+    <circle cx="430" cy="250" r="2.4" opacity=".7"/>
+    <circle cx="408" cy="100" r="2" opacity=".55"/>
+    <circle cx="256" cy="70" r="2.6" opacity=".8"/>
+  </g>
+  <!-- twinkle sparkle -->
+  <path d="M150 250c0 9-3 12-12 12 9 0 12 3 12 12 0-9 3-12 12-12-9 0-12-3-12-12z" fill="#eef2ff" opacity=".85"/>
+
+  <!-- moon -->
+  <circle cx="340" cy="152" r="132" fill="url(#moonGlow)"/>
+  <circle cx="340" cy="152" r="54" fill="url(#moon)"/>
+  <circle cx="318" cy="138" r="10" fill="#dccffa" opacity=".45"/>
+  <circle cx="356" cy="168" r="7" fill="#dccffa" opacity=".4"/>
+
+  <!-- water -->
+  <path d="M0 332c46-14 78-14 124 0s108 14 154 0 110-16 156-2 78 6 78 6V512H0z" fill="url(#water)"/>
+  <!-- moon reflection -->
+  <g fill="#e9e2ff" opacity=".22">
+    <rect x="330" y="350" width="20" height="6" rx="3"/>
+    <rect x="326" y="372" width="28" height="6" rx="3"/>
+    <rect x="332" y="394" width="16" height="5" rx="2.5"/>
+  </g>
+
+  <!-- island hill -->
+  <path d="M150 352c0-58 44-104 106-104s106 46 106 104c0 6-1 12-3 18H153c-2-6-3-12-3-18z" fill="url(#hill)"/>
+  <!-- rim light on hill -->
+  <path d="M180 300c20-30 52-44 76-44" stroke="#7e6bd6" stroke-width="5" stroke-linecap="round" opacity=".5" fill="none"/>
+
+  <!-- little lighthouse -->
+  <g>
+    <rect x="222" y="262" width="14" height="58" rx="4" fill="#efe9ff"/>
+    <rect x="222" y="284" width="14" height="9" fill="#c75c5c"/>
+    <rect x="220" y="256" width="18" height="9" rx="3" fill="#3a2f63"/>
+    <circle cx="229" cy="300" r="34" fill="url(#beacon)"/>
+    <circle cx="229" cy="276" r="4.5" fill="#ffe7ad"/>
+  </g>
+
+  <!-- fireflies -->
+  <g fill="#ffe7ad">
+    <circle cx="300" cy="296" r="3" opacity=".9"/>
+    <circle cx="324" cy="318" r="2.2" opacity=".7"/>
+    <circle cx="278" cy="326" r="2.2" opacity=".6"/>
+  </g>
+</svg>

@@ -22,8 +22,17 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
 LLM_FAST_TIMEOUT = float(os.getenv("LLM_FAST_TIMEOUT", "8"))
 # 工具型 agent 单次反思的最大工具循环步数（防止无限调用工具）。
 AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "6"))
+# agent 工具循环的总时长预算（秒）：超过则强制结构化收尾，避免慢/卡的模型把多步循环
+# 跑满（最坏 AGENT_MAX_STEPS × LLM_TIMEOUT）从而长时间占用同步线程池、拖垮其它请求。
+AGENT_TIME_BUDGET = float(os.getenv("AGENT_TIME_BUDGET", "45"))
 
 CORS_ORIGINS = _csv_env("CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
+
+# —— 观测 / 日志 ——
+# LOG_FORMAT=json 输出结构化 JSON 行日志（生产接入集中式日志友好）；默认 console 为人类可读。
+# LOG_LEVEL 控制全局日志级别。结构化访问日志（含 request_id/耗时/状态码）始终开启。
+LOG_FORMAT = os.getenv("LOG_FORMAT", "console").strip().lower()  # console | json
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
 # 腾讯云情感语音合成 TTS（可选）。配置 SecretId/Key 后，「朗读叙事」升级为云端情感音色；
 # 未配置或调用失败时，前端自动降级为浏览器原生合成（断网/无密钥也能读）。
@@ -57,9 +66,12 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip()
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "512"))
 VECTOR_MEMORY_RESULTS = int(os.getenv("VECTOR_MEMORY_RESULTS", "3"))
 
-# 风险阈值: 这几类负面情绪且强度达到阈值时触发安全提示。
-# 把 anxious 也纳入：急性焦虑/惊恐高强度发作同样是高自伤风险情境。
-SAFETY_EMOTIONS = {"sad", "angry", "helpless", "anxious"}
+# 风险阈值: 负面情绪且强度达到阈值时触发安全提示。
+# 覆盖全部 6 类负面情绪（含 tired/lonely）——修复「高强度绝望被模型分类为疲惫/孤独/平静
+# 而漏过阈值」的安全缺口。正面情绪(calm/happy)不在此列，避免高强度喜悦被误触发；
+# 平静措辞、或被误分类为低风险情绪的危机表达，由下方 SAFETY_KEYWORDS 关键词黑名单兜底
+# （完全不依赖情绪与强度）。
+SAFETY_EMOTIONS = {"sad", "angry", "helpless", "anxious", "tired", "lonely"}
 SAFETY_INTENSITY_THRESHOLD = 0.85
 
 # 高风险关键词兜底：命中任意一条即触发安全提示，
@@ -76,10 +88,22 @@ SAFETY_KEYWORDS = [
     # —— 中文委婉 / 网络黑话 ——
     "约死", "不活了", "睡过去不醒", "不想再撑", "不想再坚持",
     "活够了", "活腻了", "走了下线",
+    # —— 中文：平静措辞的无望 / 被动自杀意念（不依赖情绪强度的兜底）——
+    "看不到希望", "看不见希望", "看不到未来", "没有未来", "没有明天",
+    "熬不下去", "熬不住了", "扛不下去", "扛不住了", "撑到头了",
+    "活着好累", "活着太累", "活着是煎熬", "每天都是煎熬", "活着是一种折磨",
+    "我是累赘", "我是个累赘", "成为累赘", "拖累所有人", "拖累家人", "我是负担",
+    "没人在乎我", "没人需要我", "没有我会更好", "没有我大家会更好",
+    "不想再醒来", "睡着就别醒", "一睡不醒", "不想存在",
     # —— 英文（已 text.lower() 后子串匹配） ——
     "kill myself", "killing myself", "want to die", "wanna die", "wanting to die",
     "end my life", "end it all", "ending it all", "end it",
     "suicide", "suicidal", "self harm", "self-harm", "hurt myself", "harm myself",
     "no reason to live", "no point in living", "can't go on", "cant go on",
     "give up on life", "take my own life",
+    # —— 英文：无望 / 被动意念 ——
+    "better off without me", "better off dead", "no reason to go on",
+    "dont want to be here", "don't want to be here", "no future for me",
+    "tired of living", "cant take it anymore", "can't take it anymore",
+    "what's the point of living", "whats the point of living",
 ]

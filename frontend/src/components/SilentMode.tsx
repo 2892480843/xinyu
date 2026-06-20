@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { silentCompanion, type ArtifactItem } from "../lib/api";
 import { play as playSfx } from "../lib/sfx";
+import { useModalDismiss } from "../hooks/useModalDismiss";
 
 interface Props {
   userId: string;
@@ -24,6 +25,7 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
   const reducedMotion = useReducedMotion();
   const saved = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
 
   useEffect(() => { playSfx("wave"); }, []); // 入座：海浪替你数着秒数
 
@@ -49,11 +51,13 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
     playSfx("shell"); // 一枚静默贝壳落下
     (async () => {
       const artifact = await silentCompanion(userId, total);
+      if (!mounted.current) return; // 卸载后不再回调，避免 setState-after-unmount / 重复落贝壳
       closeTimer.current = setTimeout(() => onClose(artifact), 1800);
     })();
   }, [elapsed, total, userId, onClose]);
 
   useEffect(() => () => {
+    mounted.current = false;
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
 
@@ -65,8 +69,12 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
     saved.current = true;
     playSfx("ripple"); // 岛屿不催你，轻轻送别
     const artifact = await silentCompanion(userId, Math.max(0, elapsed));
+    if (!mounted.current) return; // 离开过程中已卸载则不再回调
     onClose(artifact);
   };
+
+  // Escape = 温柔提前离开（与「想离开了，岛屿不催你」同义）+ 锁背景滚动 + 焦点恢复
+  useModalDismiss(true, leaveEarly);
 
   return (
     <motion.div

@@ -12,7 +12,9 @@ from app import db
 
 class ArtifactService:
     def __init__(self) -> None:
-        db.init_db()
+        # 不在构造（import 时）连库——首次读写经 db.connection() 惰性初始化，
+        # 避免部署时 DB 短暂不可达导致模块 import 直接崩溃。
+        pass
 
     def save(self, user_id: str, artifact: str, label: str, emotion: str) -> Dict[str, Any]:
         created_at = datetime.utcnow().isoformat() + "Z"

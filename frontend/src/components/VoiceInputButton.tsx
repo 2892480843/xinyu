@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 interface Props {
   disabled?: boolean;
+  /** 当前输入框文本：语音结果会「追加」在它之后，而非覆盖用户已输入的内容。 */
+  baseText?: string;
   onTranscript: (text: string) => void;
 }
 
@@ -55,7 +57,7 @@ function describeError(error: string): string {
   return "语音识别暂时不可用";
 }
 
-export default function VoiceInputButton({ disabled = false, onTranscript }: Props) {
+export default function VoiceInputButton({ disabled = false, baseText = "", onTranscript }: Props) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const [listening, setListening] = useState(false);
   const [hint, setHint] = useState("");
@@ -87,6 +89,8 @@ export default function VoiceInputButton({ disabled = false, onTranscript }: Pro
     recognition.interimResults = true;
 
     let finalText = "";
+    // 开始聆听时快照输入框已有文本——语音结果追加其后，不抹掉用户已打的字。
+    const base = baseText.trim();
 
     recognition.onstart = () => {
       setListening(true);
@@ -104,10 +108,10 @@ export default function VoiceInputButton({ disabled = false, onTranscript }: Pro
           interimText += transcript;
         }
       }
-      const next = (finalText || interimText).trim();
-      if (next) {
-        onTranscript(next);
-      }
+      const spoken = (finalText || interimText).trim();
+      // base 在前、语音在后；spoken 为空时保留 base，避免清空已输入内容。
+      const combined = base ? (spoken ? `${base} ${spoken}` : base) : spoken;
+      onTranscript(combined);
     };
 
     recognition.onerror = (event) => {

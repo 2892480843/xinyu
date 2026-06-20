@@ -7,6 +7,10 @@ backend/app/data/memories.json
 backend/app/data/chroma/
 backend/data/
 
+# 运行时日志 / 数据库备份（不入版本库）
+backend/logs/
+backend/backups/
+
 # Python
 backend/.venv/
 __pycache__/
@@ -26,3 +30,17 @@ frontend/public/models/dutch-ship-medium.zip
 # Local env
 .env
 *.local
+
+# 写实大模型的未压缩原件归档(原画备份);工作区/dist 用 meshopt+webp 压缩版
+/_model_originals/
+
+# 演示 / 路演 / 演讲 / 参赛物料与过程记录（仅本地留存，不入版本库）
+*.docx
+*.pptx
+/pptx_build/
+/iflow.md
+/yfork.mjs
+/心屿-PPT总览.png
+/心屿-5分钟功能演示脚本.md
+/心屿-5分钟视频演讲稿.md
+/心屿-参赛材料提交.md

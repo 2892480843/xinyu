@@ -78,7 +78,7 @@
 |---|---|---|---|---|
 | `footstep.m4a` | *Footstep on Gravel* | Gravity Sound | CC-BY 4.0 | 角色行走脚步 |
 | `water_splash.m4a` | *Bathtub water splashes* | gradha | Public Domain | 近水 / 涉水水花 |
-| `jump.m4a` | *Boing raw* | cfork | CC-BY 4.0 | 主角起跳（轻上扬） |
+| `jump.m4a` | *Jump* | Gravity Sound | CC-BY 4.0 | 主角起跳（真实蹬地冲击；裁出 ≈0.34s 核心段·去前导静音·首尾淡变，见 `proc_jump.py`。替换前一版程序合成正弦 hop——音色偏电子、与真实角色起跳不匹配；`sfx.ts` 仍留合成 hop 作断网降级） |
 | `land.m4a` | *Dull thud*（与 `sfx/settle` 同源） | gregoryweir | Public Domain | 主角落地（闷响；复用 settle 源转码，独立命名便于后续替换） |
 | `boat_engine.m4a` | *WWS Seffle boat engine* | Work With Sounds / Torsten Nilsson | CC-BY 4.0 | 船只引擎环境 |
 | `foghorn.m4a` | *WWS Foghorn* | Work With Sounds / Torsten Nilsson | CC-BY 4.0 | 雾笛 / 灯塔（distant_boat / 码头地标） |

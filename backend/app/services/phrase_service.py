@@ -19,7 +19,9 @@ from app import db
 
 class PhraseService:
     def __init__(self) -> None:
-        db.init_db()
+        # 不在构造（import 时）连库——首次读写经 db.connection() 惰性初始化，
+        # 避免部署时 DB 短暂不可达导致模块 import 直接崩溃。
+        pass
 
     # 与 8 类情绪白名单一致——service 层也校验，避免任何调用方绕过路由写入 pick_for 永不命中的脏 emotion(#18)
     _EMOTIONS = {"sad", "anxious", "tired", "lonely", "calm", "happy", "angry", "helpless"}

@@ -115,6 +115,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
+            maxLength={1000}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
             }}
@@ -152,7 +153,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
         </div>
 
         <div className="mt-3 px-1">
-          <VoiceInputButton disabled={loading || submitting} onTranscript={setText} />
+          <VoiceInputButton disabled={loading || submitting} baseText={text} onTranscript={setText} />
         </div>
 
         {/* 提交瞬间的涟漪 signature moment */}

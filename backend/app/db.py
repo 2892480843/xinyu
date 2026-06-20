@@ -134,6 +134,10 @@ def init_db() -> None:
             kwargs={"row_factory": dict_row},
             name="xinyu-pool",
             open=False,
+            # 借出前快速校验连接存活：DB 重启 / 空闲 TCP 被重置后自动丢弃死连接并重连，
+            # 而不是把坏连接交给请求直接报错；max_lifetime 定期回收长寿连接。
+            check=ConnectionPool.check_connection,
+            max_lifetime=1800,
         )
         pool.open()
         _pool = pool

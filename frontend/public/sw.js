@@ -1,0 +1,141 @@
+/*
+ * 心屿 Service Worker —— 离线能力（应用外壳 + 已访问资源 + 历史回退）
+ *
+ * 策略总览：
+ *   - 导航请求 (navigate)   → network-first，离线回退到缓存的应用外壳，再回退到 offline.html
+ *   - /api/ 的 GET 请求      → network-first，离线回退到上次成功的缓存（用于离线查看历史/岛屿状态）
+ *   - 同源静态资源/3D/音频    → stale-while-revalidate（首次访问后即可离线复用，按需缓存，不全量预缓存）
+ *   - 跨源字体 (Google Fonts) → stale-while-revalidate
+ *   - 其它 / 非 GET / WS      → 直接走网络
+ *
+ * 升级缓存策略时请提升 VERSION，activate 时会清理旧缓存。
+ */
+const VERSION = "xinyu-v1";
+const SHELL_CACHE = `${VERSION}-shell`;
+const RUNTIME_CACHE = `${VERSION}-runtime`;
+const API_CACHE = `${VERSION}-api`;
+const FONT_CACHE = `${VERSION}-fonts`;
+
+// 应用外壳：保证断网也能把界面骨架渲染出来
+const SHELL_ASSETS = [
+  "/",
+  "/index.html",
+  "/offline.html",
+  "/manifest.webmanifest",
+  "/favicon.svg",
+  "/icon.svg",
+  "/noise.svg",
+  "/pwa-192.png",
+  "/pwa-512.png",
+  "/apple-touch-icon.png",
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(SHELL_CACHE);
+      // 逐个添加：个别资源缺失（如某图标未发布）不应让整个安装失败
+      await Promise.allSettled(SHELL_ASSETS.map((url) => cache.add(url)));
+      await self.skipWaiting();
+    })()
+  );
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    (async () => {
+      const keep = new Set([SHELL_CACHE, RUNTIME_CACHE, API_CACHE, FONT_CACHE]);
+      const names = await caches.keys();
+      await Promise.all(names.filter((n) => !keep.has(n)).map((n) => caches.delete(n)));
+      await self.clients.claim();
+    })()
+  );
+});
+
+// 允许页面主动触发立即生效
+self.addEventListener("message", (event) => {
+  if (event.data === "SKIP_WAITING") self.skipWaiting();
+});
+
+function isStaticAsset(url) {
+  if (/\.(?:js|mjs|css|woff2?|ttf|otf|png|jpe?g|webp|gif|svg|ico|glb|gltf|bin|mp3|m4a|ogg|wav|json)$/i.test(url.pathname)) {
+    return true;
+  }
+  return /^\/(?:assets|models|audio|scenes)\//.test(url.pathname);
+}
+
+async function networkFirst(request, cacheName, fallback) {
+  const cache = await caches.open(cacheName);
+  try {
+    const res = await fetch(request);
+    if (res && res.ok) cache.put(request, res.clone());
+    return res;
+  } catch (err) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    if (fallback) {
+      const fb = await caches.match(fallback);
+      if (fb) return fb;
+    }
+    throw err;
+  }
+}
+
+async function staleWhileRevalidate(request, cacheName) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request);
+  const network = fetch(request)
+    .then((res) => {
+      if (res && res.ok) cache.put(request, res.clone());
+      return res;
+    })
+    .catch(() => null);
+  return cached || (await network) || Response.error();
+}
+
+self.addEventListener("fetch", (event) => {
+  const { request } = event;
+  if (request.method !== "GET") return; // 写操作（POST/DELETE）一律走网络
+  const url = new URL(request.url);
+  if (url.protocol !== "http:" && url.protocol !== "https:") return; // 跳过 ws/wss 等
+
+  // 页面导航：离线时回退到应用外壳
+  if (request.mode === "navigate") {
+    event.respondWith(
+      (async () => {
+        try {
+          const res = await fetch(request);
+          const cache = await caches.open(SHELL_CACHE);
+          cache.put("/", res.clone()).catch(() => {});
+          return res;
+        } catch {
+          return (
+            (await caches.match("/")) ||
+            (await caches.match("/index.html")) ||
+            (await caches.match("/offline.html")) ||
+            Response.error()
+          );
+        }
+      })()
+    );
+    return;
+  }
+
+  // 后端 API（同源）：network-first，离线回退到缓存的最近一次响应
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
+    event.respondWith(networkFirst(request, API_CACHE));
+    return;
+  }
+
+  // 跨源 Google 字体
+  if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
+    event.respondWith(staleWhileRevalidate(request, FONT_CACHE));
+    return;
+  }
+
+  // 同源静态资源 / 3D / 音频：按需缓存，二次访问可离线
+  if (url.origin === self.location.origin && isStaticAsset(url)) {
+    event.respondWith(staleWhileRevalidate(request, RUNTIME_CACHE));
+    return;
+  }
+});

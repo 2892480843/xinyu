@@ -109,10 +109,11 @@ export function getSample(name: SampleName): AudioBuffer | null {
  *   探索环境音始终默认可响（用户需求），断网时静默。
  */
 let envGain: GainNode | null = null;
+let envVolume = 0.7; // env 类音量（持久）：静音状态下即便 envGain 尚未建立，首次发声也按此音量，不漏音
 function getEnvGain(ctx: AudioContext): GainNode {
   if (!envGain) {
     envGain = ctx.createGain();
-    envGain.gain.value = 0.7;
+    envGain.gain.value = envVolume;
     envGain.connect(ctx.destination);
   }
   return envGain;
@@ -150,5 +151,6 @@ export function playSample(
 
 /** 设置探索环境音总音量（0~1）；env 类采样默认常响，可用此调节或静音。 */
 export function setEnvVolume(v: number) {
-  if (envGain) envGain.gain.value = Math.max(0, Math.min(1, v));
+  envVolume = Math.max(0, Math.min(1, v));
+  if (envGain) envGain.gain.value = envVolume;
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { resolveMusicTrack } from "../lib/musicMap";
 import { setSfxMuted } from "../lib/sfx";
+import { setEnvVolume } from "../lib/samples";
 import { setAmbience, setAmbienceMuted } from "../lib/ambience";
 import { setLocationAmbienceMuted } from "../lib/locationAmbience";
 import { useImmersion } from "../hooks/useImmersion";
@@ -44,6 +45,7 @@ export default function MusicControl({ music, emotion }: Props) {
   const [enabled, setEnabled] = useState(true);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [awaitingGesture, setAwaitingGesture] = useState(false); // autoplay 被浏览器拦截、等用户首次交互
   const available = failedSrc !== track.src;
 
   const clearFade = useCallback(() => {
@@ -87,9 +89,10 @@ export default function MusicControl({ music, emotion }: Props) {
     // SFX 跟随音乐开关：音乐关 = SFX 静音；保持答辩场地的"一键静音"约定
     const shouldMute = !enabled || volume === 0;
     setSfxMuted(shouldMute);
-    // 氛围底噪同样跟随：一键静音覆盖 BGM + SFX + 情绪底噪 + 位置底噪 四层
+    // 氛围底噪同样跟随：一键静音覆盖 BGM + SFX + 情绪底噪 + 位置底噪 + 环境音效(脚步/水花/雾号) 五层
     setAmbienceMuted(shouldMute);
     setLocationAmbienceMuted(shouldMute);
+    setEnvVolume(shouldMute ? 0 : 0.7); // env 类默认常响，一键静音时也归零，避免「静音了还有脚步声」
   }, [volume, enabled]);
 
   // 情绪变化 → 切换氛围底噪（跟随音乐开关 enabled）
@@ -114,6 +117,7 @@ export default function MusicControl({ music, emotion }: Props) {
       if (play) {
         play
           .then(() => {
+            setAwaitingGesture(false);
             fadeTo(volumeRef.current);
           })
           .catch(() => {
@@ -122,9 +126,10 @@ export default function MusicControl({ music, emotion }: Props) {
               setFailedSrc(track.src);
               setEnabled(false);
             } else {
-              // autoplay 被拦截：挂起，等首个用户手势时由 effect 重试。
+              // autoplay 被拦截：挂起，等首个用户手势时由 effect 重试，并据此如实显示「轻触播放」。
               armAutoplayRetry();
               autoplayBlockedRef.current = track.src;
+              setAwaitingGesture(true);
             }
           });
       }
@@ -159,7 +164,7 @@ export default function MusicControl({ music, emotion }: Props) {
       audio.volume = MIN_VOLUME;
       audio
         .play()
-        .then(() => fadeTo(volumeRef.current))
+        .then(() => { setAwaitingGesture(false); fadeTo(volumeRef.current); })
         .catch(() => { /* 仍失败则放弃，等用户手动点播放 */ });
     };
     window.addEventListener("xinyu:audio-gesture", onGesture);
@@ -213,7 +218,7 @@ export default function MusicControl({ music, emotion }: Props) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <p className="truncate text-sm text-white/80">{track.label}</p>
-            <span className="shrink-0 text-[10px] text-white/35">{available ? (enabled ? "播放中" : "静音") : "无音频"}</span>
+            <span className="shrink-0 text-[10px] text-white/35">{available ? (enabled ? (awaitingGesture ? "轻触播放" : "播放中") : "静音") : "无音频"}</span>
           </div>
           <input
             type="range"

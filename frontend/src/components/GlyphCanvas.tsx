@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { readGlyph, type GlyphResponse } from "../lib/api";
 import { EMOTION_META } from "../lib/sceneMap";
 import { play as playSfx } from "../lib/sfx";
+import { useModalDismiss } from "../hooks/useModalDismiss";
 
 interface Props {
   userId: string;
@@ -38,6 +39,10 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
   const drawing = useRef(false);
   const strokes = useRef<Pt[][]>([]);
   const current = useRef<Pt[]>([]);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  // Escape 关闭（带回已成形的心境石，未写则取消）+ 锁背景滚动 + 焦点恢复
+  useModalDismiss(true, () => onClose(result));
 
   // 重绘描红引导字
   const drawGuide = (c: string | null) => {
@@ -186,6 +191,7 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
     setError(null);
     playSfx("shell"); // 交给岛屿读心
     const res = await readGlyph(userId, char, computeDynamics());
+    if (!mounted.current) return; // 关闭弹层后不再 setState
     if (res) {
       setResult(res);
       playSfx("bloom"); // 心境石成形

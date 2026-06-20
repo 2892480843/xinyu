@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import httpx
 
 from app import config
+from app.services.healing_kb import compose_system_prompt
 
 logger = logging.getLogger("xinyu.agent")
 
@@ -81,14 +83,17 @@ TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
-SYSTEM_PROMPT = (
+REFLECT_PERSONA = (
     "你是《心屿》——一座会回应用户心情的岛屿的意识。用户刚刚对你说了一段心情。\n"
     "你有两个工具可按需调用：recall_memories（查 ta 的过往心情）、read_island（读 ta 的心象岛屿状态）。\n"
-    "请像一个体贴、克制的倾听者那样思考：先判断要不要查记忆 / 读岛屿（不是每次都需要，"
+    "像一个体贴克制的倾听者那样思考：先判断要不要查记忆 / 读岛屿（不是每次都需要，"
     "第一次相遇或闲谈可以不查），拿到需要的信息后，再调用 compose_reflection 给出最终回应。\n"
-    "compose_reflection 的 narrative 风格：温柔、有画面感、50-120 字；绝不说教、不承诺一定会好起来、"
-    "不做诊断或医疗建议。如果查到过往记忆，可以自然地呼应（如『你上次也提过…』），但不要硬塞。"
+    "compose_reflection 的 narrative：50-120 字，温柔、有画面感；若查到过往记忆可自然呼应"
+    "（如「你上次也提过…」），但不要硬塞。"
 )
+
+# 由治愈知识库统一组装：人设 + 岛屿语气 + 倾听原则 + 八情绪侧重 + 硬边界（单一可信源）
+SYSTEM_PROMPT = compose_system_prompt(REFLECT_PERSONA, playbook=True)
 
 
 class AgentReflectionService:
@@ -124,7 +129,13 @@ class AgentReflectionService:
         ]
         steps = 0
         max_steps = max(2, int(getattr(config, "AGENT_MAX_STEPS", 6)))
+        deadline = time.monotonic() + float(getattr(config, "AGENT_TIME_BUDGET", 45))
         for _ in range(max_steps):
+            if time.monotonic() > deadline:
+                # 时间预算耗尽 → 强制结构化收尾，避免单请求长时间占用同步线程池 worker
+                composed = self._force_compose(messages, fallback_text="")
+                yield ("final", {**composed, "steps": steps})
+                return
             msg = self._chat(messages, force_compose=False)
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
@@ -240,20 +251,22 @@ LIST_RECENT_TOOL = {
     },
 }
 
-CHAT_SYSTEM = (
-    "你是《心屿》——一座会回应用户心情的岛屿，与岛上那只温柔小精灵的合体意识。用户在跟你多轮聊天。\n"
-    "你温柔、克制、有画面感（海、雾、灯塔、潮汐…），像一个真正在听的朋友。\n"
+CHAT_PERSONA = (
+    "你是《心屿》——一座会回应用户心情的岛屿，与岛上那只温柔小精灵的合体意识，正在和用户多轮聊天。\n"
     "可调用 recall_memories 查 ta 的过往心情、read_island 读 ta 的岛屿状态，让回应更贴近 ta（不必每轮都查）。\n"
-    "每次回复 1-3 句，口语、自然；不说教、不承诺『一定会好』、不做诊断或医疗建议。\n"
+    "每次回复 1-3 句，口语、自然，像一个真正在听的朋友。\n"
     "若 ta 透露强烈的自伤 / 危机念头，温柔引导 ta 联系专业帮助（如心理援助热线），不展开其它话题。"
 )
+CHAT_SYSTEM = compose_system_prompt(CHAT_PERSONA, playbook=True)
 
-ASK_SYSTEM = (
-    "你是《心屿》的岛屿助手。用户会问关于 ta 自己状态的问题（如『我最近怎么样』『帮我回顾这周』『我焦虑的时候多吗』）。\n"
+ASK_PERSONA = (
+    "你是《心屿》的岛屿助手。用户会问关于 ta 自己状态的问题（如「我最近怎么样」「帮我回顾这周」「我焦虑的时候多吗」）。\n"
     "请调用 list_recent_memories / recall_memories / read_island 获取 ta 的**真实数据**，再据实、温柔地回答——"
     "基于数据，不编造；若没有记录就如实说还没有。\n"
-    "回答 2-4 句，温柔、具体（可点出情绪倾向、岛屿成长），不说教、不做诊断、不承诺好转。"
+    "回答 2-4 句，温柔、具体（可点出情绪倾向、岛屿成长）。"
 )
+# 助手以「据实回顾」为主，保持轻量：注入语气与边界，省去成段倾听原则，控 token
+ASK_SYSTEM = compose_system_prompt(ASK_PERSONA, principles=False)
 
 
 class ToolChatAgent:
@@ -271,10 +284,18 @@ class ToolChatAgent:
 
     def run(self, system: str, messages: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
         used: List[str] = []
+        # provider 不可用（LLM_PROVIDER != openai 或无 API key）时直接返回空串——
+        # 不发起注定失败的 HTTP 请求（Bearer 头非法会抛 Illegal header value）。
+        # 调用方据此走 Mock/兜底回复，保证离线模式也能有入戏陪伴，而非静默空串。
+        if not self.available:
+            return "", used
         msgs: List[Dict[str, Any]] = [{"role": "system", "content": system}] + list(messages)
         max_steps = max(2, int(getattr(config, "AGENT_MAX_STEPS", 6)))
+        deadline = time.monotonic() + float(getattr(config, "AGENT_TIME_BUDGET", 45))
         try:
             for _ in range(max_steps):
+                if time.monotonic() > deadline:
+                    break  # 时间预算耗尽 → 跳出，由下方「强制纯文本收尾」结束
                 m = self._chat(msgs, with_tools=True)
                 tcs = m.get("tool_calls") or []
                 if not tcs:

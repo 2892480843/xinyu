@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0e1f" />
+    <title>心屿 · 离线</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex; align-items: center; justify-content: center;
+        min-height: 100dvh; padding: 24px;
+        background: radial-gradient(120% 80% at 70% 18%, #1a2348 0%, #0a0e1f 60%);
+        color: #e9ecf7;
+        font-family: "Noto Serif SC", "Songti SC", serif;
+        text-align: center;
+      }
+      .card { max-width: 360px; }
+      img { width: 96px; height: 96px; opacity: .95; filter: drop-shadow(0 8px 24px rgba(0,0,0,.45)); }
+      h1 { font-size: 20px; font-weight: 500; margin: 22px 0 10px; letter-spacing: .04em; }
+      p { font-size: 14px; line-height: 1.9; color: #aeb6d6; margin: 0 0 26px; }
+      button {
+        appearance: none; border: 1px solid rgba(255,255,255,.18);
+        background: rgba(255,255,255,.06); color: #e9ecf7;
+        font: inherit; font-size: 14px; padding: 10px 26px; border-radius: 999px;
+        cursor: pointer; transition: background .2s, border-color .2s;
+      }
+      button:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.32); }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img src="/icon.svg" alt="心屿" />
+      <h1>岛屿暂时离线了</h1>
+      <p>你现在没有网络。已经看过的场景与历史仍可离线浏览；想要和岛屿对话，请在恢复联网后再回来。</p>
+      <button onclick="location.reload()">重新连接</button>
+    </div>
+  </body>
+</html>

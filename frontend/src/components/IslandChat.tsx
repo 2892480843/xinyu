@@ -17,10 +17,13 @@ export default function IslandChat({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollBoxRef = useRef<HTMLDivElement>(null);
 
+  // 只滚动对话容器自身——scrollIntoView 会牵动整页（iOS Safari 跳视口）；turns 为空不滚。
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!turns.length) return;
+    const el = scrollBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [turns, loading]);
 
   const send = async () => {
@@ -51,14 +54,16 @@ export default function IslandChat({
       animate={{ opacity: 1, y: 0 }}
       className="mt-4 w-full"
     >
-      <p className="text-caption text-white/40 mb-2 tracking-wider">继续跟岛屿说说</p>
+      <p className="text-caption text-white/65 text-on-scene mb-2 tracking-wider">继续跟岛屿说说</p>
       {turns.length > 0 && (
-        <div className="space-y-2 mb-2.5 max-h-64 overflow-y-auto pr-1">
+        <div ref={scrollBoxRef} className="space-y-1.5 mb-2.5 max-h-[56vh] overflow-y-auto pr-1">
           {turns.map((t, i) => (
             <div key={i} className={t.role === "user" ? "text-right" : "text-left"}>
               <span
-                className={`inline-block rounded-2xl px-3.5 py-2 text-[14px] leading-relaxed max-w-[85%] ${
-                  t.role === "user" ? "panel-glass-2 text-white/90" : "panel-glass-1 text-white/80"
+                className={`inline-block rounded-2xl px-3 py-1.5 text-[14px] leading-relaxed max-w-[86%] text-on-scene backdrop-blur-md border ${
+                  t.role === "user"
+                    ? "bg-white/15 border-white/25 text-white"
+                    : "bg-white/10 border-white/15 text-white/90"
                 }`}
               >
                 {t.content}
@@ -67,12 +72,11 @@ export default function IslandChat({
           ))}
           {loading && (
             <div className="text-left">
-              <span className="inline-block rounded-2xl px-3.5 py-2 text-[13px] text-white/45 panel-glass-1">
+              <span className="inline-block rounded-2xl px-3 py-1.5 text-[13px] text-white/70 text-on-scene bg-white/10 backdrop-blur-md border border-white/15">
                 岛屿在想…
               </span>
             </div>
           )}
-          <div ref={endRef} />
         </div>
       )}
       <div className="flex items-center gap-2">
@@ -89,7 +93,7 @@ export default function IslandChat({
         <button
           onClick={send}
           disabled={loading || !input.trim()}
-          className="panel-glass-2 rounded-full px-4 py-2.5 text-white/85 text-[14px] tracking-wider active:scale-95 transition-transform disabled:opacity-40"
+          className="rounded-full px-4 py-2.5 bg-white/15 backdrop-blur-md border border-white/25 text-white text-[14px] tracking-wider active:scale-95 transition-transform disabled:opacity-40"
         >
           说
         </button>

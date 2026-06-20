@@ -1,8 +1,17 @@
-export type CompanionAnimation = "IdleLoop" | "Joyful" | "Worried" | "FeedTreat" | "TalkListen" | "BondGlow" | "SleepFloat" | "SecretTwirl";
+export type CompanionAnimation = "IdleLoop" | "Joyful" | "Worried" | "FeedTreat" | "TalkListen" | "BondGlow" | "SleepFloat" | "SecretTwirl" | "SingSong";
 
 export type CompanionFoodId = "moonShell" | "starPearl" | "warmTea";
 
-export type CompanionSecretId = "tideShell" | "firstWhisper" | "lighthouseKeeper" | "nightGlow";
+export type CompanionSecretId =
+  | "tideShell"
+  | "firstWhisper"
+  | "lighthouseKeeper"
+  | "nightGlow"
+  // —— 「精灵 × 主人」之间的私密羁绊彩蛋 ——
+  | "firstSong" // 第一次听它唱歌
+  | "duetSong" // 它唱歌时你跟着合唱
+  | "midnightVigil" // 深夜打开它，陪你失眠
+  | "sleepyWard"; // 把打瞌睡的它叫醒太多次，它撒娇赖着
 
 export interface CompanionFood {
   id: CompanionFoodId;
@@ -20,6 +29,8 @@ export interface CompanionState {
   talkCount: number;
   lastFedAt: number | null;
   lastTalkedAt: number | null;
+  songCount: number; // 累计听它唱过几次歌
+  wakeCount: number; // 累计把打瞌睡的它叫醒几次
   unlockedSecrets: CompanionSecretId[];
 }
 
@@ -61,6 +72,10 @@ const SECRET_COPY: Record<CompanionSecretId, string> = {
   firstWhisper: "精灵记住了你的第一段悄悄话。它会在你沉默时靠近一点。",
   lighthouseKeeper: "灯塔守望者醒来了。它会把你走过的温柔路线藏进光里。",
   nightGlow: "夜航微光出现了。夜晚探索时，精灵会亮得更暖一些。",
+  firstSong: "你第一次听它唱歌。它说这首歌它练了很久，就等一个愿意停下来听的人。",
+  duetSong: "你和它一起哼了同一句。海面跟着亮起来，像在替你们俩打拍子。",
+  midnightVigil: "深夜的灯塔为你留着。它说：主人睡不着的时候，我就亮着，谁也别怕。",
+  sleepyWard: "你把瞌睡的它叫醒了好几回。它赖在你身边打哈欠——原来被人舍不得，也是一种被爱。",
 };
 
 const WORRIED_REPLIES = [
@@ -84,6 +99,8 @@ export function createCompanionState(userId: string, name = "微光"): Companion
     talkCount: 0,
     lastFedAt: null,
     lastTalkedAt: null,
+    songCount: 0,
+    wakeCount: 0,
     unlockedSecrets: [],
   };
 }
@@ -100,6 +117,8 @@ export function normalizeCompanionState(value: unknown, userId: string): Compani
     talkCount: Math.max(0, Math.floor(Number(raw.talkCount) || 0)),
     lastFedAt: typeof raw.lastFedAt === "number" ? raw.lastFedAt : null,
     lastTalkedAt: typeof raw.lastTalkedAt === "number" ? raw.lastTalkedAt : null,
+    songCount: Math.max(0, Math.floor(Number(raw.songCount) || 0)),
+    wakeCount: Math.max(0, Math.floor(Number(raw.wakeCount) || 0)),
     unlockedSecrets: dedupeSecrets(raw.unlockedSecrets),
   };
 }
@@ -159,6 +178,69 @@ export function talkToCompanion(state: CompanionState, emotion?: string, now = D
   };
 }
 
+// —— 「精灵 × 主人」专属互动：唱歌 / 哄睡 / 深夜相伴。话术比日常更亲昵。——
+const SONG_REPLIES = [
+  "我哼一段给你听吧，主人——这一首，是只唱给你的。",
+  "听，这是潮水教我的调子。你在的时候，它才唱得出来。",
+  "灯塔我点亮一点、唱慢一点，你就靠着歇一会儿好不好。",
+  "这一句里我藏了今天的好天气，唱给你，别弄丢了。",
+  "想看你笑一下，所以唱跑调也没关系，主人别嫌我。",
+];
+const DUET_REPLY = "你竟然跟着我一起哼了——这一句，我们俩的声音叠在了一块儿。";
+const WAKE_REPLIES = [
+  "呼啊……主人，你回来啦？我就守在这儿，没走远。",
+  "唔……我没睡，只是闭着眼睛等你而已。",
+  "你一来，灯塔自己就亮了——它比我还先认出你。",
+];
+const SLEEPY_WARD_REPLY = "你又把我叫醒啦……再、再让我眯一下下嘛，主人，就一下下。";
+const MIDNIGHT_REPLY = "夜里这么晚……主人也睡不着吗？那我陪你，陪到天亮也没关系。";
+
+/** 唱歌给主人听。duet = 玩家在它唱歌时跟着合唱。首次唱歌解锁 firstSong，合唱解锁 duetSong。 */
+export function singCompanion(state: CompanionState, opts: { duet?: boolean } = {}): CompanionInteractionResult {
+  const songCount = state.songCount + 1;
+  const next: CompanionState = {
+    ...state,
+    affinity: clampNumber(state.affinity + (opts.duet ? 7 : 4), 0, 100),
+    songCount,
+  };
+  const candidates: CompanionSecretId[] = ["firstSong"];
+  if (opts.duet) candidates.push("duetSong");
+  const unlockedNow = candidates.filter((secret) => !state.unlockedSecrets.includes(secret));
+  return {
+    state: { ...next, unlockedSecrets: [...next.unlockedSecrets, ...unlockedNow] },
+    reply: opts.duet ? DUET_REPLY : SONG_REPLIES[songCount % SONG_REPLIES.length],
+    animation: "SingSong",
+    unlockedNow,
+  };
+}
+
+/** 把打瞌睡的精灵唤醒。累计叫醒满 3 次解锁 sleepyWard（它撒娇赖着不肯醒）。 */
+export function wakeCompanion(state: CompanionState): CompanionInteractionResult {
+  const wakeCount = state.wakeCount + 1;
+  const next: CompanionState = { ...state, wakeCount };
+  const unlockedNow = (wakeCount >= 3 ? (["sleepyWard"] as CompanionSecretId[]) : []).filter(
+    (secret) => !state.unlockedSecrets.includes(secret),
+  );
+  return {
+    state: { ...next, unlockedSecrets: [...next.unlockedSecrets, ...unlockedNow] },
+    reply: unlockedNow.includes("sleepyWard") ? SLEEPY_WARD_REPLY : WAKE_REPLIES[wakeCount % WAKE_REPLIES.length],
+    animation: unlockedNow.length ? "SecretTwirl" : "Joyful",
+    unlockedNow,
+  };
+}
+
+/** 深夜（21:00–05:00）打开精灵 → 一次性解锁「深夜相伴」。非深夜或已解锁则返回 null。 */
+export function nightVisitCompanion(state: CompanionState, now = Date.now()): CompanionInteractionResult | null {
+  if (!isNightTime(now) || state.unlockedSecrets.includes("midnightVigil")) return null;
+  const unlockedNow: CompanionSecretId[] = ["midnightVigil"];
+  return {
+    state: { ...state, unlockedSecrets: [...state.unlockedSecrets, ...unlockedNow] },
+    reply: MIDNIGHT_REPLY,
+    animation: "BondGlow",
+    unlockedNow,
+  };
+}
+
 export function renameCompanion(state: CompanionState, name: string): CompanionState {
   return {
     ...state,
@@ -209,7 +291,10 @@ function cleanName(name: unknown): string {
 
 function dedupeSecrets(value: unknown): CompanionSecretId[] {
   if (!Array.isArray(value)) return [];
-  const allowed = new Set<CompanionSecretId>(["tideShell", "firstWhisper", "lighthouseKeeper", "nightGlow"]);
+  const allowed = new Set<CompanionSecretId>([
+    "tideShell", "firstWhisper", "lighthouseKeeper", "nightGlow",
+    "firstSong", "duetSong", "midnightVigil", "sleepyWard",
+  ]);
   const out: CompanionSecretId[] = [];
   value.forEach((item) => {
     if (allowed.has(item) && !out.includes(item)) out.push(item);

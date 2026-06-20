@@ -407,9 +407,46 @@ npm test
 npm run build
 ```
 
+## PWA 安装与离线
+
+前端已是可安装的 PWA：`npm run build` 产物自带 `manifest.webmanifest`、品牌图标（`icon.svg` + 192/512/maskable/apple-touch PNG）与根路径下的 Service Worker（`/sw.js`，作用域 `/`）。把 `dist/` 作为静态资源部署即可，无需额外配置。
+
+- **安装**：在 Chrome/Edge/Android 可「安装到桌面/主屏」，iOS Safari 用「添加到主屏幕」，以独立窗口（standalone）启动。
+- **离线**：断网后可继续浏览**应用外壳**、**已访问过的场景 / 3D 模型 / 音频**，以及**最近一次成功拉取的历史与岛屿状态**（`/api/*` 采用 network-first，离线回退到缓存）；与岛屿的 AI 对话需联网。页面右下角会出现「离线模式」提示条。
+- **Service Worker 仅在生产构建中注册**（dev 下不注册，避免干扰 Vite HMR）；调整缓存策略时请提升 `frontend/public/sw.js` 顶部的 `VERSION`，旧缓存会在新版本激活时自动清理。
+
+本地验证生产 PWA：`npm run build && npm run preview`，浏览器打开后于 DevTools → Application 查看 Service Worker / Manifest。
+
+## 可观测性与运维（日志 / 备份）
+
+**结构化日志**：每个 HTTP 请求都会自动生成或复用 `X-Request-ID`（随响应头回传，便于把前端报错与后端日志串起来），并在收尾时落一条访问日志（方法 / 路径 / 状态码 / 耗时 ms / 客户端 / request_id）；未捕获异常会记成带 traceback 的结构化错误日志，并返回带 `request_id` 的干净 500 JSON。WebSocket（`/ws/reflect`）不受影响。
+
+```bash
+LOG_FORMAT=json   # console（默认，人类可读）| json（单行 JSON，接 ELK / Loki / 云日志友好）
+LOG_LEVEL=INFO    # 全局日志级别
+```
+
+JSON 行示例：
+
+```json
+{"ts":"2026-06-20T11:06:13Z","level":"INFO","logger":"xinyu.access","msg":"access","request_id":"46bb9e25…","event":"access","http_method":"GET","path":"/api/health","status":200,"duration_ms":1.77,"client":"127.0.0.1:50000"}
+```
+
+**数据库备份 / 恢复**（脚本按 `DATABASE_URL` 环境变量 > `backend/.env` > 本地默认解析连接串）：
+
+```bash
+# 备份：pg_dump 自定义格式到 backend/backups（默认保留最近 14 份）
+bash backend/scripts/backup_db.sh
+
+# 恢复：pg_restore --clean（破坏性操作，默认需交互确认）
+bash backend/scripts/restore_db.sh backend/backups/xinyu-YYYYMMDD-HHMMSS.dump
+# 自动化场景跳过确认：XINYU_ASSUME_YES=1 bash backend/scripts/restore_db.sh <dump>
+
+# 建议接入 cron，例如每天 03:00 自动备份
+# 0 3 * * * cd /var/www/xinyu && bash backend/scripts/backup_db.sh >> backend/logs/backup.log 2>&1
+```
+
 ## 未完成项
 
-- PWA 离线能力（加载后离线查看基础场景与历史）。
-- 更高艺术质量的人工绘制 / 3D 美术资源替换。
-- 更完整的生产观测能力：结构化访问日志、错误监控、备份与恢复演练。
+- 更高艺术质量的人工绘制 / 3D 美术资源替换（程序化美术与品牌图标已就位，写实级原画仍需专业美术产出）。
 - 生产级账号系统、权限控制、多端同步可作为未来选项单独评审；当前版本不引入 JWT、OAuth 或密码系统。
