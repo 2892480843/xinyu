@@ -511,6 +511,14 @@ const lanternCam = { x: 0, z: 0, gy: 0, t: 0, on: false };
 // 「放飞一片」万灯齐放信号:UI 按钮写 v++ 与发射中心,SkyLanterns 据此一次性放出一整片天灯
 const lanternFlock = { v: 0, x: 0, z: 0 };
 const _carTmp = new THREE.Vector3();
+// 车辆姿态 useFrame 专用复用临时量(单辆车、回调内同步使用,不与玩家/相机的 _fwd 等共享)→ 免每帧 new
+const _carUp = new THREE.Vector3();
+const _carFwd = new THREE.Vector3();
+const _carRight = new THREE.Vector3();
+const _carQ = new THREE.Quaternion();
+const _carQ2 = new THREE.Quaternion();
+const _carMtx = new THREE.Matrix4();
+const _CAR_ROLL_AXIS = new THREE.Vector3(0, 0, 1);
 
 // 杜鹃花(写实灌木):村里/车旁散几株做花丛;落地偏移 = 1.0(native 底深) * 各自 scale
 const RHODOS: { x: number; z: number; s: number }[] = [
@@ -1114,16 +1122,16 @@ function DrivableCar({ grad }: { grad: THREE.Texture }) {
     o.position.set(carState.x, gy.current + CAR_Y_OFFSET + bob, carState.z);
     // 顺着路面坡度躺平(用路地面有限差分求法线,analytic 无需射线)→ 缓上下坡自然俯仰,路上接近水平
     const e = 1.8;
-    const up = new THREE.Vector3(groundYWithRoad(carState.x - e, carState.z).y - groundYWithRoad(carState.x + e, carState.z).y, 2 * e, groundYWithRoad(carState.x, carState.z - e).y - groundYWithRoad(carState.x, carState.z + e).y).normalize();
-    const fwd = new THREE.Vector3(Math.sin(carState.heading), 0, Math.cos(carState.heading));
+    const up = _carUp.set(groundYWithRoad(carState.x - e, carState.z).y - groundYWithRoad(carState.x + e, carState.z).y, 2 * e, groundYWithRoad(carState.x, carState.z - e).y - groundYWithRoad(carState.x, carState.z + e).y).normalize();
+    const fwd = _carFwd.set(Math.sin(carState.heading), 0, Math.cos(carState.heading));
     fwd.addScaledVector(up, -fwd.dot(up));
     if (fwd.lengthSq() < 1e-6) fwd.set(Math.sin(carState.heading), 0, Math.cos(carState.heading));
     fwd.normalize();
-    const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
+    const right = _carRight.crossVectors(up, fwd).normalize();
     const tRoll = -carState.turn * 0.11 * Math.max(-1, Math.min(1, carState.speed / 8)); // 转向侧倾(略收敛,更稳)
     roll.current += (tRoll - roll.current) * Math.min(1, dt * 7);
-    const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
-    q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll.current));
+    const q = _carQ.setFromRotationMatrix(_carMtx.makeBasis(right, up, fwd));
+    q.multiply(_carQ2.setFromAxisAngle(_CAR_ROLL_AXIS, roll.current));
     o.quaternion.slerp(q, Math.min(1, dt * 8)); // 姿态阻尼,过弯/起伏不突兀
     if (lights.current) lights.current.visible = carState.driving && sceneEnv.night; // 车头灯:只在夜里亮
 
@@ -1838,6 +1846,14 @@ function Player({
     const dt = Math.min(dtRaw, 0.05);
     const input = inputRef.current ?? { x: 0, y: 0 };
 
+    // 🛠️ DEBUG 瞬移:离线截图脚本设 window.__XYWARP={x,z} 时,把玩家瞬移到该处(截海湾垂钓/风铃/车旁等需走位的玩法)。
+    // 生产环境无此全局 → 整段跳过,零影响;瞬移后立即清空,只生效一帧,之后照常走路。
+    const _warp = (window as unknown as { __XYWARP?: { x: number; z: number } }).__XYWARP;
+    if (_warp && !carState.driving) {
+      pos.set(_warp.x, exGroundY(_warp.x, _warp.z), _warp.z);
+      (window as unknown as { __XYWARP?: unknown }).__XYWARP = undefined;
+    }
+
     // ── 开车:E 在车旁上车 / 车上下车 ──
     // 阈值留出余量:车碰撞把人推到 ~2.85 处,判定取 4.2 避免在边界抖动时按 E 落空。
     const CAR_BOARD_DIST = 4.2;
@@ -2286,13 +2302,14 @@ function Wishes({
   const refs = useRef<(THREE.Group | null)[]>([]);
   const taken = useRef<boolean[]>(Array(total).fill(false));
   const spots = useMemo(() => {
-    const out: { x: number; z: number }[] = [];
+    const out: { x: number; z: number; gy: number }[] = [];
     let tries = 0;
     while (out.length < total && tries < total * 30) {
       tries += 1;
       const ang = hash2(tries * 1.3, 7.7) * Math.PI * 2;
       const rad = (0.25 + hash2(tries * 2.1, 3.3) * 0.6) * WALK_RADIUS;
-      out.push({ x: Math.cos(ang) * rad, z: Math.sin(ang) * rad });
+      const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+      out.push({ x, z, gy: exGroundY(x, z) }); // 地面高随静态坐标固定 → 预算一次,免每帧重算
     }
     return out;
   }, [total]);
@@ -2304,7 +2321,7 @@ function Wishes({
       if (taken.current[i]) return;
       const g = refs.current[i];
       if (g) {
-        g.position.y = exGroundY(s.x, s.z) + 0.55 + Math.sin(state.clock.elapsedTime * 2 + i) * 0.08;
+        g.position.y = s.gy + 0.55 + Math.sin(state.clock.elapsedTime * 2 + i) * 0.08;
         g.rotation.y += 0.02;
       }
       if (Math.hypot(pos.x - s.x, pos.z - s.z) < 0.6) {
@@ -2323,7 +2340,7 @@ function Wishes({
           ref={(el) => {
             refs.current[i] = el;
           }}
-          position={[s.x, exGroundY(s.x, s.z) + 0.55, s.z]}
+          position={[s.x, s.gy + 0.55, s.z]}
         >
           <GltfProp url={MODELS.wishlight} position={[0, 0, 0]} scale={0.5} tint={color} />
           <pointLight color={color} intensity={2} distance={2.2} decay={1.6} />
@@ -2350,7 +2367,8 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
       imprints.map((_, i) => {
         const ang = hash2(i * 1.7 + 13, 7.7) * Math.PI * 2;
         const rad = (0.3 + hash2(i * 2.3 + 5, 3.3) * 0.55) * WALK_RADIUS;
-        return { x: Math.cos(ang) * rad, z: Math.sin(ang) * rad };
+        const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+        return { x, z, gy: exGroundY(x, z) }; // 静态坐标的地面高预算一次,免每帧重算
       }),
     [imprints],
   );
@@ -2377,7 +2395,7 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
       if (taken.current[i]) return;
       const g = refs.current[i];
       if (g) {
-        g.position.y = exGroundY(s.x, s.z) + 0.7 + Math.sin(state.clock.elapsedTime * 1.6 + i) * 0.12;
+        g.position.y = s.gy + 0.7 + Math.sin(state.clock.elapsedTime * 1.6 + i) * 0.12;
         g.rotation.y += 0.015;
       }
       if (Math.hypot(pos.x - s.x, pos.z - s.z) < 2.6) {
@@ -2390,7 +2408,7 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
   return (
     <>
       {spots.map((s, i) => (
-        <group key={i} ref={(el) => { refs.current[i] = el; }} position={[s.x, exGroundY(s.x, s.z) + 0.7, s.z]}>
+        <group key={i} ref={(el) => { refs.current[i] = el; }} position={[s.x, s.gy + 0.7, s.z]}>
           <mesh geometry={geos[shapeOf(imprints[i].emotion)]} material={mats[i]} />
           <pointLight color={imprints[i].color} intensity={2.4} distance={3} decay={1.6} />
         </group>

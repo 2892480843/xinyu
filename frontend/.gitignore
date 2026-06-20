@@ -23,8 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-# 临时:地图穿模离线截图审计(Playwright+SwiftShader 截真 3D)脚本与产出
+# 临时:离线截图审计 / 截图(Playwright+SwiftShader 截真 3D)脚本与产出
 scripts/_xy_*
-_audit_shots/
-_audit_after/
-_audit_beach/
+_audit_*/
