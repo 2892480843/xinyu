@@ -37,7 +37,9 @@ frontend/public/models/dutch-ship-medium.zip
 # 演示 / 路演 / 演讲 / 参赛物料与过程记录（仅本地留存，不入版本库）
 *.docx
 *.pptx
+/心屿-作品介绍.pdf
 /pptx_build/
+/docx_build/
 /iflow.md
 /yfork.mjs
 /心屿-PPT总览.png

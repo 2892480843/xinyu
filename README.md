@@ -6,7 +6,7 @@
 
 > 一句话定位：**心屿不教你变得更好，它只是记得你来过、陪你长出形状。**
 
-完整需求与设计见 [`心屿-需求文档.md`](心屿-需求文档.md)（v4.0，代码对齐版）；答辩话术与路演脚本见 [`心屿-路演物料.md`](心屿-路演物料.md)。
+完整需求与设计见 [`心屿-需求文档.md`](心屿-需求文档.md)（v5.0，完整自包含版，依据仓库实际实现回写）；5 分钟答辩演示脚本见下文「[演示脚本](#演示脚本)」。
 
 ## 界面预览
 
@@ -190,8 +190,6 @@ cp .env.example .env
 10. 输入高风险文本：`我真的彻底绝望崩溃了，完全撑不下去了，一点希望都没有，太无助了`，展示安全提示：暂停普通叙事，引导联系可信任的人或专业热线。
 11. 展示隐私可控：在身份入口一键删除该身份的后端记忆，岛屿清空。
 
-> 答辩用的 5 分钟逐 beat 脚本、诚实化话术与 Q&A，见 [`心屿-路演物料.md`](心屿-路演物料.md)。
-
 ## API
 
 ### 接口一览
@@ -318,7 +316,7 @@ python scripts/delete_memories_by_user.py --user-id local-xxxx --confirm
 
 **场景图**位于 `frontend/public/scenes/`，由后端 `scene.palette` 映射到前端 `src/lib/sceneMap.ts`。当前为 24 张完整本地预设图（8 种情绪 × 3 个强度档）作为 2D 沉浸式底图，叠加 CSS/SVG 天空、海面、岛屿与天气粒子；后端按强度返回 `low` / `mid` / `high` 三档 palette，旧 palette 键保留兼容别名。这些图由 `frontend/scripts/generate_scene_assets.py` 用 Pillow 离线生成，属可复现的插画式本地资源，不依赖运行时在线图像生成。
 
-在 2D 之上，可叠加 **react-three-fiber 真 3D 岛屿皮肤**（`src/components/Island3D.tsx`，现以整景 GLB `xy_scene_island.glb` 经实时 cel-shading 渲染，并漂浮云朵 / 飞鸟 / 海龟 / 暖阳等背景生灵与天体；`?island=proc` 可切回程序化地形兜底）与可漫游的**自由探索模式**（`src/components/ExploreMode.tsx`）。两者共用 `frontend/public/models/` 下的 100+ 个 GLB 模型，由 Blender 离线生成或接入精修资产（构建脚本见 `blender/`，素材清单见 [`心屿-Blender素材清单.md`](心屿-Blender素材清单.md)）。3D 按设备性能与 WebGL 支持自动分级，弱设备或不支持时回退 2D。
+在 2D 之上，可叠加 **react-three-fiber 真 3D 岛屿皮肤**（`src/components/Island3D.tsx`，现以整景 GLB `xy_scene_island.glb` 经实时 cel-shading 渲染，并漂浮云朵 / 飞鸟 / 海龟 / 暖阳等背景生灵与天体；`?island=proc` 可切回程序化地形兜底）与可漫游的**自由探索模式**（`src/components/ExploreMode.tsx`）。两者共用 `frontend/public/models/` 下的约 118 个 GLB 模型，由 Blender 离线生成或接入精修资产（构建脚本见 `blender/`）。3D 按设备性能与 WebGL 支持自动分级，弱设备或不支持时回退 2D。
 
 > 大型模型说明：`frontend/public/models/free_dirt_road_through_forest.glb` 约 117MB，用于林间土路驾驶地图，已通过 Git LFS 跟踪。首次克隆后请确保本机安装 Git LFS，并执行 `git lfs pull` 拉取完整模型。
 
