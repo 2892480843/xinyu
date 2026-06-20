@@ -59,11 +59,17 @@ function exGroundY(wx: number, wz: number): number {
   const r = Math.hypot(wx, wz) / (ISLAND_RADIUS * EXS);
   const coast = 1 - smoothstep01(0.62, 0.8, r); // 丘陵向海岸收平,外圈留出平缓沙滩肩台
   const villageFlat = smoothstep01(0.05, 0.24, r); // 中央村落区压平,向外才起伏
+  // 东南海湾 cove:把丘陵在海湾外圈彻底压平 → 连续低平沙地,海滩道具稳稳落在沙上而非草坡。
+  // 方位/半宽与 bayMask 同值(0.55/0.55),此处内联字面量:exGroundY 在模块初始化期即被调用,
+  // 早于 BAY_ANGLE/BAY_WIDTH 的声明,引用它们会触发 TDZ 崩溃 —— 故不调用 bayMask。
+  let dBay = Math.atan2(wz, wx) - 0.55;
+  if (dBay < -Math.PI) dBay += Math.PI * 2; else if (dBay > Math.PI) dBay -= Math.PI * 2;
+  const coveFlat = 1 - Math.exp(-(dBay * dBay) / (0.55 * 0.55)) * smoothstep01(0.42, 0.6, r);
   const hills =
     valueNoise(wx * 0.028 + 3, wz * 0.028 + 3) * 0.62 +
     valueNoise(wx * 0.08 + 1, wz * 0.08 + 1) * 0.28 +
     valueNoise(wx * 0.19, wz * 0.19) * 0.1; // 0..1(只加不减,从盘面隆起)
-  return base + hills * HILLS * coast * villageFlat;
+  return base + hills * HILLS * coast * villageFlat * coveFlat;
 }
 
 // ── 环岛柏油路「专属地面」:近路处把地形压平(车开起来又平又稳),远处退回原有丘陵 ──
@@ -411,6 +417,7 @@ const ISLE_PROPS: { x: number; z: number; r: number }[] = [
   { x: 13, z: -9, r: 3.2 },     // 瞭望台
   { x: -5, z: -8, r: 2.8 },     // 秋千
   { x: 9, z: -4, r: 2.4 },      // 风铃
+  { x: 8, z: 9.5, r: 3.4 },     // 石阶(阶梯实体:树/灌木/花/蘑菇/石块都别长穿过它)
   { x: WALK_RADIUS * 0.3, z: WALK_RADIUS * 0.3, r: 7.0 },            // 池塘
   { x: -WALK_RADIUS * 0.35, z: WALK_RADIUS * 0.45, r: 4.0 },         // 风车
   { x: -WALK_RADIUS * 0.92, z: -WALK_RADIUS * 0.3, r: 4.2 },         // 灯塔
@@ -2190,6 +2197,14 @@ function Player({
     } else {
       camera.lookAt(pos.x, pos.y + 1.5, pos.z);
     }
+    // 🛠️ DEBUG 鸟瞰:离线截图脚本设 window.__XYCAM={px,py,pz,tx,ty,tz} 时,相机改用该机位(查穿模用)。
+    // 生产环境无此全局 → 整段跳过,零影响。覆盖在常规运镜之后,直接定死机位。
+    const _dbgCam = (window as unknown as { __XYCAM?: { px: number; py: number; pz: number; tx: number; ty: number; tz: number } }).__XYCAM;
+    if (_dbgCam) {
+      camera.position.set(_dbgCam.px, _dbgCam.py, _dbgCam.pz);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(_dbgCam.tx, _dbgCam.ty, _dbgCam.tz);
+    }
 
     // 涉水时脚下泛起一圈圈涟漪
     if (ripple.current) {
@@ -2538,12 +2553,15 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       if (isBeachOrWater(x, z)) continue; // 灌木只长草地
       if (onLandmarkPad(x, z)) continue; // 地标地坪 + 裙边缓坡上不生灌木(同树)
       if (distToRoadCenter(x, z) < ROAD_HALF_W + 1.5) continue; // 清掉环岛柏油路上的灌木(否则穿透路面)
-      if (nearIsleProp(x, z, 0.3)) continue; // 不堵在设施门口
+      if (nearIsleProp(x, z, 0.6)) continue; // 不堵在设施/石阶门口(原 0.3 太贴,会蹭进门廊)
+      let onHouse = false;
+      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 1.0) { onHouse = true; break; } } // 不长进房子(同树,只是余量略小)
+      if (onHouse) continue;
       if (!spacer(x, z, 2.2)) continue; // 最小间距:不堆叠(更密的林下灌木)
       out.push({ x, z, s: 0.6 + hash2(i + 20, 1.4) * 0.6 });
     }
     return out;
-  }, []);
+  }, [buildings]);
 
   // 主路 + 一条支路(逐块贴地,横跨大岛)
   const pathTiles = useMemo(() => {
@@ -2635,12 +2653,17 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       if (isBeachOrWater(x, z)) continue; // 花不开在沙滩 / 水里
+      if (onLandmarkPad(x, z)) continue; // 不开在地标地坪/裙边(否则浮在台坡上)
       if (distToRoadCenter(x, z) < ROAD_HALF_W + 1.2) continue; // 清掉环岛柏油路上的小花(否则穿透路面)
+      if (nearIsleProp(x, z, 0.5)) continue; // 不从神社/水井/石阶等设施里钻出来
+      let inHouse = false;
+      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 0.4) { inHouse = true; break; } } // 不从屋里长出来(贴墙脚仍可)
+      if (inHouse) continue;
       if (!spacer(x, z, 1.4)) continue; // 轻度去重,打散成片堆叠
       out.push({ x, z, c: i % 2 });
     }
     return out;
-  }, []);
+  }, [buildings]);
 
   const trees = useMemo(() => {
     const out: { x: number; z: number; s: number; pineKind: boolean; warm: boolean }[] = [];
@@ -2753,17 +2776,24 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
 
   const mushrooms = useMemo(() => {
     const out: { x: number; z: number; s: number; red: boolean }[] = [];
+    const spacer = makeSpacer(2.2);
     for (let i = 0; i < 150; i++) {
       const a = hash2(i + 510, 1.7) * Math.PI * 2;
       const r = 4 + Math.sqrt(hash2(i + 510, 3.1)) * (WALK_RADIUS * 0.9 - 4);
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       if (isBeachOrWater(x, z)) continue; // 蘑菇只长林间草地
+      if (onLandmarkPad(x, z)) continue; // 不长在地标地坪/裙边
       if (distToRoadCenter(x, z) < ROAD_HALF_W + 1.0) continue; // 蘑菇也避开路面
+      if (nearIsleProp(x, z, 0.5)) continue; // 不从设施/石阶里钻出来
+      let inHouse = false;
+      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 0.5) { inHouse = true; break; } } // 不从屋里冒出来(树底下仍可,森林蘑菇本就该长树根旁)
+      if (inHouse) continue;
+      if (!spacer(x, z, 1.8)) continue; // 自身不再堆成一坨(原先无间距,常见两三朵叠穿)
       out.push({ x, z, s: 0.7 + hash2(i + 510, 5.2) * 0.7, red: hash2(i + 510, 6.4) > 0.45 });
     }
     return out;
-  }, []);
+  }, [buildings]);
 
   // 实例化用的共享几何
   const gTrunk = useMemo(() => new THREE.CylinderGeometry(0.07, 0.1, 0.8, 6), []);
@@ -4533,7 +4563,7 @@ function StoneLanterns({ posRef, grad, onNearLamp }: {
 
 const LANTERN_SCALE = 2.0; // kmd.glb 天灯缩放(glb 内含 0.305 node scale → 实际约 1.2 单位高)
 // 🏮 升空天灯:火苗呼吸明灭 + 暖色光晕 + 灯口火星打转,缓缓加速升空、越远越小,最后隐入夜空。
-function RisingLantern({ x, z, onDone }: { x: number; z: number; onDone: () => void }) {
+function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boolean; onDone: () => void }) {
   const { scene } = useGLTF(MODELS.skyLantern);
   const g = useRef<THREE.Group>(null);
   const flame = useRef<THREE.PointLight>(null);
@@ -4604,7 +4634,8 @@ function RisingLantern({ x, z, onDone }: { x: number; z: number; onDone: () => v
   return (
     <group ref={g}>
       <primitive object={obj.cl} scale={LANTERN_SCALE} />
-      <pointLight ref={flame} color="#ffce82" intensity={3.6} distance={8} decay={2} position={[0, 0.6, 0]} />
+      {/* 地面暖光仅给「单灯放飞」(1~2 盏);「放飞一片」的天灯不带光源——避免十几个动态点光源拖垮全场材质光照 */}
+      {lit && <pointLight ref={flame} color="#ffce82" intensity={3.6} distance={8} decay={2} position={[0, 0.6, 0]} />}
       <mesh ref={core} position={[0, 0.5, 0]}>
         <sphereGeometry args={[0.4, 12, 10]} />
         <meshBasicMaterial color="#ffd98a" transparent opacity={0.8} depthWrite={false} blending={THREE.AdditiveBlending} toneMapped={false} fog={false} />
@@ -4670,33 +4701,41 @@ function GroundBlessing({ x, z, onDone }: { x: number; z: number; onDone: () => 
   );
 }
 function SkyLanterns({ launchRef, posRef }: { launchRef: React.RefObject<number>; posRef: React.RefObject<THREE.Vector3> }) {
-  const [list, setList] = useState<{ id: number; x: number; z: number }[]>([]);
+  type Lan = { id: number; x: number; z: number; lit: boolean };
+  const [list, setList] = useState<Lan[]>([]);
   const [bless, setBless] = useState<{ id: number; x: number; z: number }[]>([]);
   const prev = useRef(0); const idc = useRef(0); const bid = useRef(0); const prevFlock = useRef(0);
+  const pending = useRef<Lan[]>([]); // 「放飞一片」的天灯排队挂载,逐帧少量挂上 → 摊平 glb 克隆开销,避免一帧卡死
+  const lowTier = getPerfTier() === "low";
+  const CAP = lowTier ? 10 : 24; // 同时存在的天灯上限(连同其逐帧粒子/材质开销)
   useFrame(() => {
     if (launchRef.current !== prev.current) {
       prev.current = launchRef.current; const p = posRef.current;
       const px = p ? p.x : 0, pz = p ? p.z : 0;
       // 触发仰头跟拍:记录发射点 + 地面高,清零计时(Player 相机据此仰起追灯)
       lanternCam.x = px; lanternCam.z = pz; lanternCam.gy = exGroundY(px, pz); lanternCam.t = 0; lanternCam.on = true;
-      setList((l) => [...l, { id: idc.current++, x: px, z: pz }].slice(-40));
+      setList((l) => [...l, { id: idc.current++, x: px, z: pz, lit: true }].slice(-CAP)); // 单灯带地面暖光
       setBless((b) => [...b, { id: bid.current++, x: px, z: pz }].slice(-6));
     }
-    // 万灯齐放:从发射中心四周一次性放出一整片天灯(散布成一团,缓缓升空)
+    // 万灯齐放:从发射中心四周放出一整片天灯——压入待挂载队列(无光源 + 错峰),不一帧全挂
     if (lanternFlock.v !== prevFlock.current) {
       prevFlock.current = lanternFlock.v;
-      const flock: { id: number; x: number; z: number }[] = [];
-      for (let i = 0; i < 18; i++) {
+      const FN = lowTier ? 6 : 12; // 一片天灯的数量(原 18,降量保流畅)
+      for (let i = 0; i < FN; i++) {
         const a = Math.random() * Math.PI * 2, r = 2 + Math.sqrt(Math.random()) * 13;
-        flock.push({ id: idc.current++, x: lanternFlock.x + Math.cos(a) * r, z: lanternFlock.z + Math.sin(a) * r });
+        pending.current.push({ id: idc.current++, x: lanternFlock.x + Math.cos(a) * r, z: lanternFlock.z + Math.sin(a) * r, lit: false });
       }
-      setList((l) => [...l, ...flock].slice(-40));
       setBless((b) => [...b, { id: bid.current++, x: lanternFlock.x, z: lanternFlock.z }].slice(-6));
+    }
+    // 每帧最多挂载 3 盏待挂载天灯 → 把十几次 glb 克隆摊到数帧,杜绝瞬时掉帧
+    if (pending.current.length) {
+      const batch = pending.current.splice(0, 3);
+      setList((l) => [...l, ...batch].slice(-CAP));
     }
   });
   return (
     <>
-      {list.map((L) => <RisingLantern key={L.id} x={L.x} z={L.z} onDone={() => setList((l) => l.filter((q) => q.id !== L.id))} />)}
+      {list.map((L) => <RisingLantern key={L.id} x={L.x} z={L.z} lit={L.lit} onDone={() => setList((l) => l.filter((q) => q.id !== L.id))} />)}
       {bless.map((B) => <GroundBlessing key={B.id} x={B.x} z={B.z} onDone={() => setBless((b) => b.filter((q) => q.id !== B.id))} />)}
     </>
   );
@@ -5294,8 +5333,8 @@ function FireworkShell({ ox, oz, apex, color, color2, shape, delay, big, reduced
   const baseY = useMemo(() => exGroundY(ox, oz) + 1.5, [ox, oz]);
   const RISE = 1.15;
   const LIFE = shape === "willow" ? 3.4 : 2.8;
-  const N = reduced ? (shape === "willow" ? 70 : 54) : shape === "willow" ? 168 : shape === "chrysanthemum" ? 196 : shape === "heart" ? 128 : big ? 156 : 116; // 更密 → 花更细腻
-  const TRAIL = reduced ? 6 : 12;
+  const N = reduced ? (shape === "willow" ? 56 : 44) : shape === "willow" ? 128 : shape === "chrysanthemum" ? 144 : shape === "heart" ? 104 : big ? 120 : 92; // 粒子数:additive 叠加下肉眼几乎无差,降约 1/4 减 CPU/上传
+  const TRAIL = reduced ? 6 : 10;
   const head = useRef<THREE.Sprite>(null);
   const flash = useRef<THREE.Sprite>(null);
   const trail = useRef<THREE.Points>(null);
@@ -5450,8 +5489,14 @@ function Fireworks({ launchRef, posRef, active, tier }: { launchRef: React.RefOb
   type Shell = { id: number; ox: number; oz: number; apex: number; color: string; color2: string; shape: FwShape; delay: number; big: boolean };
   const [list, setList] = useState<Shell[]>([]);
   const prev = useRef(0); const idc = useRef(0);
+  const pending = useRef<Shell[]>([]); // 整轮烟花排队挂载:逐帧少量挂上 → 摊平每发 geometry 构建 + GPU 上传,杜绝整轮一帧卡顿
   const reduced = tier === "low";
   useFrame(() => {
+    // 逐帧最多挂 2 发(弱机 1 发):把一轮 4~6 发的构建摊到数帧(每发自带 delay 错峰,视觉无差)
+    if (pending.current.length) {
+      const batch = pending.current.splice(0, reduced ? 1 : 2);
+      setList((l) => [...l, ...batch].slice(reduced ? -8 : -20));
+    }
     if (launchRef.current === prev.current) return;
     prev.current = launchRef.current;
     if (!active) return;
@@ -5463,7 +5508,7 @@ function Fireworks({ launchRef, posRef, active, tier }: { launchRef: React.RefOb
     ];
     const HEART_PAL: [string, string][] = [["#ff6f9f", "#ffd6e6"], ["#ff5d73", "#ffd2dc"]]; // 心形偏玫红 / 粉
     const shapes: FwShape[] = ["peony", "peony", "willow", "ring", "chrysanthemum", "heart", "peony"];
-    const n = reduced ? 3 : 5 + Math.floor(Math.random() * 4); // 5~8 发(更热闹)
+    const n = reduced ? 2 : 4 + Math.floor(Math.random() * 3); // high 4~6 发 / low 2 发(降量保流畅,仍热闹）
     const add: Shell[] = [];
     for (let i = 0; i < n; i++) {
       const shape = shapes[Math.floor(Math.random() * shapes.length)];
@@ -5487,7 +5532,7 @@ function Fireworks({ launchRef, posRef, active, tier }: { launchRef: React.RefOb
       fin.shape = r < 0.4 ? "willow" : r < 0.72 ? "chrysanthemum" : "peony";
     }
     playFireworkLaunch();
-    setList((l) => [...l, ...add].slice(reduced ? -12 : -34));
+    pending.current.push(...add); // 入队,由上方逐帧少量挂载(不一帧全挂 → 杜绝卡顿)
   });
   return <>{list.map((f) => (
     <FireworkShell key={f.id} {...f} reduced={reduced} onBurst={() => playFireworkBurst(f.big)} onDone={() => setList((l) => l.filter((q) => q.id !== f.id))} />
@@ -6491,8 +6536,9 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     lanternCam.x = px; lanternCam.z = pz; lanternCam.gy = exGroundY(px, pz); lanternCam.t = 0; lanternCam.on = true;
     setLanternCount((c) => c + 18); setMenuOpen(false);
     playSfx("reveal"); playLanternRelease(); playLanternMelody(true);
-    // 连放几轮烟花(每轮触发一次 show)→ 像一场盛大烟火秀;镜头随每轮重置而持续仰望
-    for (let k = 0; k < 5; k++) setTimeout(() => { lanternLaunch.current += 1; }, 350 + k * 620);
+    // 连放几轮烟花(每轮触发一次 show)→ 像一场盛大烟火秀;镜头随每轮重置而持续仰望(原 5 轮过载,降为 3 轮 / 弱机 2 轮)
+    const rounds = tier === "low" ? 2 : 3;
+    for (let k = 0; k < rounds; k++) setTimeout(() => { lanternLaunch.current += 1; }, 350 + k * 620);
   };
   const CATCHES: { icon: string; title: string; lines: string[] }[] = [
     { icon: "🐚", title: "一枚贝壳", lines: ["贴近耳边,你听见很远很远的海。", "它把潮声收了起来,等你想听的时候。", "纹路温温的,像谁的指纹。"] },
