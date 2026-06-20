@@ -34,15 +34,19 @@ class ArtifactService:
         return [self._row_to_dict(r) for r in rows]
 
     def distinct_keys(self, user_id: str, limit: int = 8) -> List[str]:
-        """返回该用户最近留下的不重复物件 key（最新在前），用于叠加到岛屿场景。"""
-        seen: List[str] = []
-        for row in self.get_all(user_id):
-            key = row["artifact"]
-            if key not in seen:
-                seen.append(key)
-            if len(seen) >= limit:
-                break
-        return seen
+        """返回该用户最近留下的不重复物件 key（最新在前），用于叠加到岛屿场景。
+
+        下推到 SQL 去重：GROUP BY 后按各 key 的最新 id 降序取前 limit 个——与旧版
+        「遍历 id DESC 行、按首次出现收集」结果完全等价，但只回 ≤limit 行、且不为
+        每行构造 dict（旧版 get_all 会把全部物件行都转成 dict）。走 idx_artifacts_user_id。
+        """
+        with db.connection() as conn:
+            rows = conn.execute(
+                "SELECT artifact FROM artifacts WHERE user_id = %s "
+                "GROUP BY artifact ORDER BY MAX(id) DESC LIMIT %s",
+                (user_id, limit),
+            ).fetchall()
+        return [row["artifact"] for row in rows]
 
     def inscribe(self, user_id: str, artifact_id: int, text: str) -> Optional[Dict[str, Any]]:
         """给一枚已留下的物件刻一句话。最多 80 字，空串则擦掉刻字。
