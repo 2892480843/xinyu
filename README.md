@@ -11,14 +11,27 @@
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/05-explore-3d.png" alt="自由探索 · 真 3D 心象岛屿" width="820"><br>
-  <sub><b>自由探索模式</b>：可漫游的真 3D 心象岛屿（react-three-fiber），收集心愿、拾取心灵印记、与岛上的人互赠</sub>
+  <img src="docs/screenshots/05-explore-3d.jpg" alt="自由探索 · 真 3D 心象岛屿" width="820"><br>
+  <sub><b>自由探索模式</b>：一座可自由漫游的真 3D 心象岛屿（react-three-fiber）—— 环岛公路、村落、灯塔、林海与海岸，收集心愿、拾取心灵印记、与岛上的人互赠</sub>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/01-home-desktop.png" alt="桌面端首页" width="820"><br>
+  <img src="docs/screenshots/01-home-desktop.jpg" alt="桌面端首页" width="820"><br>
   <sub>桌面端首页：一座会随你心情切换场景与背景音乐的岛屿</sub>
 </p>
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/06-spirit.jpg" alt="专属精灵微光" width="260"></td>
+    <td align="center" width="33%"><img src="docs/screenshots/07-island-map.jpg" alt="全岛地图" width="260"></td>
+    <td align="center" width="33%"><img src="docs/screenshots/08-night.jpg" alt="夜晚的岛屿" width="260"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>专属精灵「微光」：投喂 / 摸摸 / 静坐 / AI 对话</sub></td>
+    <td align="center"><sub>全岛地图：村落 · 灯塔 · 沙滩 · 心愿池塘</sub></td>
+    <td align="center"><sub>昼夜切换：入夜后的村落灯火与点点萤火</sub></td>
+  </tr>
+</table>
 
 <table>
   <tr>
