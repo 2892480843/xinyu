@@ -644,7 +644,7 @@ class OpenAIProvider(LLMProvider):
         original_text = (target_memory.get("text") or "")[:120]
         original_narrative = (target_memory.get("narrative") or "")[:300]
         if lenient:
-            # 演示/路演模式：允许 LLM 主动找一处可以更贴的细节做修正，避免每次都返回 false 看不出效果
+            # 回看模式：允许 LLM 主动找一处可以更贴的细节做修正，避免每次都返回 false 看不出效果
             judgement_rule = (
                 "(1) 这是回看模式：请仔细读那段话，**主动找一处可以说得更贴的地方**——"
                 "    可能是某个词用得偏重/偏轻、某种感受没接到、或者节奏太快没给那位旅人时间。"

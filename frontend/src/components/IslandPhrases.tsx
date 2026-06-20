@@ -16,7 +16,7 @@ const EMOTIONS: Array<keyof typeof EMOTION_META> = [
  * 私房安慰话管理：用户能把"重要他人说过最有效的安慰"教给岛屿，
  * 岛屿在同类情绪再次出现时加引号+归因复用。AI 退到搬运工位置。
  *
- * 这是公益赛道里"科技放大人际连接而非替代"的最强落地，对哀伤/孤独/留守人群尤其。
+ * 这是"科技放大人际连接而非替代"的落地，对哀伤 / 孤独 / 留守人群尤其。
  */
 export default function IslandPhrases({ userId }: Props) {
   const [open, setOpen] = useState(false);

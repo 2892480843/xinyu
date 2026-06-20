@@ -114,7 +114,7 @@ export default function Home() {
   // 写一个字：手写一个心境字 → 岛屿读心 → 留一块心境石
   const [glyphOpen, setGlyphOpen] = useState(false);
 
-  // 时光机·一键回望：把跨天成长压进 20 秒。demo=路演示范数据，self=回望自己的岛
+  // 时光机·一键回望：把跨天成长压进 20 秒。demo=示范数据，self=回望自己的岛
   const [replayMode, setReplayMode] = useState<null | "demo" | "self">(null);
 
   // 生长瞬间：叙事落定时一束暖光自岛屿涌起（H4 视听高潮）

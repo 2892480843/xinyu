@@ -97,7 +97,7 @@ frontend/public/audio/
 
 ## 3. 授权注意事项（务必读）
 
-- 路演 / 黑客松公开演示：所有素材（含 CC-BY-SA）可直接使用，仅需署名（CREDITS.md 已满足）。
+- 公开演示 / 开源发布：所有素材（含 CC-BY-SA）可直接使用，仅需署名（CREDITS.md 已满足）。
 - **若心屿未来以闭源 / 专有协议分发**：需处理 3 个 **CC-BY-SA** 素材——
   - `ambience/crickets`（CC-BY-SA 3.0）
   - `ambience/dawn_birds`（CC-BY-SA 3.0 NL）

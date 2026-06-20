@@ -9,8 +9,8 @@ interface Props {
 
 /**
  * 岛屿年报：让 hy3-preview 读全部历史 + 物件，给一封 ~200 字温柔短信。
- * 答辩压轴画面——把 AI 陪伴从"单次缓解"升级为"长期见证"。
- * 包含一个"被发现的情绪规律"，让评委一眼看到 LLM 真的在分析。
+ * 把 AI 陪伴从"单次缓解"升级为"长期见证"。
+ * 包含一个"被发现的情绪规律"，让用户一眼看到 LLM 真的在分析。
  */
 export default function IslandLetter({ userId, memoryCount }: Props) {
   const [open, setOpen] = useState(false);

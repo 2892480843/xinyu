@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 
 /**
- * 守夜模式：本地时间 0:00-4:00 之间或 URL ?nightwatch=1（答辩演示开关）时为真。
- * 公益赛道里"反沉迷/知止"的伦理表态——岛屿主动提醒该休息了，而非用 streak/红点把人留下来。
+ * 守夜模式：本地时间 0:00-4:00 之间或 URL ?nightwatch=1（手动触发开关，调试 / 预览用）时为真。
+ * "反沉迷 / 知止"的伦理表态——岛屿主动提醒该休息了，而非用 streak/红点把人留下来。
  */
 export function useNightWatch(): boolean {
   const [active, setActive] = useState<boolean>(() => isNightTime());

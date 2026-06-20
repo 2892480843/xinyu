@@ -86,7 +86,7 @@ export default function MusicControl({ music, emotion }: Props) {
     volumeRef.current = volume;
     if (!audio) return;
     audio.volume = enabled ? volume : MIN_VOLUME;
-    // SFX 跟随音乐开关：音乐关 = SFX 静音；保持答辩场地的"一键静音"约定
+    // SFX 跟随音乐开关：音乐关 = SFX 静音；保持"一键静音"约定
     const shouldMute = !enabled || volume === 0;
     setSfxMuted(shouldMute);
     // 氛围底噪同样跟随：一键静音覆盖 BGM + SFX + 情绪底噪 + 位置底噪 + 环境音效(脚步/水花/雾号) 五层

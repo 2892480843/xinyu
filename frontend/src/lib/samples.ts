@@ -7,7 +7,7 @@
 //   并触发后台加载），调用方拿不到就回退合成。
 // - 净效果：首次=合成（零延迟）→ 之后=真实采样 → 断网/解码失败=永远合成（不再重试）。
 //
-// 资源署名见 public/audio/CREDITS.md；CC0/CC-BY/CC-BY-SA，路演可自由使用。
+// 资源署名见 public/audio/CREDITS.md；CC0/CC-BY/CC-BY-SA，公开演示可自由使用。
 
 // 复用 sfx.ts 的唯一 AudioContext 与 masterGain（避免多 context 抢占）。
 import { getAudioContext, getMasterGain } from "./sfx";

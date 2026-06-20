@@ -588,7 +588,7 @@ export async function deletePhrase(user_id: string, phrase_id: number): Promise<
 }
 
 /** 岛屿修正信：LLM 回看历史叙事，主动承认"那句说得不准确"。
- * force=true 是答辩演示开关，让 LLM 用更宽松的判定主动找一处修正。 */
+ * force=true 是手动触发开关（调试 / 预览用），让 LLM 用更宽松的判定主动找一处修正。 */
 export async function fetchIslandRevision(user_id: string, force = false): Promise<RevisionResponse | null> {
   try {
     const res = await fetch(
@@ -603,7 +603,7 @@ export async function fetchIslandRevision(user_id: string, force = false): Promi
 }
 
 /** 离岛信件：用户超过 48 小时没回来时拉一句温柔的「我替你看着」。
- * force=true 是答辩演示开关，不看实际离开时长仍输出文案。 */
+ * force=true 是手动触发开关（调试 / 预览用），不看实际离开时长仍输出文案。 */
 export async function fetchWelcomeBack(user_id: string, force = false): Promise<WelcomeBackResponse | null> {
   try {
     const res = await fetch(

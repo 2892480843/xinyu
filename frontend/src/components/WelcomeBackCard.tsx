@@ -10,7 +10,7 @@ interface Props {
 
 /**
  * 离岛信件：用户超过 48 小时没回来时，在输入态顶部静静浮现一封短信。
- * 公益赛道里"反 push 红点"的差异化叙事——岛屿用上次留下的物件主动留话，
+ * "反 push 红点"的差异化设计——岛屿用上次留下的物件主动留话，
  * 不发推送、不打卡焦虑、关掉就走。
  */
 export default function WelcomeBackCard({ message, artifactKey }: Props) {

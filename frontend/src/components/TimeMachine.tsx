@@ -302,7 +302,7 @@ export default function TimeMachine({ userId, demo, onClose }: Props) {
         </div>
       )}
 
-      {/* 收束：让评委安静下来的那一刻 */}
+      {/* 收束：让人安静下来的那一刻 */}
       <AnimatePresence>
         {phase === "done" && (
           <motion.div

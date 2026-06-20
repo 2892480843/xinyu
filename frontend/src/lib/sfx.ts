@@ -8,7 +8,7 @@
 // 真实采样层（2026-06 集成）：`play()` 对 chime/ripple/collect/bloom/page/inscribe/
 // settle/whoosh 这 8 个音效「采样优先 + 合成降级」——命中 samples.ts 缓存则播真实录音，
 // 未命中（首访 / 断网 / 解码失败）立即回退本文件合成版。其余音效（wave/shell/breath/
-// 这样既提升沉浸感，又保留断网可跑的离线韧性（路演硬要求）。
+// 这样既提升沉浸感，又保留断网可跑的离线韧性（离线优先的硬要求）。
 
 // 采样池（循环依赖是安全的：两模块顶层都不执行对方代码，仅在运行时互调函数）。
 import { playSample, type SampleName } from "./samples";

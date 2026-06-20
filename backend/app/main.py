@@ -631,7 +631,7 @@ class TimelineSeedRequest(BaseModel):
 
 @app.post("/api/demo/timeline-seed")
 def demo_timeline_seed(req: TimelineSeedRequest) -> Dict[str, Any]:
-    """路演「时光机·一键回望」专用：为演示身份注入一段跨天、有起伏的轨迹（幂等重置）。
+    """「时光机·一键回望」示例数据：为演示身份注入一段跨天、有起伏的轨迹（幂等重置）。
     默认写入专用 demo 身份(demo-timeline)，绝不影响真实用户记忆。"""
     user_id = (req.user_id or DEMO_TIMELINE_USER).strip() or DEMO_TIMELINE_USER
     inserted = memory_service.seed_timeline_for_user(user_id, force=True)
@@ -766,7 +766,7 @@ def list_artifacts(user_id: str = "demo-user") -> Dict[str, Any]:
 @app.get("/api/island/welcome-back", response_model=WelcomeBackResponse)
 def welcome_back(user_id: str = "demo-user", force: bool = False) -> WelcomeBackResponse:
     """离岛信件：用户超过 48 小时没回来时，岛屿给一句温柔的「我替你看着」。
-    force=1 是答辩演示开关，不看实际离开时长仍输出文案。"""
+    force=1 是手动触发开关（调试 / 预览用），不看实际离开时长仍输出文案。"""
     user_id = (user_id or "demo-user").strip() or "demo-user"
     recent = memory_service.get_recent(user_id, 1)
     if not recent:
@@ -818,7 +818,7 @@ def read_glyph(req: GlyphReadRequest) -> GlyphResponse:
 @app.post("/api/silent/companion", response_model=ArtifactItem)
 def silent_companion(req: SilentCompanionRequest) -> ArtifactItem:
     """静默坐岛：用户什么都没说，岛屿陪坐了 N 秒。
-    这是公益赛道里"说不出也算说话"的核心入口——承认沉默是合法情绪状态，
+    这是"说不出也算说话"的核心入口——承认沉默是合法情绪状态，
     不写记忆库（没倾诉文本），只留下一枚静默贝壳作为"我来过"的证据。"""
     user_id = (req.user_id or "demo-user").strip() or "demo-user"
     duration = max(0, min(int(req.duration_seconds or 0), 600))

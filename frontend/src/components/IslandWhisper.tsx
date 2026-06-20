@@ -9,7 +9,7 @@ interface Props {
 
 /**
  * 岛屿主动低语：用户刚进岛屿、还没说话时，岛屿用 hy3-preview 主动说一句 15-30 字的话。
- * 这是公益赛道里"AI 真实性"的最强证据——评委一刷新页面就能看到 LLM 在工作。
+ * 这是"AI 真实性"的直接体现——用户一刷新页面就能看到 LLM 在工作。
  * 文案在后端被 prompt 严格约束：无问号、不监视感、必带具体岛屿元素。
  */
 export default function IslandWhisper({ whisper, artifactKey }: Props) {

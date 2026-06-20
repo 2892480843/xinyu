@@ -332,7 +332,7 @@ class ApiRegressionTest(unittest.TestCase):
             with TestClient(app) as client:
                 client.post("/api/reflect", json={"user_id": "demo-miss", "text": "今天好累"}).raise_for_status()
                 payload = client.get("/api/island/welcome-back?user_id=demo-miss&force=true").json()
-                # 路演 force=true 即便刚提交也返回温柔文案
+                # force=true 即便刚提交也返回温柔文案
                 self.assertTrue(payload["show"])
                 self.assertTrue(payload["message"])
 
