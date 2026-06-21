@@ -5,7 +5,17 @@ import ErrorBoundary from "../components/ErrorBoundary";
 // 真 3D 旗舰皮按需加载——three.js 体积大，不开 3D 的用户绝不付出这份 bundle
 const Island3D = lazy(() => import("../components/Island3D"));
 // 自由探索模式(可走动小人)——按需加载,和 3D 同属重型 chunk
-const ExploreMode = lazy(() => import("../components/ExploreMode"));
+const importExplore = () => import("../components/ExploreMode");
+const ExploreMode = lazy(importExplore);
+// 预取:首页空闲、或用户接近「上岛」按钮时，提前把这个重 chunk(含 three-vendor)拉进缓存，
+// 点下去就不必从零下载——首屏上岛慢的主因之一。一次性节流。
+let explorePrefetched = false;
+function prefetchExplore() {
+  if (explorePrefetched) return;
+  explorePrefetched = true;
+  // 导入重 chunk → 模块顶层即 preload 近百个非重模型(进岛门所需)；解析后再补缓存灯塔精灵。
+  importExplore().then((m) => { try { m.prefetchExploreAssets?.(); } catch { /* ignore */ } });
+}
 import Particles from "../components/Particles";
 import MoodInput from "../components/MoodInput";
 import NarrativeCard from "../components/NarrativeCard";
@@ -124,6 +134,16 @@ export default function Home() {
   const [islandMapOpen, setIslandMapOpen] = useState(false);
   // 自由探索：上岛走走，控制小人收集心愿
   const [exploreOpen, setExploreOpen] = useState(false);
+  // 首页就绪后空闲时预取「上岛」重 chunk + 模型，等用户点按钮时多半已在缓存里（首屏上岛提速）。
+  useEffect(() => {
+    // 省流量 / 弱网(2g)下不主动预缓存重资源，避免替用户花流量；改由 hover/点按时按需取。
+    const conn = (navigator as unknown as { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+    if (conn?.saveData || /2g/.test(conn?.effectiveType ?? "")) return;
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+    if (ric) { ric(prefetchExplore, { timeout: 3000 }); return; }
+    const t = window.setTimeout(prefetchExplore, 1800);
+    return () => window.clearTimeout(t);
+  }, []);
 
   // 首次登岛过场：每个 user_id 仅播一次，sessionStorage 防刷新重复
   const [arrival, setArrival] = useState<boolean>(() => {
@@ -651,6 +671,8 @@ export default function Home() {
               <div className="text-center mt-4">
                 <motion.button
                   onClick={() => setExploreOpen(true)}
+                  onPointerEnter={prefetchExplore}
+                  onPointerDown={prefetchExplore}
                   className="island-cta"
                   style={{
                     background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)`,

@@ -740,10 +740,18 @@ const HEAVY_DEFER = new Set<string>([
   MODELS.townblock,
   MODELS.qiche,
   MODELS.skyLantern,
+  MODELS.companion, // 灯塔精灵 4.4M：移出首屏关键路径，世界先可走、精灵随后淡入（见下方独立 Suspense）
 ]);
 Object.values(MODELS).forEach((u) => {
   if (!HEAVY_DEFER.has(u)) useGLTF.preload(u);
 });
+
+// 首页空闲时由 Home 调用（import 本模块即已 preload 近百个非重模型 = 进岛门所需）：
+// 这里再补缓存「进岛即在身边」的灯塔精灵（4.4M，已 defer），让一上岛精灵就在。
+// 写实大地标（浴场/街区/杜鹃 27M+）继续留给进岛后各自 Suspense 流式，不在首页占满带宽。
+export function prefetchExploreAssets(): void {
+  useGLTF.preload(MODELS.companion);
+}
 
 // 陪伴精灵:跟随玩家漂浮的小灵兽(强化「情感陪伴」)。保留 glb 原材质(半透+发光),不套 toon。
 // 说话时：嘴部按音量开合（程序化合成「说话」动画，glb 无专门片段）+ 灯塔光随情绪变色。
@@ -5949,7 +5957,10 @@ function ExploreScene({
       </mesh>
 
       <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
-      <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} />
+      {/* 灯塔精灵 4.4M 重模型：独立 Suspense，不阻塞「可上岛」，世界就绪后随即淡入 */}
+      <Suspense fallback={null}>
+        <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} />
+      </Suspense>
       <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={(id) => { nearRef.current = id; onNear(id); }} />
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
