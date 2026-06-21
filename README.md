@@ -78,32 +78,96 @@
   </tr>
 </table>
 
-<p align="center"><sub><b>情绪 → 场景</b>：同一座岛屿会随你当下的情绪切换天空 / 海面 / 天气 —— 8 情绪 × 3 强度共 24 张本地插画底图（下为各情绪一档），运行时再叠加 CSS/SVG 与天气粒子</sub></p>
+<p align="center"><sub><b>情绪 → 场景</b>：同一座岛屿会随你当下的情绪切换天空 / 海面 / 天气 —— 8 情绪 × 3 强度共 24 张本地插画底图，运行时再叠加 CSS/SVG 与天气粒子。下为全部 24 张，每种情绪占一行、自左向右为<b>低 → 中 → 高</b>强度。</sub></p>
 
 <table>
+  <tr><td colspan="3" align="center"><sub><b>开心 · 暖金</b></sub></td></tr>
   <tr>
-    <td align="center" width="25%"><img src="frontend/public/scenes/happy-mid-warm-gold.png" alt="开心" width="200"></td>
-    <td align="center" width="25%"><img src="frontend/public/scenes/calm-high-glass-tide.png" alt="平静" width="200"></td>
-    <td align="center" width="25%"><img src="frontend/public/scenes/anxious-mid-mist-gray.png" alt="焦虑" width="200"></td>
-    <td align="center" width="25%"><img src="frontend/public/scenes/tired-mid-deep-indigo.png" alt="疲惫" width="200"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/happy-low-warm-morning.png" alt="开心·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/happy-mid-warm-gold.png" alt="开心·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/happy-high-sunburst-gold.png" alt="开心·高" width="250"></td>
   </tr>
   <tr>
-    <td align="center"><sub>开心 · 暖金烈日</sub></td>
-    <td align="center"><sub>平静 · 青碧帆影</sub></td>
-    <td align="center"><sub>焦虑 · 雾锁山影</sub></td>
-    <td align="center"><sub>疲惫 · 深靛月夜</sub></td>
+    <td align="center"><sub>低 · 暖阳清晨</sub></td>
+    <td align="center"><sub>中 · 暖金烈日</sub></td>
+    <td align="center"><sub>高 · 金芒夕照</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>平静 · 青碧</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/calm-low-soft-aqua-dawn.png" alt="平静·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/calm-mid-soft-aqua.png" alt="平静·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/calm-high-glass-tide.png" alt="平静·高" width="250"></td>
   </tr>
   <tr>
-    <td align="center" width="25%"><img src="frontend/public/scenes/sad-mid-slate-blue.png" alt="难过" width="200"></td>
-    <td align="center" width="25%"><img src="frontend/public/scenes/lonely-high-moonlit-shore.png" alt="孤独" width="200"></td>
-    <td align="center" width="25%"><img src="frontend/public/scenes/angry-mid-deep-crimson.png" alt="愤怒" width="200"></td>
-    <td align="center" width="25%"><img src="frontend/public/scenes/helpless-mid-dark-slate.png" alt="无助" width="200"></td>
+    <td align="center"><sub>低 · 青碧晨光</sub></td>
+    <td align="center"><sub>中 · 柔碧白日</sub></td>
+    <td align="center"><sub>高 · 琉璃潮汐</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>焦虑 · 雾灰</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/anxious-low-morning-haze.png" alt="焦虑·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/anxious-mid-mist-gray.png" alt="焦虑·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/anxious-high-pressure-fog.png" alt="焦虑·高" width="250"></td>
   </tr>
   <tr>
-    <td align="center"><sub>难过 · 石蓝夜雨</sub></td>
-    <td align="center"><sub>孤独 · 紫夜满月</sub></td>
-    <td align="center"><sub>愤怒 · 绯红风雨</sub></td>
-    <td align="center"><sub>无助 · 暗夜微光</sub></td>
+    <td align="center"><sub>低 · 晨雾微霭</sub></td>
+    <td align="center"><sub>中 · 雾锁山影</sub></td>
+    <td align="center"><sub>高 · 高压浓雾</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>疲惫 · 靛蓝</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/tired-low-evening-indigo.png" alt="疲惫·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/tired-mid-deep-indigo.png" alt="疲惫·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/tired-high-starry-hush.png" alt="疲惫·高" width="250"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>低 · 暮色靛蓝</sub></td>
+    <td align="center"><sub>中 · 深靛月夜</sub></td>
+    <td align="center"><sub>高 · 星寂夜阑</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>难过 · 石蓝</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/sad-low-blue-hour.png" alt="难过·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/sad-mid-slate-blue.png" alt="难过·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/sad-high-midnight-rain.png" alt="难过·高" width="250"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>低 · 蓝调微光</sub></td>
+    <td align="center"><sub>中 · 石蓝夜雨</sub></td>
+    <td align="center"><sub>高 · 午夜大雨</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>孤独 · 紫调</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/lonely-low-lavender-dawn.png" alt="孤独·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/lonely-mid-pale-lavender.png" alt="孤独·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/lonely-high-moonlit-shore.png" alt="孤独·高" width="250"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>低 · 薰衣草黎明</sub></td>
+    <td align="center"><sub>中 · 淡紫雾晨</sub></td>
+    <td align="center"><sub>高 · 月光海岸</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>愤怒 · 绯红</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/angry-low-crimson-wind.png" alt="愤怒·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/angry-mid-deep-crimson.png" alt="愤怒·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/angry-high-black-storm.png" alt="愤怒·高" width="250"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>低 · 绯风渐起</sub></td>
+    <td align="center"><sub>中 · 绯红风暴</sub></td>
+    <td align="center"><sub>高 · 黑云暴雨</sub></td>
+  </tr>
+  <tr><td colspan="3" align="center"><sub><b>无助 · 暗夜</b></sub></td></tr>
+  <tr>
+    <td align="center" width="33%"><img src="frontend/public/scenes/helpless-low-dim-rain.png" alt="无助·低" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/helpless-mid-dark-slate.png" alt="无助·中" width="250"></td>
+    <td align="center" width="33%"><img src="frontend/public/scenes/helpless-high-faint-light.png" alt="无助·高" width="250"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>低 · 微雨黯淡</sub></td>
+    <td align="center"><sub>中 · 暗夜深灰</sub></td>
+    <td align="center"><sub>高 · 微光残烬</sub></td>
   </tr>
 </table>
 
