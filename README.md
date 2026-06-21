@@ -15,10 +15,16 @@
   <sub><b>自由探索模式</b>：一座可自由漫游的真 3D 心象岛屿（react-three-fiber）—— 环岛公路、村落、灯塔、林海与海岸，收集心愿、拾取心灵印记、与岛上的人互赠</sub>
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/01-home-desktop.jpg" alt="桌面端首页" width="820"><br>
-  <sub>桌面端首页：一座会随你心情切换场景与背景音乐的岛屿</sub>
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%"><img src="docs/screenshots/01-home-desktop.jpg" alt="桌面端首页 2D" width="410"></td>
+    <td align="center" width="50%"><img src="docs/screenshots/16-home-3d.jpg" alt="首页真 3D 岛屿" width="410"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>桌面端首页：随心情切换场景与背景音乐（2D · CSS/SVG 场景）</sub></td>
+    <td align="center"><sub>同一首页开启「真 3D 岛屿」：react-three-fiber 旗舰皮接管背景 —— 雪峰 / 林海 / 水面倒影 / 漂浮生灵</sub></td>
+  </tr>
+</table>
 
 <table>
   <tr>
