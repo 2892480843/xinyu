@@ -26,6 +26,17 @@ AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "6"))
 # 跑满（最坏 AGENT_MAX_STEPS × LLM_TIMEOUT）从而长时间占用同步线程池、拖垮其它请求。
 AGENT_TIME_BUDGET = float(os.getenv("AGENT_TIME_BUDGET", "45"))
 
+# —— 对话陪伴 agent 通道（说给岛屿 / 常驻助手 / 陪伴精灵）——
+# 与反思主链路的 OPENAI_*（可指向腾讯混元）分开：对话走 DeepSeek function-calling。
+# DEEPSEEK_API_KEY 留空时自动回落到 OPENAI_*，保证只配一个 key 也能聊天。
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip()
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
+# 对话通道的有效配置：配了 DeepSeek 就用 DeepSeek，否则回落到反思用的 OPENAI_*。
+CHAT_API_KEY = DEEPSEEK_API_KEY or OPENAI_API_KEY
+CHAT_BASE_URL = DEEPSEEK_BASE_URL if DEEPSEEK_API_KEY else OPENAI_BASE_URL
+CHAT_MODEL = DEEPSEEK_MODEL if DEEPSEEK_API_KEY else OPENAI_MODEL
+
 CORS_ORIGINS = _csv_env("CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
 
 # —— 观测 / 日志 ——

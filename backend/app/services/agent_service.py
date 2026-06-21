@@ -1,6 +1,7 @@
 """真·工具型 Agent（P1）。
 
-用 OpenAI 兼容的 function-calling（DeepSeek deepseek-chat）让模型**自主决定**调用哪些工具：
+用 OpenAI 兼容的 function-calling 让模型**自主决定**调用哪些工具
+（反思 agent 走 config.OPENAI_*／可指向混元；对话 agent 走 config.CHAT_*／DeepSeek）：
 - recall_memories：语义检索这位用户的过往心情（pgvector）
 - read_island：读取 ta 的心象岛屿当前状态
 然后调用 compose_reflection 产出最终反思。
@@ -280,7 +281,8 @@ class ToolChatAgent:
 
     @property
     def available(self) -> bool:
-        return config.LLM_PROVIDER == "openai" and bool(config.OPENAI_API_KEY)
+        # 对话走独立的 DeepSeek 通道（config.CHAT_*，未配 DeepSeek 时回落 OPENAI_*）。
+        return bool(config.CHAT_API_KEY)
 
     def run(self, system: str, messages: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
         used: List[str] = []
@@ -328,12 +330,12 @@ class ToolChatAgent:
             return "", used
 
     def _chat(self, messages: List[Dict[str, Any]], with_tools: bool) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"model": config.OPENAI_MODEL, "messages": messages, "temperature": 0.8}
+        payload: Dict[str, Any] = {"model": config.CHAT_MODEL, "messages": messages, "temperature": 0.8}
         if with_tools:
             payload["tools"] = self._spec
             payload["tool_choice"] = "auto"
-        headers = {"Authorization": f"Bearer {config.OPENAI_API_KEY}"}
-        url = config.OPENAI_BASE_URL.rstrip("/") + "/chat/completions"
+        headers = {"Authorization": f"Bearer {config.CHAT_API_KEY}"}
+        url = config.CHAT_BASE_URL.rstrip("/") + "/chat/completions"
         resp = self._client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]

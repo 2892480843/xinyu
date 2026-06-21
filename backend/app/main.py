@@ -601,6 +601,7 @@ def health():
         "status": "ok",
         "provider": config.LLM_PROVIDER,
         "model": config.OPENAI_MODEL if config.LLM_PROVIDER == "openai" else "mock",
+        "chat_model": config.CHAT_MODEL if config.CHAT_API_KEY else "mock",
         "emotions": scene_map.list_emotions(),
         "healing_kb": KB_VERSION,
     }

@@ -465,9 +465,12 @@ class OpenAIProvider(LLMProvider):
         self._mock = MockProvider()
         self._client = httpx.Client(timeout=config.LLM_TIMEOUT)
 
-    def _chat_json(self, system: str, user: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+    def _chat_json(self, system: str, user: str, timeout: Optional[float] = None,
+                   api_key: Optional[str] = None, base_url: Optional[str] = None,
+                   model: Optional[str] = None) -> Dict[str, Any]:
+        # 默认走反思链路的 OPENAI_*（可指向混元）；陪伴精灵等对话场景可传入 config.CHAT_* 走 DeepSeek。
         payload = {
-            "model": config.OPENAI_MODEL,
+            "model": model or config.OPENAI_MODEL,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -475,8 +478,8 @@ class OpenAIProvider(LLMProvider):
             "temperature": 0.8,
             "response_format": {"type": "json_object"},
         }
-        headers = {"Authorization": f"Bearer {config.OPENAI_API_KEY}"}
-        url = config.OPENAI_BASE_URL.rstrip("/") + "/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key or config.OPENAI_API_KEY}"}
+        url = (base_url or config.OPENAI_BASE_URL).rstrip("/") + "/chat/completions"
         # httpx 中显式 timeout=None 表示「永不超时」，因此 None 时不传、走客户端默认（LLM_TIMEOUT）；
         # 锦上添花型调用传入更短的超时以便网络抖动时快速降级。
         extra = {"timeout": timeout} if timeout is not None else {}
@@ -756,7 +759,11 @@ class OpenAIProvider(LLMProvider):
             f"玩家刚刚对{name}说：{message}"
         )
         try:
-            data = self._chat_json(COMPANION_SYSTEM_PROMPT.replace("「微光」", f"「{name}」"), user, timeout=config.LLM_FAST_TIMEOUT)
+            data = self._chat_json(
+                COMPANION_SYSTEM_PROMPT.replace("「微光」", f"「{name}」"), user,
+                timeout=config.LLM_FAST_TIMEOUT,
+                api_key=config.CHAT_API_KEY, base_url=config.CHAT_BASE_URL, model=config.CHAT_MODEL,
+            )
             reply = str(data.get("reply", "") or "").strip()
             if not reply:
                 raise ValueError("empty companion reply")
