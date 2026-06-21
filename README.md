@@ -208,7 +208,7 @@ flowchart TD
 
 ## 当前范围
 
-AI 已配置真实模型 Key，默认走**真实 LLM**（情绪分析 / 叙事表达）；同时保留完整降级兜底——未配置 Key 或调用失败时自动回落 Mock，情绪、叙事、印记、岛屿、安全均能完整跑通，体验不中断。支持情绪：`sad`、`anxious`、`tired`、`lonely`、`calm`、`happy`、`angry`、`helpless`。
+支持情绪：`sad`、`anxious`、`tired`、`lonely`、`calm`、`happy`、`angry`、`helpless`。
 
 **核心闭环**
 
