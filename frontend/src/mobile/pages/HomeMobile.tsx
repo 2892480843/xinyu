@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 // —— 复用桌面的黑盒组件（零改动）——
 import IslandScene from "../../components/IslandScene";
+import ErrorBoundary from "../../components/ErrorBoundary";
 import Particles from "../../components/Particles";
 import IdentityGate from "../../components/IdentityGate";
 import OnboardingArrival from "../../components/OnboardingArrival";
@@ -29,6 +30,8 @@ import {
 import { clearIdentity, loadIdentity, type LocalIdentity } from "../../lib/localIdentity";
 import { resolveScene, DEFAULT_VISUAL, EMOTION_META } from "../../lib/sceneMap";
 import { useNightWatch } from "../../lib/useNightWatch";
+import { useImmersion } from "../../hooks/useImmersion";
+import { useSkin3d } from "../../hooks/useSkin3d";
 // —— 移动端专属外壳 ——
 import { useReflectFlow } from "../hooks/useReflectFlow";
 import MobileTabBar, { type MobileTab } from "../components/MobileTabBar";
@@ -36,6 +39,17 @@ import BottomSheet from "../components/BottomSheet";
 import MobileInbox from "../components/MobileInbox";
 import MemoryTab from "../components/MemoryTab";
 import SelfTab from "../components/SelfTab";
+
+// 重 chunk 懒加载（与桌面 Home 同款，避免移动端首屏拉近百 glTF；prefetch 在空闲/按下时预热）。
+const Island3D = lazy(() => import("../../components/Island3D"));
+const importExplore = () => import("../../components/ExploreMode");
+const ExploreMode = lazy(importExplore);
+let explorePrefetched = false;
+function prefetchExplore() {
+  if (explorePrefetched) return;
+  explorePrefetched = true;
+  importExplore().then((m) => { try { m.prefetchExploreAssets?.(); } catch { /* ignore */ } });
+}
 
 // 全屏态：居中（loading / breathing）。
 function FullScreenCenter({ children }: { children: ReactNode }) {
@@ -84,6 +98,9 @@ export default function HomeMobile() {
   const [letterOpen, setLetterOpen] = useState(false);
   const nightWatch = useNightWatch();
   const [bedtime, setBedtime] = useState(false);
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const { immersive } = useImmersion();
+  const skin3d = useSkin3d();
   const [welcomeBack, setWelcomeBack] = useState<WelcomeBackResponse | null>(null);
   const [whisper, setWhisper] = useState<WhisperResponse | null>(null);
   const [revision, setRevision] = useState<RevisionResponse | null>(null);
@@ -125,12 +142,62 @@ export default function HomeMobile() {
     } catch { /* sessionStorage 不可用 */ }
   }, [identity]);
 
+  // 首页空闲时预取「上岛」重 chunk + 模型（与桌面 Home 同款；省流量/弱网跳过）。
+  useEffect(() => {
+    const conn = (navigator as unknown as { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+    if (conn?.saveData || /2g/.test(conn?.effectiveType ?? "")) return;
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+    if (ric) { ric(prefetchExplore, { timeout: 3000 }); return; }
+    const t = window.setTimeout(prefetchExplore, 1800);
+    return () => window.clearTimeout(t);
+  }, []);
+
   // 场景视觉：最终结果 > 流式 scene > 默认（与桌面 Home.tsx:278-290 一致）。
   const activeScene = flow.result?.scene ?? flow.liveScene;
   const visual = activeScene ? resolveScene(activeScene.palette) : DEFAULT_VISUAL;
   const activeIsland = flow.result?.island_state ?? flow.liveIsland ?? flow.island;
   const emotionLabel = EMOTION_META[flow.result?.emotion ?? ""]?.label ?? "此刻";
   const agentsDone = flow.liveAgents.filter((a) => a.status === "done").length;
+
+  // 上岛探索的素材：历史记忆 → 漂流瓶字条 + 心灵印记（与桌面 Home.tsx:294-345 同源）。
+  const [nowMs] = useState(() => Date.now());
+  const relTime = (iso: string): string => {
+    const then = new Date(iso).getTime();
+    if (!Number.isFinite(then)) return "曾经";
+    const days = Math.floor((nowMs - then) / 86400000);
+    if (days <= 0) return "今天";
+    if (days === 1) return "昨天";
+    if (days < 7) return `${days} 天前`;
+    if (days < 30) return `${Math.floor(days / 7)} 周前`;
+    if (days < 365) return `${Math.floor(days / 30)} 个月前`;
+    return "很久以前";
+  };
+  const bottleNotes = useMemo(
+    () => memories.filter((m) => (m.summary || m.text || "").trim()).slice(0, 3).map((m) => {
+      const words = (m.summary || m.text || "").trim().replace(/\s+/g, " ");
+      const clip = words.length > 36 ? words.slice(0, 34) + "…" : words;
+      const label = EMOTION_META[m.emotion]?.label ?? "心事";
+      return `${relTime(m.created_at)}的你，带着「${label}」说过——「${clip}」 嘿，现在的你，好一点了吗？`;
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [memories, nowMs],
+  );
+  const imprints = useMemo(
+    () => memories.filter((m) => (m.summary || m.text || "").trim()).slice(0, 8).map((m) => {
+      const words = (m.summary || m.text || "").trim().replace(/\s+/g, " ");
+      const line = (m.imprint || m.narrative || "").trim();
+      return {
+        emotion: m.emotion,
+        label: EMOTION_META[m.emotion]?.label ?? "心事",
+        color: resolveScene(EMOTION_META[m.emotion]?.palette ?? "").accent,
+        when: relTime(m.created_at),
+        words: words.length > 44 ? words.slice(0, 42) + "…" : words,
+        line: (line.length > 72 ? line.slice(0, 70) + "…" : line) || "岛屿替你把这一刻，轻轻收着了。",
+      };
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [memories, nowMs],
+  );
 
   const handleClearIdentity = () => {
     clearIdentity();
@@ -168,9 +235,17 @@ export default function HomeMobile() {
 
   return (
     <div className="relative min-h-[100dvh] overflow-hidden">
-      {/* 常驻岛屿背景（2D；3D 旗舰皮在 P3）+ 装饰粒子 */}
+      {/* 常驻岛屿背景：默认 2D；「我」Tab 开启真 3D 旗舰皮且支持 WebGL + 沉浸态时接管，崩溃回退 2D */}
       <div className="fixed inset-0" style={{ zIndex: 0 }} aria-hidden>
-        <IslandScene visual={visual} features={activeIsland?.features ?? []} />
+        {skin3d.active && immersive ? (
+          <ErrorBoundary fallback={<IslandScene visual={visual} features={activeIsland?.features ?? []} />} resetKey={visual}>
+            <Suspense fallback={<IslandScene visual={visual} features={activeIsland?.features ?? []} />}>
+              <Island3D visual={visual} features={activeIsland?.features ?? []} animate={immersive} />
+            </Suspense>
+          </ErrorBoundary>
+        ) : (
+          <IslandScene visual={visual} features={activeIsland?.features ?? []} />
+        )}
       </div>
       <Particles weather={visual.weather} time={visual.time} accent={visual.accent} seed={identity?.user_id ?? "anon"} />
 
@@ -281,6 +356,15 @@ export default function HomeMobile() {
                         <span className="island-cta__emoji" aria-hidden>🌊</span>
                         说给岛屿
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setExploreOpen(true)}
+                        onPointerEnter={prefetchExplore}
+                        onPointerDown={prefetchExplore}
+                        className="btn-ghost px-5 py-2 text-[13px]"
+                      >
+                        🏝 上岛走走
+                      </button>
                     </div>
                   </div>
                 )}
@@ -297,7 +381,24 @@ export default function HomeMobile() {
                 )}
 
                 {tab === "self" && (
-                  <SelfTab identity={identity} onClear={handleClearIdentity} onDeleteData={handleDeleteData} />
+                  <SelfTab
+                    identity={identity}
+                    onClear={handleClearIdentity}
+                    onDeleteData={handleDeleteData}
+                    extra={skin3d.supported ? (
+                      <button
+                        type="button"
+                        onClick={() => skin3d.setSkin3d(!skin3d.wanted)}
+                        aria-pressed={skin3d.wanted}
+                        className="panel-glass-1 flex items-center gap-3 rounded-card px-4 py-2.5"
+                      >
+                        <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${skin3d.wanted ? "bg-white/55" : "bg-white/15"}`}>
+                          <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-[#0a0e1f] transition-all ${skin3d.wanted ? "left-3.5" : "left-0.5"}`} />
+                        </span>
+                        <span className="text-[13px] text-white/80">真 3D 岛屿背景{skin3d.wanted ? "（已开）" : "（实验·更耗电）"}</span>
+                      </button>
+                    ) : undefined}
+                  />
                 )}
               </div>
 
@@ -362,6 +463,20 @@ export default function HomeMobile() {
             </div>
           )}
           {bedtime && <GoodnightScreen onWake={() => setBedtime(false)} />}
+
+          {/* —— 上岛自由探索（全屏 3D，复用 ExploreMode）—— */}
+          {exploreOpen && (
+            <Suspense fallback={<div className="fixed inset-0 z-[70] grid place-items-center bg-ink-950 text-white/60">正在登岛……</div>}>
+              <ExploreMode
+                visual={visual}
+                onExit={() => setExploreOpen(false)}
+                emotion={flow.result?.emotion}
+                bottleNotes={bottleNotes}
+                imprints={imprints}
+                userId={identity.user_id}
+              />
+            </Suspense>
+          )}
         </>
       )}
     </div>
