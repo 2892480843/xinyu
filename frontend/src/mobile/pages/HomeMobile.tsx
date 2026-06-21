@@ -10,7 +10,14 @@ import BreathingRitual from "../../components/BreathingRitual";
 import SafetyNotice from "../../components/SafetyNotice";
 import LoadingOrb from "../../components/LoadingOrb";
 import MoodInput from "../../components/MoodInput";
-import UserBadge from "../../components/UserBadge";
+import SilentMode from "../../components/SilentMode";
+import GlyphCanvas from "../../components/GlyphCanvas";
+import TimeMachine from "../../components/TimeMachine";
+import IslandMap from "../../components/IslandMap";
+import IslandPhrases from "../../components/IslandPhrases";
+import IslandLetter from "../../components/IslandLetter";
+import MindMap from "../../components/MindMap";
+import { NightWatchBanner, GoodnightScreen } from "../../components/NightWatch";
 // —— 复用桌面 lib / hooks ——
 import { useKeyboardInset } from "../../hooks/useKeyboardInset";
 import {
@@ -21,11 +28,14 @@ import {
 } from "../../lib/api";
 import { clearIdentity, loadIdentity, type LocalIdentity } from "../../lib/localIdentity";
 import { resolveScene, DEFAULT_VISUAL, EMOTION_META } from "../../lib/sceneMap";
+import { useNightWatch } from "../../lib/useNightWatch";
 // —— 移动端专属外壳 ——
 import { useReflectFlow } from "../hooks/useReflectFlow";
 import MobileTabBar, { type MobileTab } from "../components/MobileTabBar";
 import BottomSheet from "../components/BottomSheet";
 import MobileInbox from "../components/MobileInbox";
+import MemoryTab from "../components/MemoryTab";
+import SelfTab from "../components/SelfTab";
 
 // 全屏态：居中（loading / breathing）。
 function FullScreenCenter({ children }: { children: ReactNode }) {
@@ -62,8 +72,18 @@ export default function HomeMobile() {
   const [identity, setIdentity] = useState<LocalIdentity | null>(() => loadIdentity());
   const [tab, setTab] = useState<MobileTab>("island");
   const [composeOpen, setComposeOpen] = useState(false);
-  const [, setMemories] = useState<MemoryItem[]>([]); // 列表在 P2「足迹」用，此处先拉好 + 反思后刷新
-  const [, setArtifacts] = useState<ArtifactItem[]>([]); // 收藏在 P2「足迹」用，此处先拉好
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
+  // 非语言入口 + 足迹覆盖层 + 夜间守望
+  const [silentOpen, setSilentOpen] = useState(false);
+  const [glyphOpen, setGlyphOpen] = useState(false);
+  const [mindOpen, setMindOpen] = useState(false);
+  const [tmOpen, setTmOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [phrasesOpen, setPhrasesOpen] = useState(false);
+  const [letterOpen, setLetterOpen] = useState(false);
+  const nightWatch = useNightWatch();
+  const [bedtime, setBedtime] = useState(false);
   const [welcomeBack, setWelcomeBack] = useState<WelcomeBackResponse | null>(null);
   const [whisper, setWhisper] = useState<WhisperResponse | null>(null);
   const [revision, setRevision] = useState<RevisionResponse | null>(null);
@@ -134,6 +154,17 @@ export default function HomeMobile() {
     setComposeOpen(false);
     void flow.submit(text, ephemeral);
   };
+
+  // 非语言入口完成后（静默贝壳 / 心境石）刷新岛屿数据。
+  const refreshIsland = useCallback(() => {
+    if (!identity) return;
+    const uid = identity.user_id;
+    fetchMemories(uid).then(setMemories).catch(() => {});
+    fetchArtifacts(uid).then(setArtifacts).catch(() => {});
+    fetchIslandState(uid).then(setFlowIsland).catch(() => {});
+  }, [identity, setFlowIsland]);
+  const openSilent = () => { setComposeOpen(false); setSilentOpen(true); };
+  const openGlyph = () => { setComposeOpen(false); setGlyphOpen(true); };
 
   return (
     <div className="relative min-h-[100dvh] overflow-hidden">
@@ -255,19 +286,18 @@ export default function HomeMobile() {
                 )}
 
                 {tab === "memory" && (
-                  <div className="flex flex-1 flex-col items-center justify-center text-center px-6">
-                    <p className="font-serif text-[15px] leading-relaxed text-white/65">足迹 · 心象地图与时光机</p>
-                    <p className="mt-2 text-[13px] leading-relaxed text-white/40">你留在岛上的每一刻，正在这里聚成轨迹。<br />（即将在这里展开）</p>
-                  </div>
+                  <MemoryTab
+                    memoryCount={memories.length}
+                    onMindMap={() => setMindOpen(true)}
+                    onTimeMachine={() => setTmOpen(true)}
+                    onIslandMap={() => setMapOpen(true)}
+                    onPhrases={() => setPhrasesOpen(true)}
+                    onLetter={() => setLetterOpen(true)}
+                  />
                 )}
 
                 {tab === "self" && (
-                  <div className="flex flex-1 flex-col items-center gap-5 pt-6">
-                    <UserBadge identity={identity} onClear={handleClearIdentity} onDeleteData={handleDeleteData} />
-                    <p className="px-8 text-center text-[12px] leading-relaxed text-white/40">
-                      心屿不需要账号密码，昵称只存在这台设备上。<br />随时可以删除这座岛屿的全部痕迹。
-                    </p>
-                  </div>
+                  <SelfTab identity={identity} onClear={handleClearIdentity} onDeleteData={handleDeleteData} />
                 )}
               </div>
 
@@ -277,7 +307,7 @@ export default function HomeMobile() {
 
           {/* 倾诉 Sheet：从底升起，键盘友好 */}
           <BottomSheet open={composeOpen} onClose={() => setComposeOpen(false)} label="说给岛屿">
-            <MoodInput onSubmit={onSubmit} loading={false} />
+            <MoodInput onSubmit={onSubmit} onSilent={openSilent} onGlyph={openGlyph} loading={false} />
           </BottomSheet>
 
           {/* 首次登岛过场 */}
@@ -290,6 +320,48 @@ export default function HomeMobile() {
               }}
             />
           )}
+
+          {/* —— 足迹覆盖层（复用桌面组件）—— */}
+          {mindOpen && (
+            <div
+              className="fixed inset-0 z-[75] overflow-auto bg-ink-950/85 px-4 backdrop-blur-sm"
+              style={{ paddingTop: "calc(1.25rem + env(safe-area-inset-top))", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}
+            >
+              <div className="mx-auto w-full max-w-[34rem]">
+                <button type="button" onClick={() => setMindOpen(false)} className="btn-ghost mb-3 px-3 py-1.5 text-[13px]">‹ 返回</button>
+                <MindMap memories={memories} island={activeIsland} artifacts={artifacts} open onToggle={() => setMindOpen(false)} userId={identity.user_id} />
+              </div>
+            </div>
+          )}
+          {tmOpen && <TimeMachine userId={identity.user_id} demo={memories.length === 0} onClose={() => setTmOpen(false)} />}
+          {mapOpen && <IslandMap island={activeIsland} artifacts={artifacts} onClose={() => setMapOpen(false)} />}
+          <BottomSheet open={phrasesOpen} onClose={() => setPhrasesOpen(false)} label="私房安慰话">
+            <IslandPhrases userId={identity.user_id} />
+          </BottomSheet>
+          <BottomSheet open={letterOpen} onClose={() => setLetterOpen(false)} label="岛屿年报">
+            <IslandLetter userId={identity.user_id} memoryCount={memories.length} />
+          </BottomSheet>
+
+          {/* —— 非语言入口（全屏）—— */}
+          {silentOpen && (
+            <SilentMode userId={identity.user_id} onClose={(art) => { setSilentOpen(false); if (art) refreshIsland(); }} />
+          )}
+          {glyphOpen && (
+            <GlyphCanvas userId={identity.user_id} onClose={(res) => { setGlyphOpen(false); if (res) refreshIsland(); }} />
+          )}
+
+          {/* —— 夜间守望 —— */}
+          {nightWatch && !bedtime && (
+            <div className="pointer-events-none fixed inset-0 z-10 bg-slate-950/45" aria-hidden />
+          )}
+          {nightWatch && !bedtime && flow.phase === "input" && (
+            <div className="fixed inset-x-0 z-40 px-4" style={{ top: "calc(0.75rem + env(safe-area-inset-top))" }}>
+              <div className="mx-auto max-w-[30rem]">
+                <NightWatchBanner onBedtime={() => setBedtime(true)} />
+              </div>
+            </div>
+          )}
+          {bedtime && <GoodnightScreen onWake={() => setBedtime(false)} />}
         </>
       )}
     </div>
