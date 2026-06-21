@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { resolveMusicTrack } from "../lib/musicMap";
 import { setSfxMuted } from "../lib/sfx";
 import { setEnvVolume } from "../lib/samples";
+import { setLanternMusicMuted } from "../lib/lanternMusic";
 import { setAmbience, setAmbienceMuted } from "../lib/ambience";
 import { setLocationAmbienceMuted } from "../lib/locationAmbience";
 import { useImmersion } from "../hooks/useImmersion";
@@ -38,6 +39,7 @@ export default function MusicControl({ music, emotion }: Props) {
   const { wanted: skin3dOn, supported: skin3dOk, setSkin3d } = useSkin3d();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fadeTimerRef = useRef<number | null>(null);
+  const duckTimerRef = useRef<number | null>(null); // 放天灯让位后恢复 BGM 的定时器
   const volumeRef = useRef(DEFAULT_VOLUME);
   const autoplayBlockedRef = useRef<string | null>(null); // autoplay 被拦时记下的待播 src
   // 默认开启：用户在身份门点「进入心屿」时已产生用户手势，autoplay 通常被允许；
@@ -93,6 +95,7 @@ export default function MusicControl({ music, emotion }: Props) {
     setAmbienceMuted(shouldMute);
     setLocationAmbienceMuted(shouldMute);
     setEnvVolume(shouldMute ? 0 : 0.7); // env 类默认常响，一键静音时也归零，避免「静音了还有脚步声」
+    setLanternMusicMuted(shouldMute); // 放天灯庆典曲目同样跟随一键静音
   }, [volume, enabled]);
 
   // 情绪变化 → 切换氛围底噪（跟随音乐开关 enabled）
@@ -170,6 +173,29 @@ export default function MusicControl({ music, emotion }: Props) {
     window.addEventListener("xinyu:audio-gesture", onGesture);
     return () => window.removeEventListener("xinyu:audio-gesture", onGesture);
   }, [fadeTo]);
+
+  // 放天灯庆典让位：天灯曲目奏起时(lanternMusic 派发 xinyu:bgm-duck)把 BGM 暂时淡低，结束前恢复，
+  // 让真实庆典曲目（Frost Waltz / Skye Cuillin）听得清，又不打断背景。
+  useEffect(() => {
+    const onDuck = (e: Event) => {
+      const audio = audioRef.current;
+      if (!audio || !enabled || !available) return;
+      const ms = (e as CustomEvent<{ ms?: number }>).detail?.ms ?? 8000;
+      const base = volumeRef.current;
+      if (duckTimerRef.current) { window.clearTimeout(duckTimerRef.current); duckTimerRef.current = null; }
+      fadeTo(base * 0.34); // 让位但不全静，仍留一层底色
+      duckTimerRef.current = window.setTimeout(() => {
+        duckTimerRef.current = null;
+        const a = audioRef.current;
+        if (a && enabled && !a.paused) fadeTo(volumeRef.current); // 仍在播且未被用户暂停/静音才恢复
+      }, Math.max(1500, ms - 500));
+    };
+    window.addEventListener("xinyu:bgm-duck", onDuck);
+    return () => {
+      window.removeEventListener("xinyu:bgm-duck", onDuck);
+      if (duckTimerRef.current) { window.clearTimeout(duckTimerRef.current); duckTimerRef.current = null; }
+    };
+  }, [enabled, available, fadeTo]);
 
   const toggle = () => {
     const audio = audioRef.current;

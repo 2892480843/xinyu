@@ -44,6 +44,25 @@
 
 ---
 
+## 放天灯庆典曲目（`lantern/`，2026-06 新增）
+
+> 自由探索·暮色天灯：放飞瞬间奏起的真实曲目，同样来自 **Kevin MacLeod（incompetech.com）**，
+> 授权 **CC-BY 4.0**。原始 MP3（320 kbps）已用 `afconvert` 转码为 AAC 128 kbps（.m4a），
+> 未做剪辑或混音改动——播放时长由前端 `lanternMusic.ts` 控制（淡入 → 截取一小段 → 淡出），
+> 文件内容本身完整未改。运行时路径 `/audio/lantern/*.m4a`，原始 MP3 存于 `raw/lantern/`。
+
+| 触发 | 文件 | 原曲名 | 速度/乐器特征 |
+|---|---|---|---|
+| 放天灯（单灯） | `single.m4a` | *Frost Waltz* | 钢片琴 + 钟琴 + 弦乐/圆号，清亮神秘的二拍子——一盏灯升入星空 |
+| 放飞一片 | `flock.m4a` | *Skye Cuillin* | 竖琴/哨笛/弦乐/合唱，soaring 新世纪凯尔特——漫天灯海齐升 |
+
+```
+"Frost Waltz" by Kevin MacLeod (incompetech.com) — Licensed under Creative Commons: By Attribution 4.0 — https://creativecommons.org/licenses/by/4.0/
+"Skye Cuillin" by Kevin MacLeod (incompetech.com) — Licensed under Creative Commons: By Attribution 4.0 — https://creativecommons.org/licenses/by/4.0/
+```
+
+---
+
 ## 环境氛围底噪 / 场景环境音 / 采样音效（2026-06 新增）
 
 > 以下素材来自 **Wikimedia Commons**，按情绪场景（氛围底噪）、3D 探索 / 驾驶场景（环境音）、

@@ -4,7 +4,7 @@ import type { RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
-import { startEngine, stopEngine, setEngineSpeed, play as playSfx } from "../lib/sfx";
+import { startEngine, stopEngine, setEngineSpeed, playAccelRev, play as playSfx } from "../lib/sfx";
 import { getPerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
 import { makeTrack, type Track, type Decoration } from "../lib/track";
@@ -491,8 +491,8 @@ function DriveCar({ inputRef, track, speedRef }: { inputRef: RefObject<DriveInpu
     const gasOn = inp.y > 0;
     const gasEdge = gasOn && !prevGas.current; // 本帧刚踩下油门
     const boostEdge = boosting && !prevBoost.current; // 本帧刚进入增压
-    if (gasEdge) burst.current = Math.max(burst.current, 0.8);
-    if (boostEdge) burst.current = 1.3; // 增压点火更猛
+    if (gasEdge) { burst.current = Math.max(burst.current, 0.8); playAccelRev(1); } // 踩油门「轰」一下
+    if (boostEdge) { burst.current = 1.3; playAccelRev(1.7); } // 增压点火更猛、加速声更长更亮
     prevGas.current = gasOn;
     prevBoost.current = boosting;
     burst.current = Math.max(0, burst.current - dt * 4.5); // ~0.3s 回落

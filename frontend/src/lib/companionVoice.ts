@@ -64,13 +64,12 @@ export function saveCompanionVoiceId(id: string | null): void {
 
 // ── 实时音量总线 ──────────────────────────────────────────────
 // 说话期间，组件通过 getCompanionLevel() 拿当前音量（0..1）驱动 3D 动画。
-// 用模块级单例（整个应用只有一个精灵在说话），避免 AnalyserNode / RAF 多开。
+// 用模块级单例（整个应用只有一个精灵在说话），避免 RAF 多开。
 let currentLevel = 0;
 const levelListeners = new Set<(level: number) => void>();
 let levelRaf = 0;
-let analyser: AnalyserNode | null = null;
-let analyserData: Uint8Array<ArrayBuffer> | null = null;
-// 浏览器原生降级时，AnalyserNode 无信号 → 用基于时间的伪音量模拟说话起伏
+// 说话期间用「基于时间的节奏起伏」驱动 3D 口型（云端音频与浏览器原生统一走此模拟）。
+// 不再把音频接进 Web Audio 图——那条链路在 AudioContext 挂起时会让声音变静音，正是「不出声」的根源。
 let simulatedUntil = 0;
 
 function emitLevel(v: number) {
@@ -92,26 +91,13 @@ export function getCompanionLevel(): number {
   return currentLevel;
 }
 
-// AnalyserNode 需要 AudioContext；懒建并复用一个，避免每次说话重建。
-let sharedCtx: AudioContext | null = null;
-function getAudioCtx(): AudioContext | null {
-  if (typeof window === "undefined") return null;
-  const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Ctor) return null;
-  if (!sharedCtx) sharedCtx = new Ctor();
-  return sharedCtx;
-}
-
-function startLevelLoop(getRaw: () => number, isSimulated: boolean) {
+function startLevelLoop(getRaw: () => number) {
   cancelAnimationFrame(levelRaf);
   const tick = () => {
     const raw = getRaw();
-    // 轻微平滑 + 抬底：让停顿处也有一点微动，更像「正在说话」而非死寂
+    // 轻微平滑：停顿处也有一点微动，更像「正在说话」而非死寂
     const eased = currentLevel + (raw - currentLevel) * 0.35;
-    emitLevel(Math.max(isSimulated ? 0.06 : 0, Math.min(1, eased)));
-    if (raw <= 0.001 && Date.now() > simulatedUntil) {
-      // 真实音频已无声且非模拟期 → 收到 0
-    }
+    emitLevel(Math.min(1, Math.max(0, eased)));
     levelRaf = requestAnimationFrame(tick);
   };
   levelRaf = requestAnimationFrame(tick);
@@ -131,11 +117,13 @@ export interface CompanionVoiceController {
   stop: () => void;
 }
 
-/** 创建一个精灵语音控制器（模块内复用同一个 audio 元素 + speechSynthesis）。 */
+/** 创建一个精灵语音控制器（模块内复用 speechSynthesis；云端音频每句新建 <audio> 直接播）。 */
 export function createCompanionVoice(): CompanionVoiceController {
   const speechSupported = isBrowserSpeechSupported();
   let audioEl: HTMLAudioElement | null = null;
-  let mediaSource: MediaElementAudioSourceNode | null = null;
+  // 发声令牌：每次 speak / stop 自增。旧的一句在 await 之后若发现自己已被顶替（my !== seq）
+  // 就立刻放弃，绝不再开口 —— 根治「两句抢着播 / 念半截 / 串音」。
+  let seq = 0;
 
   const stopBrowser = () => {
     if (speechSupported) window.speechSynthesis.cancel();
@@ -144,33 +132,38 @@ export function createCompanionVoice(): CompanionVoiceController {
   const teardownAudio = () => {
     stopLevelLoop();
     if (audioEl) {
+      audioEl.onended = null;
+      audioEl.onerror = null;
       audioEl.pause();
       try { audioEl.src = ""; } catch { /* ignore */ }
       audioEl = null;
     }
-    // MediaElementSource 绑定后不能解绑，但断开连接即可；analyser 留着复用
-    try { mediaSource?.disconnect(); } catch { /* ignore */ }
-    mediaSource = null;
   };
 
   const stop = () => {
+    seq++; // 作废所有在途请求
+    simulatedUntil = 0;
     stopBrowser();
     teardownAudio();
   };
 
+  // 口型驱动：按文本长度估时长，用基于时间的节奏起伏；rate 越快起伏越密。
+  const startSimLevel = (text: string, rate: number, isPlaying?: () => boolean) => {
+    simulatedUntil = Date.now() + Math.min(20000, (text.length * 260) / rate);
+    startLevelLoop(() => {
+      // 云端音频：以「是否还在播」为准（精确收口）；原生合成：按估算时长。
+      if (isPlaying ? !isPlaying() : Date.now() > simulatedUntil) return 0;
+      const t = performance.now() * 0.001;
+      return 0.22 + Math.abs(Math.sin(t * (6 * rate))) * 0.34 + Math.abs(Math.sin(t * 11)) * 0.14;
+    });
+  };
+
   const browserSpeak = (text: string, emotion: string) => {
     if (!speechSupported || !text) return;
+    const tune = VOICE_TUNING[emotion] ?? { rate: 0.9, pitch: 1.0 };
     // 防 Chrome 上 cancel + 立刻 speak 静默 bug：cancel → rAF → speak
     window.speechSynthesis.cancel();
-    // 浏览器原生合成拿不到音量数据 → 用节奏模拟驱动 3D（按字数估算时长）
-    const tune = VOICE_TUNING[emotion] ?? { rate: 0.9, pitch: 1.0 };
-    simulatedUntil = Date.now() + Math.min(20000, text.length * 260 / tune.rate);
-    startLevelLoop(() => {
-      if (Date.now() > simulatedUntil) return 0;
-      // 伪音量：基线呼吸 + 按节奏起伏，模拟说话的强弱
-      const t = performance.now() * 0.001;
-      return 0.22 + Math.abs(Math.sin(t * (6 * tune.rate))) * 0.34 + Math.abs(Math.sin(t * 11)) * 0.14;
-    }, true);
+    startSimLevel(text, tune.rate);
     requestAnimationFrame(() => {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = "zh-CN";
@@ -185,52 +178,32 @@ export function createCompanionVoice(): CompanionVoiceController {
   const speak = async (text: string, emotion = "calm", voice: string | null = null) => {
     const clean = (text || "").trim();
     if (!clean) return;
-    teardownAudio(); // 新的一句顶掉旧的，避免叠声
+    const my = ++seq; // 认领这次发声
+    teardownAudio();
     stopBrowser();
-    // 优先腾讯云情感 TTS；未配置/失败则无缝降级浏览器原生（情绪调音）
+    // 优先云端情感 TTS；未配置 / 失败则无缝降级浏览器原生（情绪调音）。
     const dataUrl = await synthesizeSpeech(clean, emotion, voice ?? undefined);
+    if (my !== seq) return; // 已被更新的一句顶替 → 放弃
     if (dataUrl) {
       const audio = new Audio(dataUrl);
       audioEl = audio;
-      audio.onended = () => { teardownAudio(); };
-      audio.onerror = () => {
-        teardownAudio();
-        browserSpeak(clean, emotion);
-      };
+      const tune = VOICE_TUNING[emotion] ?? { rate: 0.9, pitch: 1.0 };
+      audio.onended = () => { if (my === seq) { simulatedUntil = 0; teardownAudio(); } };
+      audio.onerror = () => { if (my !== seq) return; teardownAudio(); browserSpeak(clean, emotion); };
+      // 直接播到扬声器（不经 Web Audio 图）→ 不受 AudioContext 挂起影响，声音稳；口型用模拟驱动。
+      startSimLevel(clean, tune.rate, () => !audio.paused && !audio.ended);
       try {
-        // 接到 AnalyserNode 上采实时音量 → 驱动 3D 随声动
-        const ctx = getAudioCtx();
-        if (ctx) {
-          try {
-            if (ctx.state === "suspended") await ctx.resume();
-            analyser = analyser ?? ctx.createAnalyser();
-            analyser.fftSize = 256;
-            analyser.smoothingTimeConstant = 0.75;
-            if (!analyserData || analyserData.length !== analyser.frequencyBinCount) {
-              analyserData = new Uint8Array(analyser.frequencyBinCount);
-            }
-            mediaSource = ctx.createMediaElementSource(audio);
-            mediaSource.connect(analyser);
-            analyser.connect(ctx.destination);
-            startLevelLoop(() => {
-              if (!analyser || !analyserData || audio.paused || audio.ended) return 0;
-              analyser.getByteTimeDomainData(analyserData);
-              // 时域振幅偏离 128(中点) 的平均量 → 音量
-              let sum = 0;
-              for (let i = 0; i < analyserData.length; i++) sum += Math.abs(analyserData[i] - 128);
-              const mean = sum / analyserData.length / 128; // 0..1
-              return Math.min(1, mean * 3.2); // 放大让轻柔 TTS 也看得见
-            }, false);
-          } catch {
-            /* MediaElementSource 绑定失败也不影响播放，只是没有随声动 */
-          }
-        }
         await audio.play();
+        if (my !== seq) { teardownAudio(); return; } // 启动播放期间又被顶替
         return;
       } catch {
+        if (my !== seq) return;
         teardownAudio();
+        browserSpeak(clean, emotion); // 自动播放被拒等 → 退浏览器原生
+        return;
       }
     }
+    if (my !== seq) return;
     browserSpeak(clean, emotion);
   };
 

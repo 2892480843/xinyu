@@ -162,14 +162,55 @@ export function setEngineSpeed(spd: number) {
   const base = 52 + s * 95; // 怠速 → 拉高
   engine.osc.frequency.setTargetAtTime(base, t, 0.08);
   engine.sub.frequency.setTargetAtTime(base * 0.5, t, 0.08);
-  engine.filt.frequency.setTargetAtTime(280 + s * 760, t, 0.1);
-  engine.gain.gain.setTargetAtTime(muted ? 0 : 0.05 + s * 0.06, t, 0.1); // 低鸣,随速度略响
+  engine.filt.frequency.setTargetAtTime(300 + s * 980, t, 0.1);
+  engine.gain.gain.setTargetAtTime(muted ? 0 : 0.07 + s * 0.12, t, 0.1); // 低鸣,随速度明显拉响(怠速沉、给油亮)
 }
 export function stopEngine() {
   if (!engine || !ctx) return;
   const e = engine; engine = null;
   e.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.12);
   setTimeout(() => { try { e.osc.stop(); e.sub.stop(); e.osc.disconnect(); e.sub.disconnect(); e.filt.disconnect(); e.gain.disconnect(); } catch { /* ignore */ } }, 350);
+}
+
+// 加油门「轰~」:踩下油门 / 按增压那一下的加速爆发声——锯齿引擎音上扬(转速攀升) + 低八度铺底
+// + 涡轮气浪向上扫频。持续低鸣由上面的 engine 负责,这一记是「踩下去」的推背听感。
+// power: 1 普通给油 / ~1.7 增压(更长更亮)。muted 时静默;汇入 masterGain → 随音乐一键静音联动。
+export function playAccelRev(power = 1) {
+  const c = ensure();
+  if (!c || !masterGain || muted) return;
+  const t0 = c.currentTime;
+  const p = Math.max(0.6, Math.min(2, power));
+  const dur = 0.46 * p;
+  // 引擎吼:锯齿基频低→高,经一个随之打开的带 Q 低通 → 像转速一路攀升
+  const osc = c.createOscillator();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(70, t0);
+  osc.frequency.exponentialRampToValueAtTime(150 + 70 * p, t0 + dur);
+  const filt = c.createBiquadFilter();
+  filt.type = "lowpass";
+  filt.Q.value = 6;
+  filt.frequency.setValueAtTime(360, t0);
+  filt.frequency.exponentialRampToValueAtTime(1300 + 700 * p, t0 + dur * 0.82);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.16 * p, t0 + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(filt).connect(g).connect(masterGain);
+  // 低八度铺底,加厚那一「轰」
+  const sub = c.createOscillator();
+  sub.type = "triangle";
+  sub.frequency.setValueAtTime(35, t0);
+  sub.frequency.exponentialRampToValueAtTime(74 + 34 * p, t0 + dur);
+  const gs = c.createGain();
+  gs.gain.setValueAtTime(0.0001, t0);
+  gs.gain.exponentialRampToValueAtTime(0.1 * p, t0 + 0.05);
+  gs.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  sub.connect(gs).connect(masterGain);
+  osc.start(t0); sub.start(t0);
+  const stop = t0 + dur + 0.05;
+  osc.stop(stop); sub.stop(stop);
+  // 涡轮气浪:滤波噪声向上扫,给加速一层空气掠过的「咻」(noiseBurst 为下方函数声明,已 hoist)
+  noiseBurst({ duration: dur * 0.9, filterFreq: 500, filterTo: 2400 + 900 * p, gain: 0.06 * p, q: 0.9 });
 }
 
 // 起跳音：卡通「Q 弹 boing」——弹性上扬的腾起音，贴合治愈小岛的可爱基调。频率走一条「欠阻尼

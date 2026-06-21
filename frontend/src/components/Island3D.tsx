@@ -44,24 +44,59 @@ const GLB_Y = 0.3; // 岛坐在海里：沙滩/草地清楚高出水线（不再
 const USE_GLB_ISLAND = typeof location === "undefined" || !location.search.includes("island=proc");
 useGLTF.preload(GLB_ISLAND_URL);
 
-// 渐变天空：模块级工厂持有 16×256 canvas + CanvasTexture，暴露 draw/dispose。
+// 抖动噪声瓦片(模块级构建一次):以 overlay 低透叠在天色渐变上,打散 8-bit 量化造成的色带(banding)。
+// 天色每帧重绘,故用一次性瓦片 + 每帧 pattern fillRect(无 getImageData readback,开销低)。
+let _skyNoise: HTMLCanvasElement | null = null;
+function skyNoiseTile(): HTMLCanvasElement {
+  if (_skyNoise) return _skyNoise;
+  const n = document.createElement("canvas");
+  n.width = n.height = 64;
+  const nx = n.getContext("2d");
+  if (nx) {
+    const id = nx.createImageData(64, 64);
+    let s = 0x9e3779b9 >>> 0;
+    for (let i = 0; i < id.data.length; i += 4) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      const v = 123 + (s / 4294967296) * 10; // 灰噪声(123~133,紧贴中性灰 128):overlay 在暗夜空上会放大,故收紧到极轻,等效 ≈±3/255
+      id.data[i] = id.data[i + 1] = id.data[i + 2] = v;
+      id.data[i + 3] = 255;
+    }
+    nx.putImageData(id, 0, 0);
+  }
+  _skyNoise = n;
+  return n;
+}
+
+// 渐变天空：模块级工厂持有 canvas + CanvasTexture，暴露 draw/dispose。
 // 命令式写入（含 needsUpdate）封在普通函数里，绕开 react-hooks 对组件内变异的规则。
 function createSkyGradient() {
+  const W = 16, H = 512; // 加高:vertical 渐变拉伸到全天空时减少插值色带
   const canvas = document.createElement("canvas");
-  canvas.width = 16;
-  canvas.height = 256;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext("2d");
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  let pattern: CanvasPattern | null = null;
   const draw = (top: string, mid: string, bottom: string) => {
     if (!ctx) return;
-    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    const g = ctx.createLinearGradient(0, 0, 0, H);
     g.addColorStop(0, top);
     g.addColorStop(0.48, mid);
     g.addColorStop(0.82, bottom);
     g.addColorStop(1, bottom);
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 16, 256);
+    ctx.fillRect(0, 0, W, H);
+    // 叠抖动:打散量化色带(banding)。瓦片构建一次,这里只做廉价的 pattern fillRect。
+    if (!pattern) pattern = ctx.createPattern(skyNoiseTile(), "repeat");
+    if (pattern) {
+      ctx.globalAlpha = 0.6;
+      ctx.globalCompositeOperation = "overlay";
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+    }
     texture.needsUpdate = true;
   };
   return { texture, draw, dispose: () => texture.dispose() };

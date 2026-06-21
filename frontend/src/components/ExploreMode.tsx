@@ -11,8 +11,10 @@ import { requestCompanionChat, fetchTtsVoices, type TtsVoice } from "../lib/api"
 import { hash2, islandHeight, valueNoise, smoothstep01, ISLAND_RADIUS, ISLAND_SIZE } from "../lib/islandTerrain";
 import { makeRng } from "../lib/deterministic";
 import { Aurora, MeteorShower, NightMotes, MilkyWay } from "./SkyFx";
-import { play as playSfx, chimeNote, startEngine, stopEngine, setEngineSpeed, playJump, playLand, playFluteNote, playCompanionSong, playLanternRelease, playLanternMelody, playFireworkLaunch, playFireworkBurst } from "../lib/sfx";
+import { play as playSfx, chimeNote, startEngine, stopEngine, setEngineSpeed, playAccelRev, playJump, playLand, playFluteNote, playCompanionSong, playLanternRelease, playLanternMelody, playFireworkLaunch, playFireworkBurst } from "../lib/sfx";
+import { emitCompanionEvent, pickChatterLine, subscribeCompanionEvents, type CompanionChatterEvent } from "../lib/companionChatter";
 import { playSample } from "../lib/samples";
+import { playLanternCue, prewarmLanternCues } from "../lib/lanternMusic";
 import { setLocationZone, stopLocationAmbience, type LocationZone } from "../lib/locationAmbience";
 import { getPerfTier } from "../lib/perfTier";
 import type { PerfTier } from "../lib/perfTier";
@@ -403,6 +405,8 @@ interface CompanionActionSignal {
   nonce: number;
 }
 
+const CHATTER_MODE_KEY = "xinyu.companionChatter.v1"; // 「主动陪聊」开关持久化
+
 const WALK_RADIUS = ISLAND_RADIUS * EXS * 0.74; // 可走范围(留出海岸,随大岛自动放大)
 // 中心村落 / 岛上的固定设施与地标(坐标须与 Town/Village 的 GltfProp 摆放一致)。
 // 散落树木与民居都避开它们 → 杜绝「树穿过凉亭/神社/灯塔、房子叠在水井上」之类的穿模。
@@ -752,6 +756,7 @@ function Companion({
   emotion,
   singing,
   sleeping,
+  chatter,
   onInteract,
 }: {
   posRef: React.RefObject<THREE.Vector3>;
@@ -759,6 +764,7 @@ function Companion({
   emotion?: string;
   singing?: boolean;
   sleeping?: boolean;
+  chatter?: { text: string; nonce: number } | null;
   onInteract?: () => void;
 }) {
   const { scene, animations } = useGLTF(MODELS.companion);
@@ -888,6 +894,17 @@ function Companion({
       lightRef.current.color.lerp(tmpColor, Math.min(1, dt * 4));
     }
   });
+  // 「主动陪聊」头顶气泡：收到新的一句(nonce 变化)就显示，几秒后自动收起。
+  const [bubble, setBubble] = useState<string | null>(null);
+  const bubbleTimer = useRef<number | null>(null);
+  useEffect(() => {
+    if (!chatter || !chatter.text) return;
+    setBubble(chatter.text);
+    if (bubbleTimer.current) window.clearTimeout(bubbleTimer.current);
+    bubbleTimer.current = window.setTimeout(() => setBubble(null), 4800);
+    return () => { if (bubbleTimer.current) window.clearTimeout(bubbleTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatter?.nonce]);
   return (
     <group
       ref={ref}
@@ -899,6 +916,30 @@ function Companion({
     >
       <primitive object={obj} scale={0.24} />
       <pointLight ref={lightRef} color="#ffe2a0" intensity={1.4} distance={4.2} decay={1.6} />
+      {bubble && (
+        <Html position={[0, 1.35, 0]} center distanceFactor={9} zIndexRange={[40, 0]} style={{ pointerEvents: "none" }} prepend>
+          <div
+            style={{
+              width: 168,
+              textAlign: "center",
+              whiteSpace: "normal",
+              transform: "translateY(-50%)",
+              background: "rgba(12,22,30,0.7)",
+              backdropFilter: "blur(6px)",
+              WebkitBackdropFilter: "blur(6px)",
+              color: "#fdf4e3",
+              font: '500 13px/1.5 -apple-system, system-ui, "PingFang SC", sans-serif',
+              padding: "7px 13px",
+              borderRadius: 13,
+              border: "1px solid rgba(255,226,160,0.34)",
+              boxShadow: "0 6px 18px rgba(0,0,0,0.3)",
+            }}
+          >
+            <span style={{ opacity: 0.66, marginRight: 4 }}>✦</span>
+            {bubble}
+          </div>
+        </Html>
+      )}
     </group>
   );
 }
@@ -1144,8 +1185,8 @@ function DrivableCar({ grad }: { grad: THREE.Texture }) {
     const gasOn = want === 1;
     const gasEdge = gasOn && !prevGas.current;
     const boostEdge = boosting && !prevBoost.current;
-    if (gasEdge) burst.current = Math.max(burst.current, 0.8);
-    if (boostEdge) burst.current = 1.3;
+    if (gasEdge) { burst.current = Math.max(burst.current, 0.8); playAccelRev(1); } // 踩油门「轰」一下
+    if (boostEdge) { burst.current = 1.3; playAccelRev(1.7); emitCompanionEvent("drive_boost"); } // 增压:加速声更猛 + 精灵搭话
     prevGas.current = gasOn;
     prevBoost.current = boosting;
     burst.current = Math.max(0, burst.current - dt * 4.5);
@@ -1972,6 +2013,7 @@ function Player({
       vy.current = JUMP_V; airborne.current = true;
       // 起跳音:合成「Q 弹 boing」(playJump,弹性上扬的腾起音),贴合可爱治愈基调。一次性消费,天然不连响。
       playJump();
+      emitCompanionEvent("jump"); // 精灵「主动陪聊」:跳一下它可能搭句话(由 ExploreMode 套节流)
     }
     if (input.jump) input.jump = false; // 一次性消费
     if (input.wave) { waveT.current = 1.5; input.wave = false; } // 招手:仅 F 键 / ✋ 按钮触发(缓起缓落更暖)
@@ -2000,7 +2042,7 @@ function Player({
     prevNear.current = near; curiousT.current = Math.max(0, curiousT.current - dt);
     const settled = !airborne.current && gait < 0.06 && waveT.current <= 0 && cheerT.current <= 0 && fluteT.current <= 0;
     idleT.current = settled ? idleT.current + dt : 0;             // 连续待机计时
-    sit.current += ((idleT.current > 7 ? 1 : 0) - sit.current) * Math.min(1, dt * 2.5); // 久站→坐下(缓入缓出)
+    sit.current += ((idleT.current > 7 ? 1 : 0) - sit.current) * Math.min(1, dt * 2.0); // 久站→坐下(更缓地落座/起身,缓入缓出)
     if (airborne.current) {
       vy.current -= GRAVITY * dt;
       pos.y += vy.current * dt;
@@ -2046,11 +2088,12 @@ function Player({
     g.rotation.order = "YXZ"; // 朝向(y)→前倾(x)→侧倾(z) 在朝向坐标系内复合
     const stepPitch = Math.sin(walkPhase.current * 2) * 0.044 * gait; // 每步前后微颠(像点头般的步态弹性,更足)
     const greetNod = waveT.current > 0 && !moving ? Math.sin(s.clock.elapsedTime * 4.4) * 0.05 : 0; // 招手时轻轻点头致意
-    g.rotation.x += (0.12 * gait + stepPitch + greetNod - sit.current * 0.12 - g.rotation.x) * Math.min(1, dt * 8); // 移动前倾 / 坐下后仰 / 招手点头
+    g.rotation.x += (0.12 * gait + stepPitch + greetNod - sit.current * 0.06 - g.rotation.x) * Math.min(1, dt * 8); // 移动前倾 / 坐下轻松后倚 / 招手点头
     const sway = Math.sin(walkPhase.current) * 0.088 * gait; // 走路重心左右轻移(自然摆胯,更明显)
     const greetTilt = waveT.current > 0 && !moving ? 0.11 : 0; // 招手时头/身向举手侧微倾,更亲切
+    const seatLean = sit.current > 0.01 ? Math.sin(s.clock.elapsedTime * 0.9) * 0.03 * sit.current : 0; // 坐着时上身随重心极缓微晃,有呼吸感
     const bank = Math.max(-0.2, Math.min(0.2, dy * 0.5));
-    g.rotation.z += (bank + sway + greetTilt - g.rotation.z) * Math.min(1, dt * 6); // 转身侧倾 + 走路摆胯 + 招手微倾
+    g.rotation.z += (bank + sway + greetTilt + seatLean - g.rotation.z) * Math.min(1, dt * 6); // 转身侧倾 + 走路摆胯 + 招手微倾 + 坐姿微晃
 
     // 四肢:先算目标姿态,再阻尼平滑到位(消除直接赋值的僵硬,带自然跟随/缓动)
     // Lx/Rx=大腿(髋摆) · KLx/KRx=小腿(屈膝,正值向后弯,Blender 校准) · ALx/ARx=大臂(肩摆)+ALz/ARz外展 · ELx/ERx=小臂(屈肘,负值前屈)
@@ -2069,14 +2112,14 @@ function Player({
     } else if (gait > 0.12) {                                       // 走/跑:速度越快步幅越大
       const sw = Math.sin(walkPhase.current) * (0.6 + 0.42 * gait) * gait; // 步幅更大,迈腿更明显
       Lx = sw; Rx = -sw; ALx = 0.14 - sw * 0.72; ARx = 0.14 + sw * 0.72;   // 摆臂对侧于腿,前后甩动明显
-      ALz = 0.05 + 0.05 * gait; ARz = -(0.05 + 0.05 * gait);       // 摆臂时手臂微外展,不蹭身体
+      ALz = 0.06 + 0.05 * gait; ARz = -(0.06 + 0.05 * gait);       // 摆臂时手臂微外展,不蹭身体
       // 屈膝:摆动腿(前摆抬脚)膝盖弯起、支撑腿(后蹬)近伸直 → 告别剪刀直棍。相位 +0.5 让弯曲略提前,像真实抬脚。
-      const kneeAmp = 0.55 + 0.5 * gait;
-      KLx = 0.1 * gait + Math.max(0, -Math.sin(walkPhase.current + 0.5)) * kneeAmp;
-      KRx = 0.1 * gait + Math.max(0, Math.sin(walkPhase.current + 0.5)) * kneeAmp;
-      // 屈肘:手臂前摆时小臂多收一点(自然甩臂),后摆时伸展
-      ELx = -0.32 - Math.max(0, 0.14 - ALx) * 0.5;
-      ERx = -0.32 - Math.max(0, 0.14 - ARx) * 0.5;
+      const kneeAmp = 0.6 + 0.5 * gait;
+      KLx = 0.14 * gait + Math.max(0, -Math.sin(walkPhase.current + 0.5)) * kneeAmp;
+      KRx = 0.14 * gait + Math.max(0, Math.sin(walkPhase.current + 0.5)) * kneeAmp;
+      // 屈肘:手臂常带放松的弯(不再直棍),前摆时小臂再多收一点 → 自然甩臂
+      ELx = -0.5 - Math.max(0, 0.14 - ALx) * 0.7;
+      ERx = -0.5 - Math.max(0, 0.14 - ARx) * 0.7;
     } else {                                                        // 待机:轻摆 + 每 ~6.5s 抬提灯端详
       const sway = Math.sin(tw * 1.1) * 0.05;
       const gp = tw % 6.5; const lift = gp < 1.6 ? Math.sin((gp / 1.6) * Math.PI) : 0;
@@ -2085,18 +2128,22 @@ function Player({
       KLx = 0.03 + Math.sin(tw * 1.6) * 0.015; KRx = 0.03 - Math.sin(tw * 1.6) * 0.015; // 膝随呼吸极轻屈伸,挺拔不僵
       ELx = -0.28; ERx = -0.28 - lift * 0.55;                        // 抬灯端详那侧屈肘,把灯举近脸前
     }
-    if (sit.current > 0.01) {                                       // 久站坐下:大腿前抬 + 小腿垂下(屈膝) + 手搭膝
+    if (sit.current > 0.01) {                                       // 久站坐下:屈膝抱坐 + 双手松搭膝上 + 极缓重心微晃 → 自然惬意,不僵成雕像
       const sv = sit.current;
-      Lx = Lx * (1 - sv) + 1.45 * sv; Rx = Rx * (1 - sv) + 1.45 * sv;
-      KLx = KLx * (1 - sv) + 0.95 * sv; KRx = KRx * (1 - sv) + 0.95 * sv; // 小腿自然垂落
-      ALx = ALx * (1 - sv) + 0.4 * sv; ARx = ARx * (1 - sv) + 0.4 * sv;
-      ALz = ALz * (1 - sv) + 0.12 * sv; ARz = ARz * (1 - sv) - 0.12 * sv;
-      ELx = ELx * (1 - sv) - 0.55 * sv; ERx = ERx * (1 - sv) - 0.55 * sv; // 手搭膝,肘弯
+      const seatSway = Math.sin(tw * 0.9) * 0.045 * sv;             // 坐着时缓缓换重心(左右腿/手臂反相微动)
+      Lx = Lx * (1 - sv) + (1.4 + seatSway) * sv; Rx = Rx * (1 - sv) + (1.5 - seatSway) * sv; // 两腿略不对称更像真人
+      KLx = KLx * (1 - sv) + 1.0 * sv; KRx = KRx * (1 - sv) + 0.9 * sv; // 小腿自然垂落(左右略不同)
+      ALx = ALx * (1 - sv) + (0.42 + seatSway) * sv; ARx = ARx * (1 - sv) + (0.42 - seatSway) * sv;
+      ALz = ALz * (1 - sv) + 0.14 * sv; ARz = ARz * (1 - sv) - 0.14 * sv; // 手臂内收搭膝
+      ELx = ELx * (1 - sv) - 0.6 * sv; ERx = ERx * (1 - sv) - 0.6 * sv; // 手松松搭在膝上,肘自然弯
     }
-    if (waveT.current > 0) {                                        // 招手(F / ✋):左手举到头侧外摆来回挥,右手垂后平衡
-      const env = Math.max(0, Math.min((1.5 - waveT.current) * 4, waveT.current * 5, 1)); // 缓起~0.2s + 缓落~0.25s
-      ALx = -2.0; ALz = (0.3 + Math.sin(tw * 9.2) * 0.5) * env; ARx = 0.3; ARz = -0.05;
-      ELx = -0.55 * env - 0.15; ERx = -0.22;                         // 举手那侧屈肘,手在头侧挥得自然
+    if (waveT.current > 0) {                                        // 招手(F / ✋):举手到头侧,主要靠肘/腕来回挥、手臂随之轻摆 → 暖而不僵
+      const env = Math.max(0, Math.min((1.5 - waveT.current) * 3.6, waveT.current * 5, 1)); // 缓起~0.28s + 缓落~0.2s
+      const w = Math.sin(tw * 7.2);                                 // 挥手节拍(~1.15Hz,温暖不机械,告别旧的 9.2 急抖)
+      ALx = -1.85 * env;                                            // 大臂随 env 缓缓抬到头侧(不再瞬间弹到位)
+      ALz = (0.5 + w * 0.22) * env;                                 // 向外打开 + 随挥轻摆(辅助,主挥在肘)
+      ELx = -0.2 + (-0.95 + w * 0.55) * env;                        // 小臂折起把手举到头侧,肘/腕来回甩(主挥在这,幅度真实)
+      ARx = 0.24; ARz = -0.07; ERx = -0.3;                          // 另一手自然垂落、略屈肘平衡
     }
     if (cheerT.current > 0) { ALx = -2.3; ARx = -2.3; ALz = 0.18; ARz = -0.18; ELx = -0.5; ERx = -0.5; } // 拾取欢呼:双手上举略张+屈肘
     if (fluteT.current > 0) {                                       // 吹笛:双臂抬到嘴前“持笛”,屈肘让手在嘴前会合,指尖随旋律轻颤
@@ -2106,6 +2153,7 @@ function Player({
       ELx = -0.6 - trill; ERx = -0.6 + trill;                       // 屈肘让前臂折回,持笛更像样
     }
     const kd = Math.min(1, dt * 13);                                // 阻尼系数(平滑跟随,告别僵硬)
+    const kdWave = waveT.current > 0 ? Math.min(1, dt * 24) : kd;   // 招手侧手臂跟得更紧 → ~1.15Hz 的挥动不被低通阻尼磨平(原 9.2 急抖正是被磨平才显僵)
     if (legL.current) legL.current.rotation.x += (Lx - legL.current.rotation.x) * kd;
     if (legR.current) legR.current.rotation.x += (Rx - legR.current.rotation.x) * kd;
     if (shinL.current) shinL.current.rotation.x += (KLx - shinL.current.rotation.x) * kd; // 小腿屈膝
@@ -2115,11 +2163,11 @@ function Player({
       armR.current.rotation.z += (ARz - armR.current.rotation.z) * kd;
     }
     if (armL.current) {
-      armL.current.rotation.x += (ALx - armL.current.rotation.x) * kd;
-      armL.current.rotation.z += (ALz - armL.current.rotation.z) * kd;
+      armL.current.rotation.x += (ALx - armL.current.rotation.x) * kdWave;
+      armL.current.rotation.z += (ALz - armL.current.rotation.z) * kdWave;
     }
     if (foreArmR.current) foreArmR.current.rotation.x += (ERx - foreArmR.current.rotation.x) * kd; // 小臂屈肘
-    if (foreArmL.current) foreArmL.current.rotation.x += (ELx - foreArmL.current.rotation.x) * kd;
+    if (foreArmL.current) foreArmL.current.rotation.x += (ELx - foreArmL.current.rotation.x) * kdWave;
     if (cape.current) {  // 披风随动:走动后摆 + 腾空上扬 + 轻微待机飘
       const t = s.clock.elapsedTime;
       const fly = airborne.current ? 0.4 : 0;
@@ -2588,12 +2636,18 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
     const M = 96;
     for (let i = 0; i < M; i++) {
       const t = i / (M - 1);
-      out.push({ x: (t - 0.5) * 2 * L, z: Math.sin(t * Math.PI * 1.4) * L * 0.32, rot: Math.cos(t * Math.PI * 1.4) * 0.5 });
+      const x = (t - 0.5) * 2 * L;
+      const z = Math.sin(t * Math.PI * 1.4) * L * 0.32;
+      if (onLandmarkPad(x, z)) continue; // 方砖步道不铺上地标台坪/裙边(否则平砖按裸地形高散落在抬升台坡上 → 半埋/悬空穿插)
+      out.push({ x, z, rot: Math.cos(t * Math.PI * 1.4) * 0.5 });
     }
     const B = 22;
     for (let i = 0; i < B; i++) {
       const t = i / (B - 1);
-      out.push({ x: Math.sin(t * Math.PI) * 2.0 - 1.0, z: (t - 0.5) * 2 * (L * 0.7), rot: Math.PI / 2 + Math.cos(t * Math.PI) * 0.4 });
+      const x = Math.sin(t * Math.PI) * 2.0 - 1.0;
+      const z = (t - 0.5) * 2 * (L * 0.7);
+      if (onLandmarkPad(x, z)) continue; // 纵向支路同理(它纵穿浴场/街区台坪)
+      out.push({ x, z, rot: Math.PI / 2 + Math.cos(t * Math.PI) * 0.4 });
     }
     return out;
   }, []);
@@ -2625,25 +2679,42 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
     const N = 18;
     for (let i = 0; i < N; i++) {
       const t = i / (N - 1);
-      out.push({ x: (t - 0.5) * 2 * L, z: Math.sin(t * Math.PI * 1.4) * L * 0.32 + 2.2 });
+      const x = (t - 0.5) * 2 * L;
+      const z = Math.sin(t * Math.PI * 1.4) * L * 0.32 + 2.2;
+      if (onLandmarkPad(x, z)) continue; // 杆不立在地标地坪/裙边上(否则埋进被抬升的坪里、电线横穿台顶 → 穿模)
+      out.push({ x, z });
     }
     return out;
   }, []);
 
-  // 电线(逐段:中点 + 长度 + 朝向四元数)
+  // 电线(每档再细分多段:杆顶间走直线下垂,遇土丘/地坪则随地抬起 → 永不穿地、不横切台顶)
   const wires = useMemo(() => {
     const out: { pos: [number, number, number]; len: number; quat: [number, number, number, number] }[] = [];
+    const up = new THREE.Vector3(0, 1, 0);
+    const SEG = 5;         // 每档分段数(够贴合起伏,绘制量仍很小)
+    const TOP = 2.3;       // 线在杆顶的离地高
+    const MIN_CLEAR = 1.4; // 跨档离地最小净空(翻过土丘也不入地)
     for (let i = 0; i < poleSpots.length - 1; i++) {
       const a = poleSpots[i];
       const b = poleSpots[i + 1];
-      const ay = exGroundY(a.x, a.z) + 2.3;
-      const by = exGroundY(b.x, b.z) + 2.3;
-      const dx = b.x - a.x;
-      const dy = by - ay;
-      const dz = b.z - a.z;
-      const len = Math.hypot(dx, dy, dz);
-      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
-      out.push({ pos: [(a.x + b.x) / 2, (ay + by) / 2, (a.z + b.z) / 2], len, quat: [q.x, q.y, q.z, q.w] });
+      // 整档若有任一处掠过地标地坪 → 不连这档(否则线横穿被抬升的台顶);相邻杆被剔除后留下的大跨档也由此挡掉
+      let skip = false;
+      for (let s = 0; s <= SEG; s++) { const t = s / SEG; if (onLandmarkPad(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)) { skip = true; break; } }
+      if (skip) continue;
+      const ay = exGroundY(a.x, a.z) + TOP;
+      const by = exGroundY(b.x, b.z) + TOP;
+      let px = a.x, py = ay, pz = a.z;
+      for (let s = 1; s <= SEG; s++) {
+        const t = s / SEG;
+        const x = a.x + (b.x - a.x) * t;
+        const z = a.z + (b.z - a.z) * t;
+        const y = Math.max(ay + (by - ay) * t, exGroundY(x, z) + MIN_CLEAR); // 直线垂落,遇地形隆起则抬起
+        const dx = x - px, dy = y - py, dz = z - pz;
+        const len = Math.hypot(dx, dy, dz);
+        const q = new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(dx, dy, dz).normalize());
+        out.push({ pos: [(px + x) / 2, (py + y) / 2, (pz + z) / 2], len, quat: [q.x, q.y, q.z, q.w] });
+        px = x; py = y; pz = z;
+      }
     }
     return out;
   }, [poleSpots]);
@@ -2655,7 +2726,10 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
     const N = 15;
     for (let i = 0; i < N; i++) {
       const t = i / (N - 1);
-      out.push({ x: (t - 0.5) * 2 * L, z: Math.sin(t * Math.PI * 1.4) * L * 0.32 - 2.0 });
+      const x = (t - 0.5) * 2 * L;
+      const z = Math.sin(t * Math.PI * 1.4) * L * 0.32 - 2.0;
+      if (onLandmarkPad(x, z)) continue; // 路灯同理不立在地标坪上(否则灯柱埋进抬升的台坪 → 穿模)
+      out.push({ x, z });
     }
     return out;
   }, []);
@@ -2955,6 +3029,7 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
           const lz = (iz - (nz - 1) / 2) * sp;
           const wx = f.x + lx * c - lz * s;
           const wz = f.z + lx * s + lz * c;
+          if (onLandmarkPad(wx, wz)) continue; // 作物不长在地标地坪/裙边上(否则沉进/穿出被抬升的台坡)
           out.push({ p: [wx, exGroundY(wx, wz) + 0.27, wz], r: [0, f.rot, 0] });
         }
       }
@@ -2967,6 +3042,7 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       for (let k = 0; k < 3; k++) {
         const wx = f.x + (hash2(f.x + k, 1.3) - 0.5) * f.w * 1.4;
         const wz = f.z + (hash2(f.z + k, 2.7) - 0.5) * f.d * 1.4;
+        if (onLandmarkPad(wx, wz)) continue; // 干草垛同样避开地标地坪/裙边
         out.push({ p: [wx, exGroundY(wx, wz), wz], s: 0.8 + hash2(k, 3.1) * 0.5 });
       }
     }
@@ -5677,6 +5753,7 @@ function ExploreScene({
   companionAction,
   companionSinging,
   companionSleeping,
+  companionChatter,
   onCompanionInteract,
   character,
   expression,
@@ -5722,6 +5799,7 @@ function ExploreScene({
   companionAction: CompanionActionSignal | null;
   companionSinging?: boolean;
   companionSleeping?: boolean;
+  companionChatter?: { text: string; nonce: number } | null;
   onCompanionInteract?: () => void;
   character: CharKind;
   expression: string;
@@ -5761,17 +5839,36 @@ function ExploreScene({
   useEffect(() => () => sketch.dispose(), [sketch]);
   // 渐变天空作 scene.background(放进 3D,否则 EffectComposer 会把空域清成黑)
   const skyTex = useMemo(() => {
+    const W = 64, H = 512; // 提分辨率:低分辨率渐变拉伸到全天空会出明显色带(banding)
     const c = document.createElement("canvas");
-    c.width = 16;
-    c.height = 256;
+    c.width = W;
+    c.height = H;
     const ctx = c.getContext("2d");
     if (ctx) {
-      const grd = ctx.createLinearGradient(0, 0, 0, 256);
-      grd.addColorStop(0, forceNight ? "#070920" : visual.skyTop);
-      grd.addColorStop(0.5, forceNight ? "#221a52" : visual.skyMid);
-      grd.addColorStop(1, forceNight ? "#48395f" : visual.skyBottom);
+      const grd = ctx.createLinearGradient(0, 0, 0, H);
+      if (forceNight) {
+        // 夜空:顶端深邃夜蓝 → 中段紫 → 地平线暖紫,多停靠点过渡更润
+        grd.addColorStop(0, "#05071a");
+        grd.addColorStop(0.4, "#181643");
+        grd.addColorStop(0.72, "#312a5a");
+        grd.addColorStop(1, "#4a3b60");
+      } else {
+        grd.addColorStop(0, visual.skyTop);
+        grd.addColorStop(0.5, visual.skyMid);
+        grd.addColorStop(1, visual.skyBottom);
+      }
       ctx.fillStyle = grd;
-      ctx.fillRect(0, 0, 16, 256);
+      ctx.fillRect(0, 0, W, H);
+      // 抖动:打散 8-bit 量化造成的色带(banding 根因),夜空尤其明显。确定性噪声(自带 LCG),不在渲染期用 Math.random。
+      const img = ctx.getImageData(0, 0, W, H);
+      const d = img.data;
+      let seed = forceNight ? 9173 : 1337;
+      for (let i = 0; i < d.length; i += 4) {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        const n = (seed / 4294967296 - 0.5) * 5; // ±2.5
+        d[i] += n; d[i + 1] += n; d[i + 2] += n;
+      }
+      ctx.putImageData(img, 0, 0);
     }
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
@@ -5805,9 +5902,9 @@ function ExploreScene({
     <>
       <primitive object={skyTex} attach="background" />
       <fog attach="fog" args={[forceNight ? 0x1a2440 : fogHex, 230, 1060]} />
-      <ambientLight intensity={forceNight ? 0.36 : 0.75} />
-      <hemisphereLight args={[new THREE.Color(forceNight ? "#2a3a66" : visual.skyMid).getHex(), new THREE.Color(visual.sea).getHex(), forceNight ? 0.32 : 0.6]} />
-      <directionalLight position={[5, 8, 3]} intensity={forceNight ? 0.55 : 1.2} color={forceNight ? "#aab9e6" : visual.celestial} />
+      <ambientLight intensity={forceNight ? 0.30 : 0.75} />
+      <hemisphereLight args={[new THREE.Color(forceNight ? "#222c54" : visual.skyMid).getHex(), new THREE.Color(visual.sea).getHex(), forceNight ? 0.30 : 0.6]} />
+      <directionalLight position={[5, 8, 3]} intensity={forceNight ? 0.46 : 1.2} color={forceNight ? "#aab9e6" : visual.celestial} />
       {isNight && <Stars radius={340} depth={80} count={4200} factor={4.5} saturation={0} fade speed={0.4} />}
       {isNight && <MilkyWay />}
       {isNight && <BrightStars />}
@@ -5852,7 +5949,7 @@ function ExploreScene({
       </mesh>
 
       <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
-      <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} onInteract={onCompanionInteract} />
+      <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} />
       <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={(id) => { nearRef.current = id; onNear(id); }} />
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
@@ -5994,11 +6091,13 @@ function CompanionPanel({
   talkText,
   busy,
   autoVoice,
+  chatterMode,
   voices,
   ttsConfigured,
   voiceId,
   previewVoice,
   onToggleAutoVoice,
+  onToggleChatter,
   onPickVoice,
   onPreviewVoice,
   onTalkTextChange,
@@ -6022,11 +6121,13 @@ function CompanionPanel({
   talkText: string;
   busy: boolean;
   autoVoice: boolean;
+  chatterMode: boolean;
   voices: TtsVoice[];
   ttsConfigured: boolean | null;
   voiceId: string | null;
   previewVoice: string | null;
   onToggleAutoVoice: () => void;
+  onToggleChatter: () => void;
   onPickVoice: (id: string) => void;
   onPreviewVoice: (id: string) => void;
   onTalkTextChange: (text: string) => void;
@@ -6076,6 +6177,17 @@ function CompanionPanel({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleChatter}
+            className="chip"
+            aria-pressed={chatterMode}
+            style={chatterMode ? { background: "rgba(255,226,160,0.22)", borderColor: "rgba(255,226,160,0.5)" } : undefined}
+            aria-label={chatterMode ? "关闭主动陪聊" : "开启主动陪聊"}
+            title={chatterMode ? "精灵会随你的动作主动搭话（点此关闭）" : "让精灵随你的动作主动和你说说话（点此开启）"}
+          >
+            {chatterMode ? "💬 陪聊·开" : "💬 陪聊"}
+          </button>
           <button
             type="button"
             onClick={onToggleAutoVoice}
@@ -6311,7 +6423,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const beachEggs = [crabFound, turtleFound, treasureFound].filter(Boolean).length;
   // 🏝️ 岛屿奇遇:统一收集集合(跨次保存),HUD 聚合「奇遇 N/总」
   const [discoveries, setDiscoveries] = useState<Set<string>>(() => { try { return new Set<string>(JSON.parse(localStorage.getItem("xy_discoveries") || "[]")); } catch { return new Set(); } });
-  const discover = (k: string) => setDiscoveries((s) => { if (s.has(k)) return s; const n = new Set(s); n.add(k); try { localStorage.setItem("xy_discoveries", JSON.stringify([...n])); } catch { /* ignore */ } return n; });
+  const discover = (k: string) => setDiscoveries((s) => { if (s.has(k)) return s; const n = new Set(s); n.add(k); try { localStorage.setItem("xy_discoveries", JSON.stringify([...n])); } catch { /* ignore */ } emitCompanionEvent("discover"); return n; });
   // ⛩️ 可互动仪式:就近点 + 写信模态(邮筒 / 寄给未来)
   const [nearInteract, setNearInteract] = useState<{ kind: string; label: string } | null>(null);
   const [mailOpen, setMailOpen] = useState(false);
@@ -6346,6 +6458,9 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [companionSleeping, setCompanionSleeping] = useState(false); // 它正打瞌睡(下沉低头+灯转暗),叫醒才醒
   const singTimer = useRef<number | null>(null);
   const [autoVoice, setAutoVoice] = useState<boolean>(() => loadAutoVoice());
+  // 「主动陪聊」模式：开启后精灵会按玩家操作(跳跃/开车/种花/发现奇遇…)主动冒一句话(头顶气泡 + 可选语音)。
+  const [chatterMode, setChatterMode] = useState<boolean>(() => { try { return localStorage.getItem(CHATTER_MODE_KEY) === "1"; } catch { return false; } });
+  const [companionChatter, setCompanionChatter] = useState<{ text: string; nonce: number } | null>(null); // 当前头顶气泡
   const [companionSpeaking, setCompanionSpeaking] = useState(false);
   // 音色：ttsVoices 为后端可选清单（未配置云端 TTS 时为空 → 用系统语音，UI 给降级提示）；
   // voiceId 为用户当前选择（null = 后端默认音色）；previewVoice 为正在试听的那个 id。
@@ -6419,6 +6534,57 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       }
       return next;
     });
+  };
+  // ── 精灵「主动陪聊」：按玩家操作主动冒一句（头顶气泡 + 可选语音），套节流防刷屏 ──
+  const chatterModeRef = useRef(chatterMode);
+  useEffect(() => { chatterModeRef.current = chatterMode; }, [chatterMode]);
+  const companionOpenRef = useRef(companionOpen);
+  useEffect(() => { companionOpenRef.current = companionOpen; }, [companionOpen]);
+  const forestDriveChatRef = useRef(forestDrive);
+  useEffect(() => { forestDriveChatRef.current = forestDrive; }, [forestDrive]);
+  const lastChatterAtRef = useRef(0);
+  const lastChatterLineRef = useRef("");
+  const sayChatterRef = useRef<(e: CompanionChatterEvent) => void>(() => {});
+  // 每次渲染刷新实现，让它始终闭包到最新的 emotion / voiceId / autoVoice
+  useEffect(() => {
+    sayChatterRef.current = (event: CompanionChatterEvent) => {
+      if (!chatterModeRef.current) return;
+      if (forestDriveChatRef.current) return; // 林间土路全屏驾驶时不抢话
+      if (companionOpenRef.current && event !== "greet") return; // 面板开着(在直接对话)时不插嘴，但「刚开启陪聊」的招呼例外
+      const now = Date.now();
+      const gap = event === "idle" ? 16000 : 6500; // 全局节流；闲聊间隔更长
+      if (now - lastChatterAtRef.current < gap) return;
+      const line = pickChatterLine(event, lastChatterLineRef.current);
+      if (!line) return;
+      lastChatterAtRef.current = now;
+      lastChatterLineRef.current = line;
+      setCompanionChatter({ text: line, nonce: now });
+      // 配一个应景的小动作：发现 / 钓到 / 放灯 → 雀跃；其余 → 羁绊微光
+      triggerCompanionAction(event === "discover" || event === "fish_catch" || event === "lantern" ? "Joyful" : "BondGlow");
+      speakCompanion(line); // 语音开关关时自动静默
+    };
+  });
+  // 订阅玩家操作事件总线（只订阅一次；实现走 ref，永远调到最新闭包）
+  useEffect(() => subscribeCompanionEvents((e) => sayChatterRef.current?.(e)), []);
+  // 闲聊：开启陪聊且久无操作时，精灵偶尔轻声碎语一句
+  useEffect(() => {
+    if (!chatterMode) return;
+    const id = window.setInterval(() => {
+      if (Date.now() - lastChatterAtRef.current > 22000) sayChatterRef.current?.("idle");
+    }, 9000);
+    return () => window.clearInterval(id);
+  }, [chatterMode]);
+  const toggleChatterMode = () => {
+    const next = !chatterMode;
+    setChatterMode(next);
+    try { localStorage.setItem(CHATTER_MODE_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+    if (next) {
+      chatterModeRef.current = true; // 立刻生效，别等 effect
+      lastChatterAtRef.current = 0; // 忽略节流，开口打个招呼
+      emitCompanionEvent("greet");
+    } else {
+      setCompanionChatter(null);
+    }
   };
   // 试听某个音色：用一句固定的温柔样例，按该音色读出来。
   const handlePreviewVoice = (id: string) => {
@@ -6528,6 +6694,14 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   useEffect(() => { try { localStorage.setItem("xy_garden", JSON.stringify(flowers.slice(-120))); } catch { /* ignore */ } }, [flowers]);
   useEffect(() => { try { localStorage.setItem("xy_night", night ? "1" : "0"); } catch { /* ignore */ } }, [night]);
   useEffect(() => { try { localStorage.setItem("xy_lanterns", String(lanternCount)); } catch { /* ignore */ } }, [lanternCount]);
+  // 天灯曲目后台预热(idle,避开上岛首帧资源争抢):使首次放飞即可奏真实音乐而非回退合成。
+  useEffect(() => {
+    const w = window as Window & { requestIdleCallback?: (cb: () => void) => number; cancelIdleCallback?: (id: number) => void };
+    let idle = 0; let to: ReturnType<typeof setTimeout> | undefined;
+    if (w.requestIdleCallback) idle = w.requestIdleCallback(() => prewarmLanternCues());
+    else to = setTimeout(() => prewarmLanternCues(), 4000);
+    return () => { if (idle && w.cancelIdleCallback) w.cancelIdleCallback(idle); if (to) clearTimeout(to); };
+  }, []);
   useEffect(() => { try { localStorage.setItem("xy_song", songDone ? "1" : "0"); } catch { /* ignore */ } }, [songDone]);
   useEffect(() => { try { localStorage.setItem("xy_catch", String(catchCount)); } catch { /* ignore */ } }, [catchCount]);
   // 垂钓:抛竿 → 鱼讯(随机 1.6~3.8s) → 未及时收线则溜走;离开水边自动取消
@@ -6540,12 +6714,14 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   useEffect(() => {
     if (!songDone && songProgress >= SONG.length) { setSongDone(true); setSongFlash(true); playSfx("bloom"); const t = setTimeout(() => setSongFlash(false), 4500); return () => clearTimeout(t); }
   }, [songProgress, songDone, SONG.length]);
-  const plantFlower = (x: number, z: number, color: string) => { setFlowers((f) => [...f, { x, z, color, t: Date.now() }].slice(-120)); playSfx("bloom"); };
+  const plantFlower = (x: number, z: number, color: string) => { setFlowers((f) => [...f, { x, z, color, t: Date.now() }].slice(-120)); playSfx("bloom"); emitCompanionEvent("plant"); };
   const releaseLantern = () => {
     lanternLaunch.current += 1;
     setTimeout(() => { lanternLaunch.current += 1; }, 850); // 再补一轮 → 单灯也连放两束烟花
     setLanternCount((c) => c + 1); setLanternOpen(false); setLanternText("");
-    playSfx("reveal"); playLanternRelease(); playLanternMelody(false);
+    playSfx("reveal"); playLanternRelease();
+    if (!playLanternCue("single")) playLanternMelody(false); // 真实曲目优先(Frost Waltz),未就绪/静音回退八音盒合成
+    emitCompanionEvent("lantern");
   };
   // 放飞一片:一次性放出一整片天灯 + 仰头跟拍 + 一连串盛大烟花
   const releaseLanternFlock = () => {
@@ -6553,7 +6729,9 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     lanternFlock.x = px; lanternFlock.z = pz; lanternFlock.v += 1;
     lanternCam.x = px; lanternCam.z = pz; lanternCam.gy = exGroundY(px, pz); lanternCam.t = 0; lanternCam.on = true;
     setLanternCount((c) => c + 18); setMenuOpen(false);
-    playSfx("reveal"); playLanternRelease(); playLanternMelody(true);
+    playSfx("reveal"); playLanternRelease();
+    if (!playLanternCue("flock")) playLanternMelody(true); // 真实曲目优先(Skye Cuillin),未就绪/静音回退八音盒合成
+    emitCompanionEvent("lantern");
     // 连放几轮烟花(每轮触发一次 show)→ 像一场盛大烟火秀;镜头随每轮重置而持续仰望(原 5 轮过载,降为 3 轮 / 弱机 2 轮)
     const rounds = tier === "low" ? 2 : 3;
     for (let k = 0; k < rounds; k++) setTimeout(() => { lanternLaunch.current += 1; }, 350 + k * 620);
@@ -6570,15 +6748,17 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       const c = CATCHES[Math.floor(Math.random() * CATCHES.length)];
       const line = c.lines[Math.floor(Math.random() * c.lines.length)];
       setShownCatch({ icon: c.icon, title: c.title, line }); setCatchCount((n) => n + 1); setFishing("idle"); playSfx(c.icon === "🐟" ? "ripple" : "shell");
+      emitCompanionEvent("fish_catch");
     }
   };
-  const ringChime = (i: number) => { chimeNote(CHIME_FREQS[i]); if (songDone) return; setSongProgress((p) => (i === SONG[p] ? p + 1 : i === SONG[0] ? 1 : 0)); };
+  const ringChime = (i: number) => { chimeNote(CHIME_FREQS[i]); emitCompanionEvent("chime"); if (songDone) return; setSongProgress((p) => (i === SONG[p] ? p + 1 : i === SONG[0] ? 1 : 0)); };
   const fmtWhen = (t: number) => { const d = new Date(t); return `${d.getMonth() + 1}月${d.getDate()}日`; };
 
   const nearRef = useRef(-1);
   const giftedRef = useRef<number[]>([]);
   useEffect(() => {
     nearRef.current = nearNpc;
+    if (nearNpc >= 0) emitCompanionEvent("near_npc"); // 走近岛民 → 精灵可能提醒去打招呼
   }, [nearNpc]);
   useEffect(() => {
     giftedRef.current = giftedIds;
@@ -6791,7 +6971,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         frameloop={forestDrive ? "never" : "always"}
       >
         <Suspense fallback={<ExploreLoading />}>
-          <ExploreScene visual={visual} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} forceNight={night} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} tier={tier} />
+          <ExploreScene visual={visual} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} forceNight={night} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} tier={tier} />
         </Suspense>
       </Canvas>
 
@@ -6815,11 +6995,13 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           talkText={companionTalkText}
           busy={companionThinking}
           autoVoice={autoVoice}
+          chatterMode={chatterMode}
           voices={ttsVoices}
           ttsConfigured={ttsConfigured}
           voiceId={voiceId}
           previewVoice={previewVoice}
           onToggleAutoVoice={toggleCompanionVoice}
+          onToggleChatter={toggleChatterMode}
           onPickVoice={handlePickVoice}
           onPreviewVoice={handlePreviewVoice}
           onTalkTextChange={setCompanionTalkText}
@@ -6914,7 +7096,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
               onClick={(e) => e.stopPropagation()}
             >
               <MenuButton icon="✎" label="捏人" onClick={() => { setDressOpen(true); setMenuOpen(false); }} />
-              <MenuButton icon={night ? "🌙" : "☀️"} label={night ? "切白天" : "切夜晚"} onClick={() => { setNight((v) => !v); playSfx("tap"); }} />
+              <MenuButton icon={night ? "🌙" : "☀️"} label={night ? "切白天" : "切夜晚"} onClick={() => { if (!night) emitCompanionEvent("night"); setNight((v) => !v); playSfx("tap"); }} />
               <MenuButton icon="🏮" label="放天灯" onClick={() => { setLanternOpen(true); setMenuOpen(false); }} />
               <MenuButton icon="🪔" label="放飞一片" onClick={releaseLanternFlock} />
               <button
@@ -7004,9 +7186,20 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
             : "WASD / 方向键 移动 · 空格跳跃 · F 招手 · Q 吹笛"}
       </p>
 
-      {/* 右下动作按钮组(触屏):吹笛 + 招手 + 跳跃，统一 44 圆;开车时隐藏,改显加速踏板 */}
-      {carPrompt !== "exit" && (
+      {/* 右下动作按钮组(触屏):精灵 + 吹笛 + 招手 + 跳跃，统一 44 圆;开车时隐藏,改显加速踏板。
+          精灵面板打开时一并隐藏——面板右贴边、窄屏近乎满宽,这组按钮会压在面板下半部(消息气泡+秘密标签)上;
+          且吹笛/招手/跳跃是世界动作,看面板时用不到,✦ 也与面板的「×」收起重复。 */}
+      {carPrompt !== "exit" && !companionOpen && (
       <div className="absolute z-10 flex flex-col items-center gap-2.5" style={{ right: "calc(1.4rem + env(safe-area-inset-right))", bottom: "calc(5rem + env(safe-area-inset-bottom))" }}>
+        <button
+          onClick={() => { setCompanionOpen((o) => !o); playSfx("tap"); }}
+          className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 select-none active:scale-90 transition-transform"
+          aria-label={companionOpen ? "收起专属精灵" : "打开专属精灵"}
+          aria-pressed={companionOpen}
+          title="专属精灵"
+        >
+          <span className="text-[18px] leading-none text-[#ffe2a0]">✦</span>
+        </button>
         <button
           onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.flute = true; }}
           className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
@@ -7199,7 +7392,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
             <p className="font-display text-[17px] tracking-wider text-white/90">上车,去哪兜风?</p>
             <p className="text-caption text-white/55 mt-1 mb-4">选一张地图开起来</p>
             <div className="grid grid-cols-1 gap-2.5">
-              <button onClick={() => { carState.driving = true; if (inputRef.current) inputRef.current.boost = false; startEngine(); playSfx("whoosh"); setMapMenu(false); }} className="btn-primary py-3">🏝️ 就在这座岛上开</button>
+              <button onClick={() => { carState.driving = true; if (inputRef.current) inputRef.current.boost = false; startEngine(); playSfx("whoosh"); emitCompanionEvent("drive_enter"); setMapMenu(false); }} className="btn-primary py-3">🏝️ 就在这座岛上开</button>
               <button onClick={() => { setForestDrive(true); setMapMenu(false); }} className="btn-ghost py-3">🌲 去林间土路<span className="text-caption text-white/45"> (大地图,首次载入稍候)</span></button>
             </div>
             <button onClick={() => setMapMenu(false)} className="text-caption text-white/45 mt-3">取消</button>

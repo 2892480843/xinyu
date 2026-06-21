@@ -119,6 +119,33 @@ function makeDotTexture(): THREE.CanvasTexture {
   return t;
 }
 
+// 流星拖尾纹理:横向「尾(透明)→头(亮)」渐变 + 纵向柔边,贴在沿速度方向对齐的细长 plane 上 → 真流星的锥化拖尾。
+function makeMeteorStreak(): THREE.CanvasTexture {
+  const W = 128, H = 16;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const x = cv.getContext("2d")!;
+  // 横向:左=尾(透明) → 右=头(最亮)。plane 经 setFromUnitVectors(_xAxis, 速度) 对齐,故 +X(u=1)=前进方向=头。
+  const g = x.createLinearGradient(0, 0, W, 0);
+  g.addColorStop(0, "rgba(255,255,255,0)");
+  g.addColorStop(0.68, "rgba(255,255,255,0.42)");
+  g.addColorStop(0.93, "rgba(255,255,255,1)");
+  g.addColorStop(1, "rgba(255,255,255,0.7)");
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+  // 纵向柔边:中间亮、上下渐隐(destination-out 抠掉上下)。
+  const vg = x.createLinearGradient(0, 0, 0, H);
+  vg.addColorStop(0, "rgba(0,0,0,1)");
+  vg.addColorStop(0.5, "rgba(0,0,0,0)");
+  vg.addColorStop(1, "rgba(0,0,0,1)");
+  x.globalCompositeOperation = "destination-out";
+  x.fillStyle = vg; x.fillRect(0, 0, W, H);
+  x.globalCompositeOperation = "source-over";
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+
 // 远景大气山峦:相机相对的 3 层环(近绿→远雾蓝),启用雾 → 随昼夜自动做大气透视。营造designed景深。
 const BAND_SPECS: { r: number; color: string; y: number; s: number; nHigh: number; nLow: number }[] = [
   { r: 470, color: "#6f9a72", y: -12, s: 0.95, nHigh: 18, nLow: 10 },
@@ -298,9 +325,11 @@ function Atmosphere({ skyRef, tier, labelRef }: { skyRef: RefObject<SkyState>; t
   const clock = useRef(START_T * CYCLE_SEC);
   const lastLabel = useRef("");
 
-  const starGeo = useMemo(() => {
+  const { starGeo, starTw } = useMemo(() => {
     const n = tier === "low" ? 160 : 360;
     const arr = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3);
+    const ph = new Float32Array(n), sp = new Float32Array(n), bw = new Float32Array(n); // 各星:闪烁相位 / 速度 / 基础亮度
     for (let i = 0; i < n; i++) {
       const u = (Math.sin(i * 12.9898) * 43758.5453) % 1;
       const a = (i * 2.399963) % (Math.PI * 2);
@@ -309,12 +338,18 @@ function Atmosphere({ skyRef, tier, labelRef }: { skyRef: RefObject<SkyState>; t
       arr[i * 3] = Math.cos(a) * r * 858;
       arr[i * 3 + 1] = y * 858;
       arr[i * 3 + 2] = Math.sin(a) * r * 858;
+      const h = Math.abs((Math.sin(i * 78.233) * 43758.5453) % 1);
+      ph[i] = h * 6.2832;
+      sp[i] = 0.5 + h * 1.8;
+      bw[i] = 0.5 + Math.abs((Math.sin(i * 32.17) * 7341.17) % 1) * 0.5; // 明暗有别 → 星空有层次
+      col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = bw[i];
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
-    return g;
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    return { starGeo: g, starTw: { n, ph, sp, bw } };
   }, [tier]);
-  const starMat = useMemo(() => new THREE.PointsMaterial({ color: "#ffffff", size: tier === "low" ? 2.2 : 2.8, sizeAttenuation: true, transparent: true, opacity: 0, depthWrite: false, fog: false }), [tier]);
+  const starMat = useMemo(() => new THREE.PointsMaterial({ vertexColors: true, size: tier === "low" ? 2.4 : 3.0, sizeAttenuation: true, transparent: true, opacity: 0, depthWrite: false, fog: false }), [tier]);
 
   useEffect(
     () => () => {
@@ -364,7 +399,19 @@ function Atmosphere({ skyRef, tier, labelRef }: { skyRef: RefObject<SkyState>; t
     if (scene.fog) (scene.fog as THREE.Fog).color.copy(s.fog);
 
     if (follow.current) follow.current.position.set(camera.position.x, 0, camera.position.z);
-    if (stars.current) (stars.current.material as THREE.PointsMaterial).opacity = s.nightness * 0.95;
+    if (stars.current) {
+      (stars.current.material as THREE.PointsMaterial).opacity = s.nightness * 0.95;
+      if (s.nightness > 0.02) {
+        // 逐星明灭(twinkle):各星按自己的相位/速度做亮度呼吸,夜空不再呆滞。仅夜里更新。
+        const cols = starGeo.attributes.color.array as Float32Array;
+        const tt = clock.current;
+        for (let i = 0; i < starTw.n; i++) {
+          const w = starTw.bw[i] * (0.55 + 0.45 * Math.sin(tt * starTw.sp[i] + starTw.ph[i]));
+          cols[i * 3] = cols[i * 3 + 1] = cols[i * 3 + 2] = w;
+        }
+        starGeo.attributes.color.needsUpdate = true;
+      }
+    }
 
     if (labelRef.current && lastLabel.current !== s.label) {
       lastLabel.current = s.label;
@@ -437,8 +484,8 @@ function SkyLife({ skyRef, tier }: { skyRef: RefObject<SkyState>; tier: "high" |
     [BIRDS],
   );
 
-  const shootMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }), []);
-  const shootGeo = useMemo(() => new THREE.PlaneGeometry(7, 0.16), []);
+  const shootMat = useMemo(() => new THREE.MeshBasicMaterial({ map: makeMeteorStreak(), color: "#ffffff", transparent: true, opacity: 0, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }), []);
+  const shootGeo = useMemo(() => new THREE.PlaneGeometry(8, 0.5), []); // 略放大 + 加高:配合锥化拖尾纹理的纵向柔边
   const shoot = useRef({ active: false, t: 0, next: 4, fx: 0, fy: 0, fz: 0, dx: 0, dy: 0, dz: 0 });
   const clk = useRef(0);
 
@@ -464,6 +511,7 @@ function SkyLife({ skyRef, tier }: { skyRef: RefObject<SkyState>; tier: "high" |
       balloonGeos.forEach((g) => g.dispose());
       birdGeo.dispose();
       birdMat.dispose();
+      shootMat.map?.dispose(); // 流星拖尾纹理:material.dispose() 不会连带释放,手动 dispose
       shootMat.dispose();
       shootGeo.dispose();
       dotTex.dispose();
