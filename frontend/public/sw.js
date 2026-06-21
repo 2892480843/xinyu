@@ -10,7 +10,7 @@
  *
  * 升级缓存策略时请提升 VERSION，activate 时会清理旧缓存。
  */
-const VERSION = "xinyu-v1";
+const VERSION = "xinyu-v2";
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 const API_CACHE = `${VERSION}-api`;
@@ -20,8 +20,10 @@ const FONT_CACHE = `${VERSION}-fonts`;
 const SHELL_ASSETS = [
   "/",
   "/index.html",
+  "/mobile.html",
   "/offline.html",
   "/manifest.webmanifest",
+  "/manifest.mobile.webmanifest",
   "/favicon.svg",
   "/icon.svg",
   "/noise.svg",
@@ -103,13 +105,16 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
+        // 移动端入口(/mobile.html 或 /m/...)与桌面(/)各自缓存各自的外壳，离线回退到对的那个。
+        const isMobile = url.pathname === "/mobile.html" || url.pathname.startsWith("/m/");
         try {
           const res = await fetch(request);
           const cache = await caches.open(SHELL_CACHE);
-          cache.put("/", res.clone()).catch(() => {});
+          cache.put(isMobile ? "/mobile.html" : "/", res.clone()).catch(() => {});
           return res;
         } catch {
           return (
+            (isMobile ? await caches.match("/mobile.html") : null) ||
             (await caches.match("/")) ||
             (await caches.match("/index.html")) ||
             (await caches.match("/offline.html")) ||

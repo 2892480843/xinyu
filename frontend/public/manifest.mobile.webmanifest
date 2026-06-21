@@ -1,0 +1,40 @@
+{
+  "name": "心屿 · 一座会回应你的岛屿",
+  "short_name": "心屿",
+  "description": "AI 情绪陪伴叙事，倾诉换得一座为你生长的心象岛屿（移动端）。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/mobile.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0e1f",
+  "theme_color": "#0a0e1f",
+  "categories": ["health", "lifestyle", "entertainment"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
