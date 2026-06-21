@@ -32,9 +32,9 @@ _MODEL = "cosyvoice-v2"  # 音色丰富、稳定；社交陪伴/有声书/语音
 # 下面这批均已实测在 cosyvoice-v2 + 当前 key 下可用。
 ALIYUN_TTS_VOICES = [
     # —— 精灵向：灵动轻盈俏皮，最贴「小精灵」 ——
-    {"id": "longpaopao", "label": "龙泡泡", "desc": "气泡音·轻灵小精灵", "gender": "female", "default": True},
+    {"id": "longke_v2", "label": "龙可", "desc": "软糯乖巧·治愈", "gender": "female", "default": True},
+    {"id": "longpaopao", "label": "龙泡泡", "desc": "气泡音·轻灵小精灵", "gender": "female"},
     {"id": "longxian_v2", "label": "龙仙", "desc": "灵气可爱·元气", "gender": "female"},
-    {"id": "longke_v2", "label": "龙可", "desc": "软糯乖巧·治愈", "gender": "female"},
     {"id": "longling_v2", "label": "龙玲", "desc": "孩子气·淡淡冷面萌", "gender": "female"},
     {"id": "longjielidou_v2", "label": "龙杰力豆", "desc": "阳光调皮·男孩", "gender": "male"},
     {"id": "longhuhu", "label": "龙虎虎", "desc": "天真活泼女童", "gender": "female"},

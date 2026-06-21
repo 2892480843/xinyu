@@ -6145,6 +6145,9 @@ function CompanionPanel({
   onDismissSecret: () => void;
 }) {
   const [nameDraft, setNameDraft] = useState(state.name);
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  // 折叠态显示当前生效音色名：选了就用所选，否则用清单里标了 default 的那个（龙可）。
+  const currentVoiceLabel = (voiceId ? voices.find((v) => v.id === voiceId) : voices.find((v) => v.default))?.label ?? "默认嗓音";
   const bond = getCompanionBondLabel(state.affinity);
   return (
     <section
@@ -6233,7 +6236,21 @@ function CompanionPanel({
         </p>
       ) : voices.length > 0 && (
         <div className="mt-3">
-          <p className="text-caption tracking-[0.18em] text-white/45">精灵的嗓音</p>
+          <button
+            type="button"
+            onClick={() => setVoicePickerOpen((o) => !o)}
+            aria-expanded={voicePickerOpen}
+            title={voicePickerOpen ? "收起嗓音选择" : "更换精灵的嗓音"}
+            className="flex w-full items-center justify-between rounded-card border border-white/12 bg-white/8 px-3 py-2 text-left transition hover:bg-white/12"
+          >
+            <span className="min-w-0 truncate text-[13px] text-white/80">
+              <span className="text-caption tracking-[0.14em] text-white/45">精灵的嗓音 · </span>
+              <span className="text-[#ffe7b5]">{currentVoiceLabel}</span>
+            </span>
+            <span className="shrink-0 text-caption text-white/45">{voicePickerOpen ? "收起 ▴" : "更换 ▾"}</span>
+          </button>
+          {voicePickerOpen && (
+            <>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {voices.map((v) => {
               const active = voiceId === v.id;
@@ -6267,6 +6284,8 @@ function CompanionPanel({
             })}
           </div>
           <p className="mt-1 text-caption text-white/35">{voiceId === null ? "当前：默认嗓音" : "已选，再点同款可切回默认"}</p>
+            </>
+          )}
         </div>
       )}
 
@@ -6459,7 +6478,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const singTimer = useRef<number | null>(null);
   const [autoVoice, setAutoVoice] = useState<boolean>(() => loadAutoVoice());
   // 「主动陪聊」模式：开启后精灵会按玩家操作(跳跃/开车/种花/发现奇遇…)主动冒一句话(头顶气泡 + 可选语音)。
-  const [chatterMode, setChatterMode] = useState<boolean>(() => { try { return localStorage.getItem(CHATTER_MODE_KEY) === "1"; } catch { return false; } });
+  const [chatterMode, setChatterMode] = useState<boolean>(() => { try { return localStorage.getItem(CHATTER_MODE_KEY) !== "0"; } catch { return true; } });
   const [companionChatter, setCompanionChatter] = useState<{ text: string; nonce: number } | null>(null); // 当前头顶气泡
   const [companionSpeaking, setCompanionSpeaking] = useState(false);
   // 音色：ttsVoices 为后端可选清单（未配置云端 TTS 时为空 → 用系统语音，UI 给降级提示）；

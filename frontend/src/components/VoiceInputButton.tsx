@@ -54,6 +54,7 @@ function describeError(error: string): string {
   if (error === "not-allowed" || error === "service-not-allowed") return "麦克风权限未开启";
   if (error === "no-speech") return "没有听到声音";
   if (error === "audio-capture") return "无法访问麦克风";
+  if (error === "network") return "语音服务连接失败（可能网络受限）";
   return "语音识别暂时不可用";
 }
 
@@ -66,6 +67,9 @@ export default function VoiceInputButton({ disabled = false, baseText = "", onTr
     return getSpeechRecognitionCtor();
   }, []);
   const supported = Boolean(Recognition);
+  // 浏览器仅在「安全上下文」(HTTPS 或 localhost) 下允许麦克风/语音识别；
+  // 手机上用 http:// 或局域网 IP 访问时 isSecureContext=false，识别必失败。
+  const secureContext = typeof window === "undefined" || window.isSecureContext;
 
   useEffect(() => {
     return () => {
@@ -81,6 +85,10 @@ export default function VoiceInputButton({ disabled = false, baseText = "", onTr
 
   const start = () => {
     if (!Recognition || disabled) return;
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setHint("麦克风需安全连接（HTTPS）");
+      return;
+    }
 
     const recognition = new Recognition();
     recognitionRef.current = recognition;
@@ -145,6 +153,22 @@ export default function VoiceInputButton({ disabled = false, baseText = "", onTr
           麦
         </button>
         <span>当前浏览器不支持语音输入</span>
+      </div>
+    );
+  }
+
+  if (!secureContext) {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-white/40">
+        <button
+          type="button"
+          disabled
+          title="麦克风需 HTTPS 安全连接（用 https:// 或 localhost 打开）"
+          className="grid h-8 w-8 place-items-center rounded-full bg-white/8 text-white/35 border border-white/10 cursor-not-allowed"
+        >
+          麦
+        </button>
+        <span>麦克风需 HTTPS 安全连接</span>
       </div>
     );
   }
