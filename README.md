@@ -177,6 +177,35 @@
   </tr>
 </table>
 
+## 技术架构一览
+
+后端把一次情绪输入，变成叙事、场景与岛屿状态；前端再分层渲染。整条链路的设计取向是**可解释、可降级、可离线**，并对脆弱用户全程做安全兜底。
+
+```mermaid
+flowchart TD
+  IN["输入<br/>文字 · 语音 · 写一个字 · 静默坐岛"] --> REF{"反思双路径<br/>/api/reflect · /ws/reflect"}
+  REF --> CLASSIC["经典 · 五感信使<br/>情绪 → 安全 → 记忆 → 环境 → 叙事"]
+  REF --> AGENT["工具型 Agent<br/>自主调用 记忆检索 / 读岛屿"]
+  CLASSIC --> SAFE["安全双闸<br/>强度≥0.85 或 关键词黑名单 · 输出端复检"]
+  AGENT --> SAFE
+  SAFE --> ISLAND["岛屿状态机<br/>1–5 级成长 · 纯 Python · 断网可跑"]
+  ISLAND --> OUT["前端三层表现<br/>2D 场景 → CSS/SVG 叠加 → 真 3D 岛屿 / 自由探索"]
+  CLASSIC --> MEM[("PostgreSQL + pgvector<br/>memories · artifacts · phrases")]
+  AGENT --> MEM
+  CLASSIC --> R["反思模型<br/>OPENAI_*（可指腾讯混元）"]
+  AGENT --> R
+  CHAT["对话陪伴<br/>说给岛屿 · 常驻助手 · 陪伴精灵"] --> C["对话模型<br/>DeepSeek CHAT_*（未配则回落 OPENAI_*）"]
+  CHAT --> MEM
+```
+
+- **反思主链路求确定性**：经典管线整条只有「情绪分析」「叙事表达」两步真正调用 LLM，安全、岛屿成长、场景映射都是确定性代码；没有 Key 时用 Mock 也能完整跑通。
+- **对话才放开自主性**：说给岛屿 / 常驻助手 / 陪伴精灵走独立的 **DeepSeek function-calling 通道**（`CHAT_*`，未配 DeepSeek 时自动回落 `OPENAI_*`），可自主调用「记忆检索 / 读岛屿」工具；它被刻意限定在对话场景，不介入安全攸关的反思主链路。
+- **安全是规则不是模型**：双触发（强度阈值 **或** 中英双语关键词黑名单）+ 输出端复检防复述，完全不依赖 LLM 判断，平静措辞的危机表达也能兜住。
+- **一套语气贯穿所有 AI 角色**：统一的**治愈知识库**（`xinyu-healing-kb-v1`：岛屿语汇 / 倾听原则 / 硬边界 / 八情绪侧重）注入反思、对话、助手、精灵全部角色的 system prompt，确保温柔、克制、有边界。
+- **优雅降级贯穿全栈**：LLM→Mock、pgvector→最近记忆、云端 TTS→浏览器朗读、真 3D→2D、采样音效→实时合成——任一环失效都不打断主体验。
+
+**技术栈**：前端 React 19 · Vite 8 · TypeScript · react-three-fiber 9 / three.js 0.180 / drei / postprocessing · framer-motion · Tailwind CSS；后端 FastAPI · PostgreSQL + pgvector · 本地 fastembed（`bge-small-zh`）embedding；可选接入 OpenAI 兼容 LLM（腾讯混元 / DeepSeek 等）与云端情感 TTS（阿里云 CosyVoice / 腾讯云）。
+
 ## 当前范围
 
 AI 默认使用 **Mock 模式**，无需 API Key 即可完整跑通（情绪、叙事、印记、岛屿、安全均有降级兜底）。支持情绪：`sad`、`anxious`、`tired`、`lonely`、`calm`、`happy`、`angry`、`helpless`。
@@ -282,9 +311,11 @@ cp .env.example .env
 | 变量 | 说明 |
 |---|---|
 | `LLM_PROVIDER` | `mock` 或 `openai`；默认 `mock`。 |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | 仅 `LLM_PROVIDER=openai` 时使用；可指向腾讯混元（见「可选真实模型」）。 |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | 仅 `LLM_PROVIDER=openai` 时使用；反思主链路用，可指向腾讯混元（见「可选真实模型」）。 |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` | 可选：对话陪伴通道（说给岛屿 / 常驻助手 / 陪伴精灵）专用的 DeepSeek function-calling 模型；留空时自动回落到反思用的 `OPENAI_*`，只配一个 key 也能聊天。默认 `https://api.deepseek.com/v1` / `deepseek-chat`。 |
 | `LLM_TIMEOUT` / `LLM_FAST_TIMEOUT` | 核心调用超时（默认 30s）与锦上添花调用（低语 / 读字 / 修正信，默认 8s）超时，单位秒。 |
 | `AGENT_MAX_STEPS` | 工具型 Agent 单次反思的最大工具循环步数，默认 `6`，用于防止无限调用工具。 |
+| `AGENT_TIME_BUDGET` | 工具型 Agent 单次反思 / 对话的总时长预算（秒），默认 `45`；超时强制结构化收尾，避免慢模型占满同步线程池、拖垮其它请求。 |
 | `CORS_ORIGINS` | 允许访问后端的前端来源，多个用英文逗号分隔；生产环境必须配真实域名，不要使用 `*`。 |
 | `DATABASE_URL` | PostgreSQL 连接串（libpq 格式）；默认 `postgresql://localhost:5432/xinyu`。 |
 | `PG_POOL_MIN` / `PG_POOL_MAX` | 连接池大小（默认 1 / 10）。 |
@@ -315,7 +346,7 @@ cp .env.example .env
 |---|---|---|
 | `POST` | `/api/reflect` | 核心反思接口，返回情绪 / 场景 / 岛屿状态 / 叙事 / 印记 / 选择卡 / 安全 |
 | `WS` | `/ws/reflect` | 流式逐阶段推送（见下） |
-| `GET` | `/api/health` | 服务状态、Provider、模型名、支持情绪列表 |
+| `GET` | `/api/health` | 服务状态、反思 Provider / 模型、对话模型、支持情绪列表、治愈知识库版本 |
 | `GET` | `/api/memories?user_id=&limit=` | 最近记忆列表 |
 | `GET` | `/api/island-state?user_id=` | 首次进入即可看到的岛屿状态 |
 | `GET` | `/api/island/timeline?user_id=` | 时光机逐步快照 |
@@ -405,7 +436,7 @@ WS /ws/reflect
 GET /api/health
 ```
 
-返回服务状态、当前 Provider、模型名与支持的情绪列表。
+返回服务状态、反思链路 Provider 与模型、对话链路模型（`chat_model`）、支持的情绪列表，以及治愈知识库版本（`healing_kb`）。
 
 ## 本地身份与隐私边界
 
@@ -434,8 +465,6 @@ python scripts/delete_memories_by_user.py --user-id local-xxxx --confirm
 **场景图**位于 `frontend/public/scenes/`，由后端 `scene.palette` 映射到前端 `src/lib/sceneMap.ts`。当前为 24 张完整本地预设图（8 种情绪 × 3 个强度档）作为 2D 沉浸式底图，叠加 CSS/SVG 天空、海面、岛屿与天气粒子；后端按强度返回 `low` / `mid` / `high` 三档 palette，旧 palette 键保留兼容别名。这些图由 `frontend/scripts/generate_scene_assets.py` 用 Pillow 离线生成，属可复现的插画式本地资源，不依赖运行时在线图像生成。
 
 在 2D 之上，可叠加 **react-three-fiber 真 3D 岛屿皮肤**（`src/components/Island3D.tsx`，现以整景 GLB `xy_scene_island.glb` 经实时 cel-shading 渲染，并漂浮云朵 / 飞鸟 / 海龟 / 暖阳等背景生灵与天体；`?island=proc` 可切回程序化地形兜底）与可漫游的**自由探索模式**（`src/components/ExploreMode.tsx`）。两者共用 `frontend/public/models/` 下的约 118 个 GLB 模型，由 Blender 离线生成或接入精修资产（构建脚本见 `blender/`）。3D 按设备性能与 WebGL 支持自动分级，弱设备或不支持时回退 2D。
-
-> 大型模型说明：`frontend/public/models/free_dirt_road_through_forest.glb` 约 117MB，用于林间土路驾驶地图，已通过 Git LFS 跟踪。首次克隆后请确保本机安装 Git LFS，并执行 `git lfs pull` 拉取完整模型。
 
 **背景音乐**位于 `frontend/public/audio/`，由后端 `scene.music`（现直接返回情绪键）映射到前端 `src/lib/musicMap.ts`。所有曲目来自 Kevin MacLeod（incompetech.com），CC-BY 4.0，完整署名见 `frontend/public/audio/CREDITS.md`，App 内「背景音乐」控件常驻展示当前曲目署名。
 
@@ -472,6 +501,17 @@ OPENAI_API_KEY=你的混元 API Key
 OPENAI_BASE_URL=https://api.hunyuan.cloud.tencent.com/v1
 OPENAI_MODEL=hunyuan-turbos-latest
 ```
+
+**对话陪伴可走独立通道（可选）**：说给岛屿 / 常驻助手 / 陪伴精灵默认与反思共用 `OPENAI_*`，也可单独接一条 **DeepSeek function-calling 通道**，让对话与反思各用各的模型：
+
+```bash
+DEEPSEEK_API_KEY=你的 DeepSeek API Key
+# 可选覆盖默认值：
+# DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+# DEEPSEEK_MODEL=deepseek-chat
+```
+
+留空时对话自动回落到 `OPENAI_*`，只配一个 key 也能聊天。
 
 如果没有配置 Key，系统自动使用 Mock 模式；真实模型调用失败时每个方法都会自动降级到 Mock，保证演示不中断。
 
