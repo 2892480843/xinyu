@@ -18,6 +18,9 @@ import IslandMap from "../../components/IslandMap";
 import IslandPhrases from "../../components/IslandPhrases";
 import IslandLetter from "../../components/IslandLetter";
 import MindMap from "../../components/MindMap";
+import MusicControl from "../../components/MusicControl";
+import IslandAssistant from "../../components/IslandAssistant";
+import IslandHushCard from "../../components/IslandHushCard";
 import { NightWatchBanner, GoodnightScreen } from "../../components/NightWatch";
 // —— 复用桌面 lib / hooks ——
 import { useKeyboardInset } from "../../hooks/useKeyboardInset";
@@ -29,6 +32,7 @@ import {
 } from "../../lib/api";
 import { clearIdentity, loadIdentity, type LocalIdentity } from "../../lib/localIdentity";
 import { resolveScene, DEFAULT_VISUAL, EMOTION_META } from "../../lib/sceneMap";
+import { TREND_META } from "../../lib/islandMeta";
 import { useNightWatch } from "../../lib/useNightWatch";
 import { useImmersion } from "../../hooks/useImmersion";
 import { useSkin3d } from "../../hooks/useSkin3d";
@@ -39,6 +43,7 @@ import BottomSheet from "../components/BottomSheet";
 import MobileInbox from "../components/MobileInbox";
 import MemoryTab from "../components/MemoryTab";
 import SelfTab from "../components/SelfTab";
+import MobileBrand from "../components/MobileBrand";
 
 // 重 chunk 懒加载（与桌面 Home 同款，避免移动端首屏拉近百 glTF；prefetch 在空闲/按下时预热）。
 const Island3D = lazy(() => import("../../components/Island3D"));
@@ -138,6 +143,7 @@ export default function HomeMobile() {
   useEffect(() => {
     if (!identity) return;
     try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 身份变化时有意重置抵岸过场（与桌面 Home.tsx:204 同源）
       if (sessionStorage.getItem(`xinyu.arrived.${identity.user_id}`) !== "1") setArrival(true);
     } catch { /* sessionStorage 不可用 */ }
   }, [identity]);
@@ -158,6 +164,18 @@ export default function HomeMobile() {
   const activeIsland = flow.result?.island_state ?? flow.liveIsland ?? flow.island;
   const emotionLabel = EMOTION_META[flow.result?.emotion ?? ""]?.label ?? "此刻";
   const agentsDone = flow.liveAgents.filter((a) => a.status === "done").length;
+  // 「上岛走走」光晕强度随情绪联动（与桌面 Home.tsx:282-287 同源）。
+  const ctaGlow = {
+    bright:   { peak: 1.0,  base: 0.55, dur: 2.4, scale: 1.14, breathe: 1.05, ringOpacity: 0.6, ringScale: 1.55, ringDur: 2.2 },
+    soothe:   { peak: 0.82, base: 0.42, dur: 3.6, scale: 1.08, breathe: 1.03, ringOpacity: 0.5, ringScale: 1.5,  ringDur: 2.9 },
+    restless: { peak: 0.9,  base: 0.5,  dur: 1.9, scale: 1.1,  breathe: 1.04, ringOpacity: 0.55, ringScale: 1.5, ringDur: 1.8 },
+    heavy:    { peak: 0.5,  base: 0.26, dur: 5.0, scale: 1.04, breathe: 1.02, ringOpacity: 0.34, ringScale: 1.4, ringDur: 4.6 },
+  }[visual.motion];
+
+  // 主页顶部是否已有内容（岛屿留言 / 成长态 / 错误）——决定布局走向：
+  // 有 → 顶部堆内容、CTA 锚到下三分之一（拇指区）；无 → 品牌+引导作为一个居中英雄整体，消除中段真空。
+  const hasInbox = !!(revision?.show || welcomeBack?.show || whisper?.show);
+  const islandHasTop = hasInbox || !!activeIsland || !!flow.error;
 
   // 上岛探索的素材：历史记忆 → 漂流瓶字条 + 心灵印记（与桌面 Home.tsx:294-345 同源）。
   const [nowMs] = useState(() => Date.now());
@@ -233,6 +251,60 @@ export default function HomeMobile() {
   const openSilent = () => { setComposeOpen(false); setSilentOpen(true); };
   const openGlyph = () => { setComposeOpen(false); setGlyphOpen(true); };
 
+  // 品牌区：空态保留副标题（更有仪式感），有内容时收起副标题让顶部紧凑。
+  const islandBrand = (
+    <div className="text-center">
+      <MobileBrand subtitle={!islandHasTop} />
+    </div>
+  );
+  // 倾诉引导 + 主次 CTA：两种布局分支共用，集中维护避免重复。
+  const islandHeroCta = (
+    <div className="flex flex-col items-center gap-3.5 text-center">
+      <p className="font-serif text-[14px] leading-relaxed text-white/70">把今天的心情，说给岛屿听。<br />说一个字、或什么都不说坐一会儿，也可以。</p>
+      {/* 主 CTA：说给岛屿 —— 唯一的高亮渐变药丸，视觉重心明确 */}
+      <motion.button
+        type="button"
+        onClick={() => setComposeOpen(true)}
+        className="island-cta"
+        style={{ background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)` }}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0, scale: [1, ctaGlow.breathe, 1] }}
+        transition={{
+          opacity: { delay: 0.2, duration: 0.5 },
+          y: { delay: 0.2, duration: 0.5 },
+          scale: { delay: 0.8, duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" },
+        }}
+        whileTap={{ scale: 0.96 }}
+      >
+        <motion.span
+          className="island-cta__glow"
+          style={{ background: `radial-gradient(ellipse at center, ${visual.accent} 0%, ${visual.accent}55 45%, transparent 72%)` }}
+          animate={{ opacity: [ctaGlow.base, ctaGlow.peak, ctaGlow.base], scale: [1, ctaGlow.scale, 1] }}
+          transition={{ duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <span className="island-cta__shine" aria-hidden />
+        <span className="island-cta__emoji" aria-hidden>🌊</span>
+        说给岛屿
+      </motion.button>
+      {/* 次 CTA：上岛走走 —— 玻璃描边幽灵按钮，与主 CTA 拉开主次，不抢视觉重心 */}
+      <motion.button
+        type="button"
+        onClick={() => setExploreOpen(true)}
+        onPointerEnter={prefetchExplore}
+        onPointerDown={prefetchExplore}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35, duration: 0.5 }}
+        whileTap={{ scale: 0.96 }}
+        className="mobile-cta-ghost"
+      >
+        <span aria-hidden>🏝</span>
+        上岛走走
+        <span className="mobile-cta-ghost__arrow" aria-hidden>›</span>
+      </motion.button>
+    </div>
+  );
+
   return (
     <div className="relative min-h-[100dvh] overflow-hidden">
       {/* 常驻岛屿背景：默认 2D；「我」Tab 开启真 3D 旗舰皮且支持 WebGL + 沉浸态时接管，崩溃回退 2D */}
@@ -264,6 +336,15 @@ export default function HomeMobile() {
           />
         )}
       </AnimatePresence>
+
+      {/* 背景音乐：右上角可收起小控件（避开底部 TabBar；复用桌面 MusicControl 的移动变体） */}
+      {identity && (
+        <MusicControl
+          music={exploreOpen ? "calm" : flow.result?.scene?.music}
+          emotion={flow.result?.emotion}
+          variant="mobile-top"
+        />
+      )}
 
       {!identity ? (
         <FullScreenCenter>
@@ -313,60 +394,65 @@ export default function HomeMobile() {
                 style={{ paddingTop: "calc(1rem + env(safe-area-inset-top))", paddingBottom: "7.5rem" }}
               >
                 {tab === "island" && (
-                  <div className="flex flex-1 flex-col">
-                    {/* 缩小品牌 */}
-                    <div className="mt-1 text-center select-none">
-                      <h1 className="font-display text-[22px] font-light tracking-[0.5em] pl-[0.5em] text-white/90">心 屿</h1>
-                      <p className="mt-1 font-serif italic text-[12px] tracking-[0.22em] text-mist-400">— 一座会回应你的岛屿 —</p>
-                    </div>
+                  islandHasTop ? (
+                    // 有内容态：品牌+留言+成长态顶部堆叠，CTA 锚到下三分之一（拇指区）。
+                    <div className="flex flex-1 flex-col">
+                      <div className="flex flex-col gap-4 pt-1">
+                        {islandBrand}
 
-                    {/* 岛屿留言 */}
-                    <div className="mt-4">
-                      <MobileInbox revision={revision} welcomeBack={welcomeBack} whisper={whisper} />
-                    </div>
+                        {/* 错误反馈：提交失败时岛屿轻声告知（与桌面 Home.tsx:641 同源） */}
+                        {flow.error && (
+                          <IslandHushCard
+                            kind={flow.errorKind}
+                            onRetry={flow.retry}
+                            onDismiss={flow.dismissError}
+                          />
+                        )}
 
-                    {/* 岛屿成长摘要 */}
-                    {activeIsland && (
-                      <div className="panel-glass-1 mx-auto mt-4 w-full max-w-[30rem] rounded-card px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {[1, 2, 3, 4, 5].map((lv) => (
-                            <span
-                              key={lv}
-                              className="h-1.5 flex-1 rounded-full"
-                              style={{ background: lv <= activeIsland.growth_level ? visual.accent : "rgba(255,255,255,0.12)" }}
-                            />
-                          ))}
-                        </div>
-                        <p className="mt-2 text-[13px] leading-relaxed text-white/78">{activeIsland.summary}</p>
-                        {activeIsland.chapter && (
-                          <p className="mt-1 font-serif italic text-[12px] leading-relaxed text-white/50">{activeIsland.chapter}</p>
+                        {/* 岛屿留言 */}
+                        <MobileInbox revision={revision} welcomeBack={welcomeBack} whisper={whisper} />
+
+                        {/* 岛屿成长摘要：材质与桌面 IslandStatePanel 同源（rounded-3xl + shadow-2xl + 成长圆点 + 趋势） */}
+                        {activeIsland && (
+                          <div className="mx-auto w-full max-w-[30rem] rounded-3xl border border-white/15 bg-white/9 p-4 shadow-2xl backdrop-blur-md">
+                            <div className="mb-2.5 flex items-center justify-between gap-2">
+                              <p className="text-[11px] tracking-[0.28em] text-white/45">心象岛屿</p>
+                              <div className="flex items-center gap-2">
+                                {activeIsland.trend && (
+                                  <span className="text-[11px] text-white/55">{(TREND_META[activeIsland.trend] ?? { label: activeIsland.trend }).label}</span>
+                                )}
+                                {/* 成长圆点：与桌面 GrowthDots 一致 */}
+                                <span className="flex items-center gap-1" title={`岛屿成长等级 ${activeIsland.growth_level}/5`}>
+                                  {[0, 1, 2, 3, 4].map((i) => (
+                                    <span
+                                      key={i}
+                                      className="h-1.5 w-1.5 rounded-full"
+                                      style={{ background: i < activeIsland.growth_level ? visual.accent : "rgba(255,255,255,0.18)" }}
+                                    />
+                                  ))}
+                                </span>
+                              </div>
+                            </div>
+                            <p className="text-[13px] leading-relaxed text-white/82">{activeIsland.summary}</p>
+                            {activeIsland.chapter && (
+                              <p className="mt-1.5 font-serif italic text-[12px] leading-relaxed text-white/50">{activeIsland.chapter}</p>
+                            )}
+                          </div>
                         )}
                       </div>
-                    )}
 
-                    {/* 倾诉引导 */}
-                    <div className="mt-auto flex flex-col items-center gap-3 pt-8 pb-2 text-center">
-                      <p className="font-serif text-[14px] leading-relaxed text-white/70">把今天的心情，说给岛屿听。<br />说一个字、或什么都不说坐一会儿，也可以。</p>
-                      <button
-                        type="button"
-                        onClick={() => setComposeOpen(true)}
-                        className="island-cta"
-                        style={{ background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)` }}
-                      >
-                        <span className="island-cta__emoji" aria-hidden>🌊</span>
-                        说给岛屿
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setExploreOpen(true)}
-                        onPointerEnter={prefetchExplore}
-                        onPointerDown={prefetchExplore}
-                        className="btn-ghost px-5 py-2 text-[13px]"
-                      >
-                        🏝 上岛走走
-                      </button>
+                      {/* 弹性留白：上 2 : 下 1，让 CTA 沉到视觉下三分之一而非夹在正中 */}
+                      <div className="flex-1" />
+                      {islandHeroCta}
+                      <div className="flex-[0.5]" />
                     </div>
-                  </div>
+                  ) : (
+                    // 空态/新用户：品牌 + 引导作为一个居中英雄整体，消除中段真空。
+                    <div className="flex flex-1 flex-col items-center justify-center gap-8">
+                      {islandBrand}
+                      {islandHeroCta}
+                    </div>
+                  )
                 )}
 
                 {tab === "memory" && (
@@ -377,6 +463,15 @@ export default function HomeMobile() {
                     onIslandMap={() => setMapOpen(true)}
                     onPhrases={() => setPhrasesOpen(true)}
                     onLetter={() => setLetterOpen(true)}
+                    assistant={
+                      <IslandAssistant
+                        userId={identity.user_id}
+                        zIndexClass="z-[85]"
+                        trigger={
+                          <span className="shrink-0 text-white/55 text-[18px] leading-none touch-target" aria-hidden>›</span>
+                        }
+                      />
+                    }
                   />
                 )}
 
@@ -390,12 +485,16 @@ export default function HomeMobile() {
                         type="button"
                         onClick={() => skin3d.setSkin3d(!skin3d.wanted)}
                         aria-pressed={skin3d.wanted}
-                        className="panel-glass-1 flex items-center gap-3 rounded-card px-4 py-2.5"
+                        className="panel-glass-1 flex min-h-[52px] w-full items-center gap-3 rounded-card px-4 py-3 text-left transition active:scale-[0.98]"
                       >
+                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[16px]" aria-hidden>🏝</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[14px] text-white/85">真 3D 岛屿背景</span>
+                          <span className="block text-[11px] text-white/40">{skin3d.wanted ? "已开启 · 更耗电" : "实验功能 · 更耗电"}</span>
+                        </span>
                         <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${skin3d.wanted ? "bg-white/55" : "bg-white/15"}`}>
                           <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-[#0a0e1f] transition-all ${skin3d.wanted ? "left-3.5" : "left-0.5"}`} />
                         </span>
-                        <span className="text-[13px] text-white/80">真 3D 岛屿背景{skin3d.wanted ? "（已开）" : "（实验·更耗电）"}</span>
                       </button>
                     ) : undefined}
                   />
@@ -407,7 +506,7 @@ export default function HomeMobile() {
           )}
 
           {/* 倾诉 Sheet：从底升起，键盘友好 */}
-          <BottomSheet open={composeOpen} onClose={() => setComposeOpen(false)} label="说给岛屿">
+          <BottomSheet open={composeOpen} onClose={() => setComposeOpen(false)} label="说给岛屿" accent={visual.accent}>
             <MoodInput onSubmit={onSubmit} onSilent={openSilent} onGlyph={openGlyph} loading={false} />
           </BottomSheet>
 
@@ -429,17 +528,26 @@ export default function HomeMobile() {
               style={{ paddingTop: "calc(1.25rem + env(safe-area-inset-top))", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}
             >
               <div className="mx-auto w-full max-w-[34rem]">
-                <button type="button" onClick={() => setMindOpen(false)} className="btn-ghost mb-3 px-3 py-1.5 text-[13px]">‹ 返回</button>
-                <MindMap memories={memories} island={activeIsland} artifacts={artifacts} open onToggle={() => setMindOpen(false)} userId={identity.user_id} />
+                <button type="button" onClick={() => setMindOpen(false)} className="btn-ghost mb-3 px-4 py-2.5 text-[13px]">‹ 返回</button>
+                {/* fullscreen 变体：纯轨迹图查看器，全宽 + 更高的轨迹图，不内嵌 phrases/letter（走独立 BottomSheet） */}
+                <MindMap
+                  memories={memories}
+                  island={activeIsland}
+                  artifacts={artifacts}
+                  open
+                  onToggle={() => setMindOpen(false)}
+                  userId={identity.user_id}
+                  variant="fullscreen"
+                />
               </div>
             </div>
           )}
           {tmOpen && <TimeMachine userId={identity.user_id} demo={memories.length === 0} onClose={() => setTmOpen(false)} />}
           {mapOpen && <IslandMap island={activeIsland} artifacts={artifacts} onClose={() => setMapOpen(false)} />}
-          <BottomSheet open={phrasesOpen} onClose={() => setPhrasesOpen(false)} label="私房安慰话">
+          <BottomSheet open={phrasesOpen} onClose={() => setPhrasesOpen(false)} label="私房安慰话" accent={visual.accent}>
             <IslandPhrases userId={identity.user_id} />
           </BottomSheet>
-          <BottomSheet open={letterOpen} onClose={() => setLetterOpen(false)} label="岛屿年报">
+          <BottomSheet open={letterOpen} onClose={() => setLetterOpen(false)} label="岛屿年报" accent={visual.accent}>
             <IslandLetter userId={identity.user_id} memoryCount={memories.length} />
           </BottomSheet>
 

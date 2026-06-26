@@ -21,6 +21,13 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            // react 全家先于 three 规则分出 → 否则 @react-three/fiber 的 react-reconciler 会把
+            // react-dom/scheduler 连带卷进 three-vendor，迫使首页主入口 import 整份 1.2M three-vendor
+            // 来拿 createRoot，彻底抵消「不开 3D 不下载 three」的设计。分出后首页只载这一小份 react-vendor，
+            // three-vendor 回归纯懒加载(仅上岛/3D 皮时下载)。react-reconciler 不在此列 → 仍归 three-vendor(只 3D 用)。
+            if (/[\\/](react|react-dom|scheduler)[\\/]/.test(id)) {
+              return 'react-vendor'
+            }
             if (
               id.includes('three-stdlib') ||
               id.includes('@react-three') ||

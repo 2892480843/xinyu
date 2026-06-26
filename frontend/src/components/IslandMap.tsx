@@ -167,14 +167,14 @@ export default function IslandMap({ island, artifacts, onClose }: Props) {
                   title={n.label}
                 >
                   <span
-                    className="grid place-items-center h-9 w-9 rounded-full"
+                    className="grid place-items-center h-11 w-11 rounded-full"
                     style={{
                       background: active ? `${color}26` : "rgba(255,255,255,0.04)",
                       border: `1px solid ${active ? color : `${color}66`}`,
                       filter: `drop-shadow(0 0 8px ${color}${active ? "99" : "44"})`,
                     }}
                   >
-                    <FeatureGlyph name={n.key} size={20} />
+                    <FeatureGlyph name={n.key} size={22} />
                   </span>
                 </motion.button>
               </div>

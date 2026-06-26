@@ -68,9 +68,12 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
     if (saved.current) return;
     saved.current = true;
     playSfx("ripple"); // 岛屿不催你，轻轻送别
-    const artifact = await silentCompanion(userId, Math.max(0, elapsed));
-    if (!mounted.current) return; // 离开过程中已卸载则不再回调
-    onClose(artifact);
+    // 乐观关闭：先让 UI 立即响应（onClose 不阻塞），后端落贝壳异步进行——
+    // 后端慢/失败时用户也不会卡在"点了没反应"的状态。
+    onClose(null);
+    try {
+      await silentCompanion(userId, Math.max(0, elapsed));
+    } catch { /* 落贝壳失败不影响离开 */ }
   };
 
   // Escape = 温柔提前离开（与「想离开了，岛屿不催你」同义）+ 锁背景滚动 + 焦点恢复
@@ -78,7 +81,7 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
 
   return (
     <motion.div
-      className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-slate-950/65 backdrop-blur-md px-6"
+      className="fixed inset-0 z-[90] flex flex-col items-center justify-center bg-slate-950/65 backdrop-blur-md px-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -129,7 +132,7 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
           <button
             type="button"
             onClick={leaveEarly}
-            className="mt-12 text-white/35 text-[12px] hover:text-white/75 transition"
+            className="touch-target mt-10 px-4 text-white/35 text-[12px] hover:text-white/75 transition"
           >
             想离开了，岛屿不催你
           </button>
@@ -148,7 +151,7 @@ export default function SilentMode({ userId, durationSeconds = 30, onClose }: Pr
         </motion.div>
       )}
 
-      <p className="absolute bottom-6 text-white/25 text-[10px] leading-relaxed text-center max-w-sm">
+      <p className="absolute max-w-sm text-center text-[10px] leading-relaxed text-white/25" style={{ bottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}>
         岛屿不读你的鼠标、不开摄像头、不写记忆——沉默就是沉默。
       </p>
     </motion.div>

@@ -95,7 +95,7 @@ export default function BreathingRitual({ emotionLabel, onComplete, onSkip }: Pr
 
   return (
     <motion.div
-      className="panel-glass-2 w-full max-w-xl mx-auto rounded-card-lg p-8"
+      className="panel-glass-2 w-full max-w-xl mx-auto rounded-card-lg p-6 sm:p-8"
       initial={{ opacity: 0, y: 14, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.65, ease: [0.22, 1, 0.36, 1] }}

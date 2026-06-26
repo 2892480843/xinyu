@@ -14,19 +14,32 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-14 flex-col items-center gap-1 py-1 transition active:scale-95"
+      // w-14=56px 宽够；min-h-[44px] 把命中区撑到 Apple HIG 标准（视觉仍是小圆点+小字）。
+      className="flex w-14 min-h-[44px] flex-col items-center justify-center gap-1.5 py-1 transition active:scale-95"
       aria-pressed={active}
     >
+      {/* 圆点 + active 柔光晕（halo 绝对定位，不影响行高，与倾诉 FAB / Sheet 标题点同 accent） */}
+      <span className="relative flex h-2.5 w-2.5 items-center justify-center" aria-hidden>
+        <span
+          className="absolute h-5 w-5 rounded-full transition-opacity duration-300"
+          style={{ background: `radial-gradient(circle, ${accent}55 0%, transparent 70%)`, opacity: active ? 1 : 0 }}
+        />
+        <span
+          className="relative h-2 w-2 rounded-full transition-all duration-300"
+          style={{
+            background: active ? accent : "transparent",
+            border: `1.5px solid ${active ? accent : "rgba(255,255,255,0.32)"}`,
+            boxShadow: active ? `0 0 8px ${accent}` : "none",
+            transform: active ? "scale(1.05)" : "scale(1)",
+          }}
+        />
+      </span>
       <span
-        className="h-2 w-2 rounded-full transition"
-        style={{
-          background: active ? accent : "transparent",
-          border: `1.5px solid ${active ? accent : "rgba(255,255,255,0.35)"}`,
-          boxShadow: active ? `0 0 10px ${accent}` : "none",
-        }}
-        aria-hidden
-      />
-      <span className={`text-[11px] tracking-[0.18em] ${active ? "text-white/90" : "text-white/45"}`}>{label}</span>
+        className="text-[11px] tracking-[0.2em] transition-colors duration-300"
+        style={{ color: active ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.42)" }}
+      >
+        {label}
+      </span>
     </button>
   );
 }
@@ -50,7 +63,7 @@ export default function MobileTabBar({ active, onSelect, onCompose, accent }: Pr
           className="relative -mt-7 grid h-16 w-16 shrink-0 place-items-center rounded-full font-display text-[13px] tracking-[0.2em] text-ink-950 transition active:scale-95"
           style={{
             background: `radial-gradient(circle at 50% 34%, ${accent} 0%, ${accent}d9 58%, ${accent}a6 100%)`,
-            boxShadow: `0 12px 32px -8px ${accent}, 0 3px 10px -3px ${accent}cc, inset 0 1px 0 rgba(255,255,255,0.65)`,
+            boxShadow: `0 0 0 1px rgba(255,255,255,0.14), 0 12px 32px -8px ${accent}, 0 4px 14px -4px ${accent}cc, inset 0 1px 0 rgba(255,255,255,0.7)`,
           }}
         >
           倾诉

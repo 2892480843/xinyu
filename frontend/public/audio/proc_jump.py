@@ -20,9 +20,10 @@ import subprocess
 import wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC_MP3 = os.path.join(HERE, "raw", "env", "jump.mp3")
-TMP_WAV = os.path.join(HERE, "raw", "env", "_jump_src.wav")
-CUT_WAV = os.path.join(HERE, "raw", "env", "_jump_cut.wav")
+_RAW_ENV = os.path.join(HERE, "..", "..", "_audio_raw", "env")  # raw 已移出 public
+SRC_MP3 = os.path.join(_RAW_ENV, "jump.mp3")
+TMP_WAV = os.path.join(_RAW_ENV, "_jump_src.wav")
+CUT_WAV = os.path.join(_RAW_ENV, "_jump_cut.wav")
 OUT_M4A = os.path.join(HERE, "env", "jump.m4a")
 
 

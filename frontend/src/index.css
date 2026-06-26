@@ -180,6 +180,7 @@ textarea { resize: none; }
   justify-content: center;
   gap: 0.5rem;
   padding: 0.625rem 1.5rem;
+  min-height: 44px;
   border-radius: 9999px;
   background: linear-gradient(180deg, #ffffff 0%, rgba(255,255,255,0.85) 100%);
   color: #0a0e1f;
@@ -211,6 +212,7 @@ textarea { resize: none; }
   justify-content: center;
   gap: 0.5rem;
   padding: 0.5rem 1.25rem;
+  min-height: 44px;
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.10);
   color: rgba(255, 255, 255, 0.82);
@@ -234,8 +236,24 @@ textarea { resize: none; }
   background: transparent;
   border: none;
   cursor: pointer;
+  /* 触屏可点区至少 44px 高(Apple HIG)：文字保持小，但命中区达标。
+     桌面端不显式设高度，靠 flex 居中即可，无视觉回归。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
 }
 .btn-link:hover { color: rgba(255, 255, 255, 0.96); }
+
+/* 触摸目标兜底：给原本过小的图标/×按钮显式套用，保证 min 44×44 可点区。
+   视觉尺寸由内部元素决定，外层只撑大命中区。 */
+.touch-target {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
 
 /* 「上岛走走」主行动召唤 —— 明亮糖果药丸 + 玻璃高光 + 光晕脉冲 + 声纳环 + 微光扫过,务求显眼 */
 .island-cta {
@@ -300,6 +318,31 @@ textarea { resize: none; }
 .island-cta__emoji { font-size: 19px; }
 .island-cta__arrow { opacity: 0.8; font-size: 17px; }
 
+/* 次 CTA（移动端「上岛走走」）：玻璃描边幽灵按钮，与主 CTA 拉开主次。
+   不用渐变高亮，靠半透明玻璃 + 描边 + emoji 点缀，安静地待在主 CTA 下方。 */
+.mobile-cta-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.9rem;
+  min-height: 48px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 20px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.mobile-cta-ghost > span:first-child { font-size: 16px; }
+.mobile-cta-ghost__arrow { opacity: 0.6; font-size: 13px; }
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -307,6 +350,8 @@ textarea { resize: none; }
   font-size: 11px;
   letter-spacing: 0.05em;
   padding: 0.25rem 0.625rem;
+  /* 触摸命中区：文字小但可点高度达标（移动端/桌面端均受益，非视觉回归） */
+  min-height: 36px;
   border-radius: 9999px;
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.65);

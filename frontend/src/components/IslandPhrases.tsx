@@ -106,7 +106,7 @@ export default function IslandPhrases({ userId }: Props) {
                     type="button"
                     key={e}
                     onClick={() => setEmotion(e)}
-                    className={`text-[11px] px-2.5 py-1 rounded-full transition border ${
+                    className={`text-[12px] px-3 py-2 rounded-full transition border ${
                       emotion === e
                         ? "bg-white/85 text-slate-800 border-white"
                         : "bg-white/6 text-white/70 border-white/12 hover:bg-white/12"
@@ -134,7 +134,7 @@ export default function IslandPhrases({ userId }: Props) {
                   type="button"
                   onClick={submit}
                   disabled={!content.trim() || adding}
-                  className="text-[12px] px-3.5 py-1.5 rounded-full bg-white/90 text-slate-800 hover:bg-white transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="text-[13px] px-4 py-2.5 rounded-full bg-white/90 text-slate-800 hover:bg-white transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {adding ? "记下…" : "教给岛屿"}
                 </button>
@@ -171,7 +171,7 @@ export default function IslandPhrases({ userId }: Props) {
                       onClick={() => remove(p.id)}
                       aria-label="删除"
                       title="收回这句话"
-                      className="text-white/25 hover:text-white/70 text-xs leading-none mt-1 transition shrink-0"
+                      className="touch-target -mr-1 -mt-1 text-white/25 hover:text-white/70 text-base leading-none transition shrink-0"
                     >
                       ×
                     </button>

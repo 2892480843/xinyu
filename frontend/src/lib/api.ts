@@ -337,7 +337,8 @@ export async function fetchMemories(user_id: string): Promise<MemoryItem[]> {
   const res = await fetch(`${BASE}/api/memories?user_id=${encodeURIComponent(user_id)}&limit=20`);
   if (!res.ok) throw new Error("无法读取记忆");
   const data = await res.json();
-  return data.memories as MemoryItem[];
+  // 兜底：后端返回非预期结构（缺 memories 字段 / 返回数组 / null）时不致整页崩溃。
+  return Array.isArray(data?.memories) ? data.memories : Array.isArray(data) ? data : [];
 }
 
 export interface TimelineStep {
@@ -441,7 +442,8 @@ export async function fetchArtifacts(user_id: string): Promise<ArtifactItem[]> {
   const res = await fetch(`${BASE}/api/artifacts?user_id=${encodeURIComponent(user_id)}`);
   if (!res.ok) throw new Error("无法读取岛屿收藏");
   const data = await res.json();
-  return data.artifacts as ArtifactItem[];
+  // 同 fetchMemories 的兜底：缺 artifacts 字段 / 返回数组 / null 时降级为空。
+  return Array.isArray(data?.artifacts) ? data.artifacts : Array.isArray(data) ? data : [];
 }
 
 /** 写一个字给岛屿：描红写下一个心境字 + 书写动力学，岛屿读出情绪刻成心境石。 */

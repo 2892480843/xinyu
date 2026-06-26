@@ -58,14 +58,14 @@ export function NightWatchBanner({ onBedtime }: BannerProps) {
             <button
               type="button"
               onClick={handleBedtime}
-              className="text-[12px] px-3.5 py-1.5 rounded-full bg-white/90 text-slate-800 hover:bg-white transition"
+              className="text-[13px] px-4 py-2.5 rounded-full bg-white/90 text-slate-800 hover:bg-white transition"
             >
               今天先到这里
             </button>
             <button
               type="button"
               onClick={dismiss}
-              className="text-[12px] px-3.5 py-1.5 rounded-full bg-white/8 text-white/70 hover:bg-white/14 transition"
+              className="text-[13px] px-4 py-2.5 rounded-full bg-white/8 text-white/70 hover:bg-white/14 transition"
             >
               和岛屿说一会儿话
             </button>

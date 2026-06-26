@@ -15,6 +15,12 @@ interface Props {
   open: boolean;
   onToggle: () => void;
   userId?: string;
+  /**
+   * embedded（默认，桌面）：侧栏 widget——带触发条按钮、右锚定展开面板、内嵌 phrases/letter。
+   * fullscreen（移动端）：纯轨迹图查看器——无触发条、全宽面板、轨迹图更高、不内嵌 phrases/letter
+   *   （移动端 phrases/letter 走独立的 BottomSheet 入口，避免双入口重复）。
+   */
+  variant?: "embedded" | "fullscreen";
 }
 
 function fmt(iso: string) {
@@ -30,8 +36,9 @@ function fmt(iso: string) {
  * 心象地图：把历史情绪从普通列表升级为岛上的轨迹节点。
  * 每条记忆是一个光点——颜色表示情绪、大小表示强度，点击可查看当时的心情。
  */
-export default function MindMap({ memories, island, artifacts, open, onToggle, userId }: Props) {
+export default function MindMap({ memories, island, artifacts, open, onToggle, userId, variant = "embedded" }: Props) {
   const [selected, setSelected] = useState<MemoryItem | null>(null);
+  const isFullscreen = variant === "fullscreen";
 
   // 心境石单独成「石林」，其余物件走普通收藏
   const glyphStones = artifacts.filter((a) => a.artifact === "glyph_stone");
@@ -65,30 +72,35 @@ export default function MindMap({ memories, island, artifacts, open, onToggle, u
     : "";
 
   return (
-    <div className="relative z-30 max-w-[min(50vw,21rem)]">
-      <button
-        onClick={() => { playSfx(open ? "page" : "reveal"); onToggle(); }}
-        className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-card bg-white/10 backdrop-blur-md border border-white/18 text-mist-200 hover:text-white text-sm hover:bg-white/15 transition"
-        aria-expanded={open}
-      >
-        <span className="shrink-0 font-serif">心象地图</span>
-        <span className="text-mist-400 text-caption truncate tnum">
-          {island ? `第${island.growth_level}级 · ` : ""}
-          {memories.length} 片心情 · {open ? "收起" : "翻开"}
-        </span>
-      </button>
+    <div className={isFullscreen ? "relative z-0 w-full" : "relative z-30 max-w-[min(50vw,21rem)]"}>
+      {/* embedded（桌面）才渲染 widget 触发条；fullscreen 由外部容器提供入口 */}
+      {!isFullscreen && (
+        <button
+          onClick={() => { playSfx(open ? "page" : "reveal"); onToggle(); }}
+          className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-card bg-white/10 backdrop-blur-md border border-white/18 text-mist-200 hover:text-white text-sm hover:bg-white/15 transition"
+          aria-expanded={open}
+        >
+          <span className="shrink-0 font-serif">心象地图</span>
+          <span className="text-mist-400 text-caption truncate tnum">
+            {island ? `第${island.growth_level}级 · ` : ""}
+            {memories.length} 片心情 · {open ? "收起" : "翻开"}
+          </span>
+        </button>
+      )}
 
       <AnimatePresence>
-        {open && (
+        {(isFullscreen || open) && (
           <motion.div
-            className="panel-glass-3 absolute right-0 top-full mt-2 w-[min(86vw,21rem)] rounded-card-lg overflow-hidden"
-            style={{ maxHeight: "calc(100dvh - 180px)" }}
-            initial={{ opacity: 0, height: 0, y: -8 }}
-            animate={{ opacity: 1, height: "auto", y: 0 }}
-            exit={{ opacity: 0, height: 0, y: -8 }}
+            className={`panel-glass-3 rounded-card-lg overflow-hidden ${
+              isFullscreen ? "relative w-full" : "absolute right-0 top-full mt-2 w-[min(86vw,21rem)]"
+            }`}
+            style={{ maxHeight: isFullscreen ? "none" : "calc(100dvh - 180px)" }}
+            initial={isFullscreen ? false : { opacity: 0, height: 0, y: -8 }}
+            animate={isFullscreen ? undefined : { opacity: 1, height: "auto", y: 0 }}
+            exit={isFullscreen ? undefined : { opacity: 0, height: 0, y: -8 }}
             transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
           >
-            <div className="overflow-y-auto overscroll-contain" style={{ maxHeight: "calc(100dvh - 180px)" }}>
+            <div className="overflow-y-auto overscroll-contain" style={{ maxHeight: isFullscreen ? "none" : "calc(100dvh - 180px)" }}>
             {nodes.length === 0 ? (
               <div className="py-7 px-6 text-center">
                 {/* 空态：60×80 静态岛屿剪影 */}
@@ -112,7 +124,7 @@ export default function MindMap({ memories, island, artifacts, open, onToggle, u
             ) : (
               <>
                 {/* 轨迹地图 */}
-                <div className="relative w-full" style={{ height: 160 }}>
+                <div className="relative w-full" style={{ height: isFullscreen ? 240 : 160 }}>
                   <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none" viewBox="0 0 100 100">
                     {/* 贝塞尔曲线轨迹 */}
                     <path
@@ -264,11 +276,12 @@ export default function MindMap({ memories, island, artifacts, open, onToggle, u
               </div>
             )}
 
-            {/* 私房安慰话：用户教岛屿一句重要他人的安慰话，岛屿同类情绪复用 */}
-            {userId && <IslandPhrases userId={userId} />}
+            {/* 私房安慰话：用户教岛屿一句重要他人的安慰话，岛屿同类情绪复用。
+                fullscreen（移动端）不内嵌——走独立 BottomSheet 入口，避免双入口重复。 */}
+            {!isFullscreen && userId && <IslandPhrases userId={userId} />}
 
-            {/* 岛屿年报：让 hy3-preview 读完整历史写一封温柔短信 */}
-            {userId && <IslandLetter userId={userId} memoryCount={memories.length} />}
+            {/* 岛屿年报：让 hy3-preview 读完整历史写一封温柔短信。同上，移动端独立入口。 */}
+            {!isFullscreen && userId && <IslandLetter userId={userId} memoryCount={memories.length} />}
 
             </div>
             {/* 底部 mask 渐隐——暗示还可滚动 */}

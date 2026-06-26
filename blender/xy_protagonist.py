@@ -139,6 +139,12 @@ def add_box(V, F, M, cx, cy, cz, w, d, h, mi, rz=0.0, ry=0.0):  # CENTER
           (o + 3, o, o + 4, o + 7), (o + 4, o + 5, o + 6, o + 7), (o, o + 3, o + 2, o + 1)]
     for _ in range(6): M.append(mi)
 
+def add_quad(V, F, M, pts, mi, two_sided=False):
+    o = len(V); V += pts
+    F.append((o, o + 1, o + 2, o + 3)); M.append(mi)
+    if two_sided:
+        F.append((o + 3, o + 2, o + 1, o)); M.append(mi)
+
 def add_cyl(V, F, M, cx, cy, cz, r, h, mi, sg=12, r2=None):
     sg = max(8, round(sg * Q)); r2 = r if r2 is None else r2; o = len(V)
     for j in range(sg):
@@ -259,6 +265,10 @@ def build():
     BOOT = mb.add("Boot", "#ecdcb8"); BOOTC = mb.add("BootCuff", "#dcc796"); SOLE = mb.add("BootSole", "#6f5a44"); LACE = mb.add("Lace", "#c0ad84")  # 暖柔米靴
     BRASS = mb.add("Lantern", "#c2a25a", metal=0.5, rough=0.45); LGLOW = mb.add("Emissive_Lamp", "#ffd98f", emit="#ffe6b0", es=4.0)
     SHELL = mb.add("Shell", "#f0e0cf"); SHBLUE = mb.add("ShellBlue", "#7fc0d4"); CORD = mb.add("Cord", "#6f4a2c")
+    CAPEBLUE = mb.add("CapeBlueSheer", "#79bdcb", alpha=0.64)
+    PEARL = mb.add("Pearl", "#eaf8f6", rough=0.42)
+    GOLDPIN = mb.add("GoldPin", "#d0a75a", metal=0.55, rough=0.46)
+    TASSBLUE = mb.add("TasselBlue", "#4f9eb8")
     mats = mb.mats
     parts = {}
     def P(n):
@@ -321,6 +331,27 @@ def build():
     for sx in (-1, 1):                                                                    # shoulder drape caps
         add_ell(V, F, M, 0.2 * sx, 0.0, SH, 0.12, 0.12, 0.11, CAPE, 10, 6)
 
+    # ---------------- reference polish: sheer side cape tails + back lighthouse mark ---------------- #
+    for sx, nm in ((-1, "CapeSideTailL"), (1, "CapeSideTailR")):
+        V, F, M = P(nm)
+        add_quad(V, F, M, [
+            (0.24 * sx, -0.02, 1.18 + OFF),
+            (0.43 * sx, -0.04, 1.08 + OFF),
+            (0.48 * sx, -0.08, 0.62 + OFF),
+            (0.27 * sx, -0.06, 0.76 + OFF),
+        ], CAPEBLUE)
+        add_cyl2(V, F, M, (0.26 * sx, -0.055, 0.78 + OFF), (0.47 * sx, -0.075, 0.62 + OFF), 0.009, TRIM, 5, r2=0.006)
+        add_cyl2(V, F, M, (0.43 * sx, -0.04, 1.08 + OFF), (0.48 * sx, -0.08, 0.62 + OFF), 0.008, TRIM, 5, r2=0.005)
+
+    V, F, M = P("CapeBackEmblem")
+    qcx, qy, qcz, qw, qh = 0.0, -0.335, 1.06 + OFF, 0.24, 0.22
+    add_quad(V, F, M, [
+        (qcx - qw / 2, qy, qcz - qh / 2),
+        (qcx + qw / 2, qy, qcz - qh / 2),
+        (qcx + qw / 2, qy, qcz + qh / 2),
+        (qcx - qw / 2, qy, qcz + qh / 2),
+    ], LH)
+
     # ---------------- body (torso/head/hair/face/straps/satchel/amulet) ---------------- #
     V, F, M = P("body")
     add_ell(V, F, M, 0, 0, 0.88 + OFF, 0.22, 0.16, 0.13, PANT, 12, 7)                     # hips
@@ -350,6 +381,12 @@ def build():
         add_cyl2(V, F, M, (0.2 * sx, 0.11, HZ + 0.05), (0.2 * sx, 0.15, HZ - 0.16), 0.055, HAIR, 6, r2=0.028)
     add_box(V, F, M, 0.17, 0.1, HZ + 0.12, 0.05, 0.04, 0.11, TRIM, rz=0.3)                # hair clip
     add_box(V, F, M, 0.17, 0.11, HZ + 0.12, 0.02, 0.02, 0.13, SHBLUE, rz=0.3)
+    Vh, Fh, Mh = P("HairWhorl")                                                           # 参考图头顶卷翘发束
+    add_cyl2(Vh, Fh, Mh, (-0.025, -0.025, HZ + 0.21), (0.01, -0.01, HZ + 0.39), 0.017, HAIR, 5, r2=0.008)
+    add_cyl2(Vh, Fh, Mh, (0.01, -0.01, HZ + 0.39), (0.09, 0.03, HZ + 0.42), 0.012, HAIR, 5, r2=0.004)
+    add_cyl2(Vh, Fh, Mh, (-0.04, -0.035, HZ + 0.23), (-0.10, -0.01, HZ + 0.34), 0.011, HAIRH, 5, r2=0.004)
+    add_ell(Vh, Fh, Mh, 0.17, 0.13, HZ + 0.12, 0.028, 0.012, 0.028, GOLDPIN, 7, 4)
+    add_ell(Vh, Fh, Mh, 0.19, 0.14, HZ + 0.105, 0.018, 0.01, 0.018, SHBLUE, 6, 4)
     # hood (down behind neck)
     add_ell(V, F, M, 0, -0.2, 1.28 + OFF, 0.19, 0.14, 0.17, HOOD, 12, 7)
     add_ell(V, F, M, 0, -0.16, 1.24 + OFF, 0.15, 0.1, 0.13, CAPESH, 10, 6)
@@ -369,11 +406,30 @@ def build():
     V += [(qcx - qw / 2, qy, qcz - qh / 2), (qcx + qw / 2, qy, qcz - qh / 2), (qcx + qw / 2, qy, qcz + qh / 2), (qcx - qw / 2, qy, qcz + qh / 2)]
     F.append((_o, _o + 1, _o + 2, _o + 3)); M.append(LH)
     add_box(V, F, M, sxh, 0.2, 0.74 + OFF, 0.04, 0.02, 0.04, BUCK, rz=0.1)
+    Vc, Fc, Mc = P("SatchelShellCharm")
+    add_cyl2(Vc, Fc, Mc, (sxh - 0.13, 0.18, 0.88 + OFF), (sxh - 0.15, 0.20, 0.75 + OFF), 0.006, GOLDPIN, 5)
+    add_ell(Vc, Fc, Mc, sxh - 0.15, 0.215, 0.73 + OFF, 0.046, 0.018, 0.052, SHELL, 9, 5)
+    for dx in (-0.024, -0.012, 0.0, 0.012, 0.024):
+        add_cyl2(Vc, Fc, Mc, (sxh - 0.15, 0.235, 0.76 + OFF), (sxh - 0.15 + dx, 0.238, 0.70 + OFF), 0.0035, GOLDPIN, 4, r2=0.002)
+    add_ell(Vc, Fc, Mc, sxh - 0.15, 0.23, 0.66 + OFF, 0.014, 0.01, 0.025, SHBLUE, 6, 4)
     # shell amulet
     add_cyl2(V, F, M, (-0.12, 0.15, 1.26 + OFF), (0, 0.2, 1.12 + OFF), 0.012, CORD, 5)
     add_cyl2(V, F, M, (0.12, 0.15, 1.26 + OFF), (0, 0.2, 1.12 + OFF), 0.012, CORD, 5)
     add_ell(V, F, M, 0, 0.22, 1.09 + OFF, 0.055, 0.03, 0.05, SHELL, 9, 5)
     add_box(V, F, M, 0, 0.24, 1.09 + OFF, 0.012, 0.012, 0.06, SHBLUE)
+    Vp, Fp, Mp = P("PearlPendant")
+    add_ell(Vp, Fp, Mp, 0, 0.23, 1.18 + OFF, 0.024, 0.018, 0.024, PEARL, 8, 5)
+    add_ell(Vp, Fp, Mp, 0, 0.235, 1.145 + OFF, 0.017, 0.012, 0.017, GOLDPIN, 7, 4)
+    add_ell(Vp, Fp, Mp, 0, 0.24, 1.075 + OFF, 0.064, 0.022, 0.058, SHELL, 10, 5)
+    for dx in (-0.035, -0.018, 0.0, 0.018, 0.035):
+        add_cyl2(Vp, Fp, Mp, (0, 0.255, 1.12 + OFF), (dx, 0.258, 1.04 + OFF), 0.0035, GOLDPIN, 4, r2=0.002)
+    add_ell(Vp, Fp, Mp, 0, 0.25, 1.00 + OFF, 0.014, 0.01, 0.024, SHBLUE, 6, 4)
+    Vt, Ft, Mt = P("CloakCordTassels")
+    for sx in (-1, 1):
+        add_cyl2(Vt, Ft, Mt, (0.07 * sx, 0.225, 1.25 + OFF), (0.15 * sx, 0.22, 1.06 + OFF), 0.008, CORD, 5)
+        add_ell(Vt, Ft, Mt, 0.15 * sx, 0.23, 1.05 + OFF, 0.018, 0.012, 0.018, GOLDPIN, 6, 4)
+        add_cone(Vt, Ft, Mt, 0.15 * sx, 0.235, 0.99 + OFF, 0.024, -0.105, TASSBLUE, 7, rz=sx * 0.08)
+        add_ell(Vt, Ft, Mt, 0.15 * sx, 0.24, 0.89 + OFF, 0.012, 0.008, 0.020, SHBLUE, 6, 4)
 
     # ---------------- 4 套可切换表情(眼/眉/嘴独立节点,游戏内按状态切 .visible) ---------------- #
     def add_eyes(VV, FF, MM, eyeH, lidZ, browZ, browRy):
@@ -400,6 +456,9 @@ def build():
               "ShinL": (-0.135, 0, KNEE), "ShinR": (0.135, 0, KNEE),
               "ArmL": (-0.2, 0, SH), "ArmR": (0.2, 0, SH), "ForeArmL": ELB[-1], "ForeArmR": ELB[1],
               "Cape": (0, 0, 1.24 + OFF),
+              "CapeSideTailL": (0, 0, 1.24 + OFF), "CapeSideTailR": (0, 0, 1.24 + OFF),
+              "CapeBackEmblem": (0, 0, 1.24 + OFF), "HairWhorl": (0, 0, HZ + 0.28),
+              "CloakCordTassels": (0, 0, 0), "PearlPendant": (0, 0, 0), "SatchelShellCharm": (0, 0, 0),
               "Face_Cheerful": (0, 0, 0), "Face_Calm": (0, 0, 0), "Face_Determined": (0, 0, 0), "Face_Curious": (0, 0, 0)}
     objs = {}
     for nm, (V, F, M) in parts.items():
@@ -407,19 +466,23 @@ def build():
         ob = mkobj(oname, V, F, mats, M, pivots[nm])
         set_origin(ob, pivots[nm])                                # 先移原点(腿/披风变为局部居中)再 UV
         if nm == "Cape": uv_wrap(ob, "Decal_Wave", repeat=7.0)    # 斗篷海浪滚边 + 领口
-        if nm == "body": uv_planar(ob, "Decal_Lighthouse")        # 背包灯塔徽记
+        if nm in ("body", "CapeBackEmblem"): uv_planar(ob, "Decal_Lighthouse")        # 背包/披风灯塔徽记
         if nm in ("LegL", "LegR"): uv_wrap(ob, "Decal_PantSwirl", repeat=4.0)   # 大腿裤卷纹
         if nm in ("ShinL", "ShinR"): uv_wrap(ob, "Decal_Wave", repeat=5.0)      # 挽裤脚海浪滚边
         recalc(ob); objs[nm] = ob
     body = objs["body"]
     # 一级:大腿/大臂/披风/4 表情 挂躯干(body 在原点,identity)
-    for nm in ("LegL", "LegR", "ArmL", "ArmR", "Cape", "Face_Cheerful", "Face_Calm", "Face_Determined", "Face_Curious"):
+    for nm in ("LegL", "LegR", "ArmL", "ArmR", "Cape", "HairWhorl", "CloakCordTassels", "PearlPendant", "SatchelShellCharm",
+               "Face_Cheerful", "Face_Calm", "Face_Determined", "Face_Curious"):
         objs[nm].parent = body
     bpy.context.view_layer.update()                               # 刷新 matrix_world,供二级 parent_inverse 取准
     # 二级:小腿挂大腿、小臂挂大臂(parent_inverse 保持世界位姿;游戏内各自绕膝/肘旋转 → 屈膝屈肘)
     for child, par in (("ShinL", "LegL"), ("ShinR", "LegR"), ("ForeArmL", "ArmL"), ("ForeArmR", "ArmR")):
         objs[child].parent = objs[par]
         objs[child].matrix_parent_inverse = objs[par].matrix_world.inverted()
+    for child in ("CapeSideTailL", "CapeSideTailR", "CapeBackEmblem"):
+        objs[child].parent = objs["Cape"]
+        objs[child].matrix_parent_inverse = objs["Cape"].matrix_world.inverted()
     return body
 
 # --------------------------------------------------------------------------- #

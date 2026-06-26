@@ -13,6 +13,13 @@ interface Props {
   music: string | undefined;
   /** 当前情绪 key（sad/anxious/tired/...），驱动氛围底噪层。 */
   emotion?: string;
+  /**
+   * 定位变体：
+   * - desktop（默认）：左下角大卡片，含静海模式 / 3D 开关。
+   * - mobile-top：移动端右上角，定位与宽度改为顶部贴右、可收起；
+   *   静海模式 / 3D 开关在移动端另有入口（「我」Tab / 独立开关），故此处不重复渲染。
+   */
+  variant?: "desktop" | "mobile-top";
 }
 
 const FADE_STEP_MS = 40;
@@ -33,7 +40,7 @@ function armAutoplayRetry() {
   window.addEventListener("keydown", trigger, { once: true });
 }
 
-export default function MusicControl({ music, emotion }: Props) {
+export default function MusicControl({ music, emotion, variant = "desktop" }: Props) {
   const track = useMemo(() => resolveMusicTrack(music), [music]);
   const { calmMode, setCalmMode } = useImmersion();
   const { wanted: skin3dOn, supported: skin3dOk, setSkin3d } = useSkin3d();
@@ -217,19 +224,73 @@ export default function MusicControl({ music, emotion }: Props) {
     setEnabled(false);
   };
 
+  const isMobile = variant === "mobile-top";
+  // 移动端：默认收起成右上角小图标，点开下拉出完整控件。
+  const [expanded, setExpanded] = useState(false);
+
+  const desktopStyle = {
+    left: "calc(1rem + env(safe-area-inset-left))",
+    bottom: "calc(1.25rem + env(safe-area-inset-bottom))",
+  } as const;
+  const mobileStyle = {
+    right: "calc(0.75rem + env(safe-area-inset-right))",
+    top: "calc(0.75rem + env(safe-area-inset-top))",
+  } as const;
+
+  // 外壳形态：移动端收起态收成贴角小药丸（rounded-full），展开态/桌面态才是完整面板卡。
+  const shellClass = isMobile
+    ? (expanded ? "rounded-card w-[min(82vw,17rem)] px-3 py-2.5" : "rounded-full p-1")
+    : "rounded-card w-[min(88vw,19rem)] px-4 py-3";
+
   return (
     <motion.div
-      className="panel-glass-1 fixed z-30 w-[min(88vw,19rem)] rounded-card px-4 py-3"
-      style={{
-        left: "calc(1rem + env(safe-area-inset-left))",
-        bottom: "calc(1.25rem + env(safe-area-inset-bottom))",
-      }}
+      className={`panel-glass-1 fixed z-30 ${shellClass}`}
+      style={isMobile ? mobileStyle : desktopStyle}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, ease: "easeOut" }}
     >
       <audio ref={audioRef} loop preload="none" onError={handleAudioError} />
 
+      {/* 移动端收起态：贴角小药丸——播放/暂停主盘 + 一条窄展开箭头，轻盈不抢戏 */}
+      {isMobile && !expanded && (
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={toggle}
+            disabled={!available}
+            aria-label={enabled ? "暂停背景音乐" : "播放背景音乐"}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/14 text-white/85 border border-white/15 disabled:cursor-not-allowed disabled:opacity-45 transition active:scale-95"
+          >
+            <span className="text-sm">{enabled ? "Ⅱ" : "▶"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            aria-label="展开音乐面板"
+            className="grid h-10 w-6 shrink-0 place-items-center rounded-full text-white/45 active:scale-95 transition"
+          >
+            <span className="text-[11px] leading-none">⌄</span>
+          </button>
+        </div>
+      )}
+
+      {/* 桌面完整态 / 移动端展开态 */}
+      {(!isMobile || expanded) && (
+        <>
+          {isMobile && (
+            <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
+              <span className="text-[10px] tracking-wider text-white/45">背景音乐</span>
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                aria-label="收起音乐面板"
+                className="touch-target grid h-7 w-7 place-items-center rounded-full text-white/55 active:scale-95 transition"
+              >
+                <span className="text-xs">⌃</span>
+              </button>
+            </div>
+          )}
       <div className="flex items-center gap-3">
         <button
           type="button"
@@ -271,7 +332,10 @@ export default function MusicControl({ music, emotion }: Props) {
         ♪ {track.title} · {track.artist} · {track.license}
       </a>
 
-      {/* 静海模式：一键减弱全部 3D/视差/体积光（无障碍/晕动症开关，持久化） */}
+      {/* 静海模式：一键减弱全部 3D/视差/体积光（无障碍/晕动症开关，持久化）。
+          移动端另有入口，此处仅在桌面态渲染。 */}
+      {!isMobile && (
+        <>
       <button
         type="button"
         onClick={() => setCalmMode(!calmMode)}
@@ -286,7 +350,7 @@ export default function MusicControl({ music, emotion }: Props) {
       </button>
 
       {/* 真 3D 岛屿（实验）：仅设备支持 WebGL 时出现；开启后由 react-three-fiber 接管背景。
-          静海/reduced-motion 仍生效——届时 3D 静态单帧不漂。 */}
+          静海/reduced-motion 仍生效——届时 3D 静态单帧不漂。移动端另有入口，此处仅桌面态。 */}
       {skin3dOk && (
         <button
           type="button"
@@ -300,6 +364,10 @@ export default function MusicControl({ music, emotion }: Props) {
             <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-[#0a0e1f] transition-all duration-200 ${skin3dOn ? "left-3.5" : "left-0.5"}`} />
           </span>
         </button>
+      )}
+        </>
+      )}
+        </>
       )}
     </motion.div>
   );

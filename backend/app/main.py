@@ -89,6 +89,13 @@ async def lifespan(app: FastAPI):
         memory_service.ensure_demo_seed()
     except Exception as e:
         logger.warning("启动时 DB 初始化失败，将在首次请求时重试：%s", e)
+    # 同步端点(reflect/chat/agent_ask 等 def 函数)由 FastAPI 跑在 anyio 线程池(默认上限 40)。
+    # LLM 端点较慢(reflect 重链路可达 ~120s),抬高并发余量,免得几个慢请求占满线程池拖累其它请求(含 health)。
+    try:
+        import anyio
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 64
+    except Exception as e:  # pragma: no cover - 仅加固,失败不影响启动
+        logger.warning("调整线程池上限失败(忽略)：%s", e)
     yield
     db.close_pool()
 

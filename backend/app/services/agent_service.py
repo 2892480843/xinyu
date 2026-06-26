@@ -26,6 +26,23 @@ logger = logging.getLogger("xinyu.agent")
 
 EMOTIONS = ["sad", "anxious", "tired", "lonely", "calm", "happy", "angry", "helpless"]
 
+# 共用一个模块级 httpx.Client：AgentReflectionService / ToolChatAgent 每请求都新建实例，
+# 若各自 new client，则每个 /api/reflect|chat|agent/ask 都对 LLM API 重做 TCP+TLS 握手、且从不 close
+# → 连接泄漏 + 每请求多花 ~100-300ms 握手。共用单例 → 连接池跨请求 keep-alive 复用。
+# httpx.Client 线程安全，适配 FastAPI 同步端点的线程池并发；连接池按 host 分键，可同时服务
+# dashscope(reflect) 与 deepseek(chat) 两条通道。
+_shared_client: Optional[httpx.Client] = None
+
+
+def _get_client() -> httpx.Client:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = httpx.Client(
+            timeout=config.LLM_TIMEOUT,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=64),
+        )
+    return _shared_client
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
@@ -108,7 +125,7 @@ class AgentReflectionService:
 
     def __init__(self, tools_impl: Dict[str, Callable[..., Any]]):
         self._tools = tools_impl
-        self._client = httpx.Client(timeout=config.LLM_TIMEOUT)
+        self._client = _get_client()  # 共用模块级单例,跨请求复用连接(见 _get_client)
 
     @property
     def available(self) -> bool:
@@ -277,7 +294,7 @@ class ToolChatAgent:
     def __init__(self, tools_impl: Dict[str, Callable[..., Any]], tools_spec: Optional[List[Dict[str, Any]]] = None):
         self._tools = tools_impl
         self._spec = tools_spec or CHAT_TOOLS
-        self._client = httpx.Client(timeout=config.LLM_TIMEOUT)
+        self._client = _get_client()  # 共用模块级单例,跨请求复用连接(见 _get_client)
 
     @property
     def available(self) -> bool:

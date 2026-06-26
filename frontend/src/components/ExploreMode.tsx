@@ -19,6 +19,7 @@ import { setLocationZone, stopLocationAmbience, type LocationZone } from "../lib
 import { getPerfTier } from "../lib/perfTier";
 import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
+import { selectCharacterAction, type CharacterActionClip } from "../lib/protagonistAction";
 import {
   createCompanionVoice,
   getCompanionLevel,
@@ -39,6 +40,7 @@ import {
   getSecretText,
   loadCompanionState,
   nightVisitCompanion,
+  pickCompanionOpenLine,
   renameCompanion,
   saveCompanionState,
   singCompanion,
@@ -432,11 +434,11 @@ function nearIsleProp(x: number, z: number, margin = 0): boolean {
   for (const p of ISLE_PROPS) { const dx = p.x - x, dz = p.z - z, rr = p.r + margin; if (dx * dx + dz * dz < rr * rr) return true; }
   return false;
 }
-const PLAYER_SPEED = 26.0; // 移动速度(大岛散步式探索:从容可控,不赶)
+const PLAYER_SPEED = 14.0; // 移动速度(大岛散步式探索:再放慢一档,从容的慢步)
 const JUMP_V = 11.0; // 起跳初速度
 const GRAVITY = 34.0; // 重力加速度(跳跃抛物);跳跃高度 ≈ V²/2g ≈ 1.8 单位
-const CAM_DIST = 9.0; // 相机跟在身后的距离(拉近,角色更大、更有代入感)
-const CAM_HEIGHT = 5.2; // 相机高度(配合拉近略降,俯角不至于太陡;仍够高让丘陵不挡视线)
+const CAM_DIST = 7.0; // 相机跟在身后的距离(再拉近一档,角色更大、更有代入感)
+const CAM_HEIGHT = 4.2; // 相机高度(随距离同比降,俯角维持 ~31° 不变只是更近;仍够高让丘陵不挡视线)
 
 // 模块级临时向量(单 Player 实例,逐帧复用,避开 react-hooks 对组件内值变异的规则)
 const _fwd = new THREE.Vector3();
@@ -514,7 +516,13 @@ function lanternRise(t: number): number {
 const lanternCam = { x: 0, z: 0, gy: 0, t: 0, on: false };
 // 「放飞一片」万灯齐放信号:UI 按钮写 v++ 与发射中心,SkyLanterns 据此一次性放出一整片天灯
 const lanternFlock = { v: 0, x: 0, z: 0 };
+// 天灯模型(kmd.glb 2.9M)是否已加载进缓存:SkyLanterns 进岛即顶层预加载,载完置 true。
+// 放飞前据此判断——没好就先等(见 ensureLantern),避免「点了放飞才加载解析」的卡顿尖峰。
+let _lanternModelReady = false;
 const _carTmp = new THREE.Vector3();
+// 精灵防穿模:目标点碰撞推出复用(回调内同步用,不跨组件共享)
+const _compTmp = new THREE.Vector3();
+const _compVel = { x: 0, z: 0 };
 // 车辆姿态 useFrame 专用复用临时量(单辆车、回调内同步使用,不与玩家/相机的 _fwd 等共享)→ 免每帧 new
 const _carUp = new THREE.Vector3();
 const _carFwd = new THREE.Vector3();
@@ -641,7 +649,7 @@ const MODELS = {
   shell: "/models/xy_item_shell.glb",
   nightflower: "/models/xy_item_nightflower.glb",
   avatar: "/models/xy_char_avatar.glb",
-  heroChar: "/models/xy_char_protagonist.glb",
+  heroChar: "/models/xy_char_protagonist.glb?v=2", // ?v=2 缓存破坏:主角重导出加了 WalkLoop 等骨骼动画,旧 URL 在用户端被 SW/HTTP 缓存喂旧版(无动画)→ 走路没了;换新 URL 强制取新模型(重导出再改动画时递增此号)
   pocoyo: "/models/xy_char_pocoyo.glb", // Pocoyo 主角(专用 rig 负责修正 FBX 轴向与落脚点)
   // Batch 5 · 村落建筑(三风格混搭)
   houseCottage: "/models/xy_house_cottage.glb",
@@ -746,11 +754,51 @@ Object.values(MODELS).forEach((u) => {
   if (!HEAVY_DEFER.has(u)) useGLTF.preload(u);
 });
 
-// 首页空闲时由 Home 调用（import 本模块即已 preload 近百个非重模型 = 进岛门所需）：
-// 这里再补缓存「进岛即在身边」的灯塔精灵（4.4M，已 defer），让一上岛精灵就在。
-// 写实大地标（浴场/街区/杜鹃 27M+）继续留给进岛后各自 Suspense 流式，不在首页占满带宽。
+// 首页空闲(或 hover「上岛走走」)时由 Home 调用(import 本模块即已 preload 近百个非重小模型 = 进岛门所需)。
+// 这里在首页打开后,按优先级「顺序、串行」把进岛要用的重模型提前拉好并解析入缓存 →
+// 进岛时它们已就位,不再逐个 pop-in 顿帧(解决「进岛仍卡」)。
+// 为什么这次安全(避开之前 rIC-burst 预取重地标「与进岛抢资源 → 卡」的回退):
+//   ① 串行 await fetch:一次只下一个,先入浏览器缓存,不与首页/彼此抢带宽(生产友好);
+//   ② 下完再交 drei 解析(从缓存秒读)+ 200ms 间隔 → 解析摊到多帧,首页不卡;
+//   ③ 精灵最高优先立即预热;写实大地标按「小→大」串行,28M 浴场最后;
+//   ④ 重模型都非进岛关键路径(各自 Suspense),没预热完也只是回退到「进岛后再流式」=现状,
+//      且小模型预载完全不动 → 不会拖慢/挂起世界 reveal,无回退风险。
+// 这个工具导出与默认组件同文件是有意的(依赖本模块的 MODELS 表),HMR fast-refresh 的告警在此豁免。
+let _heavyWarmStarted = false;
+let _exploreActive = false;            // 用户已进岛 → 立刻停后台预热,把 CPU/带宽全让给进岛自身的加载
+let _warmAbort: AbortController | null = null;
+
+// ExploreMode 进/出岛时调用:进岛即停后台重模型预热——否则它的 fetch/解析会与进岛时的场景挂载
+// (52000 草 + 地形几何 + 模型解析)抢资源,反而让进岛更卡(这是「首页预取」最大的反作用,必须掐断)。
+function setExploreActive(active: boolean): void {
+  _exploreActive = active;
+  if (active) _warmAbort?.abort();
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
 export function prefetchExploreAssets(): void {
-  useGLTF.preload(MODELS.companion);
+  if (_heavyWarmStarted) return; // 幂等:首页 idle 与 hover/点按可能各调一次
+  _heavyWarmStarted = true;
+  useGLTF.preload(MODELS.companion); // 精灵进岛即在 → 最高优先,立即预热
+  // 写实/较重大件按「小→大」串行预热(skyLantern 2.9M → 浴场 28M 最后)
+  const order = [MODELS.skyLantern, MODELS.townblock, MODELS.qiche, MODELS.rhododendron, MODELS.bathhouse];
+  _warmAbort = new AbortController();
+  const sig = _warmAbort.signal;
+  void (async () => {
+    // 先让模块顶层 preload 的近百小模型(进岛门所需关键件)跑在前头,再开始串行预热重地标 → 真正「按序」、不抢关键路径
+    await new Promise((res) => setTimeout(res, 600));
+    for (const url of order) {
+      if (_exploreActive || sig.aborted) return; // 已进岛 → 停止,让进岛优先(其余重模型进岛后各自 Suspense 流式)
+      try {
+        await fetch(url, { signal: sig }).then((r) => r.arrayBuffer()); // 串行下入浏览器缓存(可 await/可中止,不抢带宽)
+        if (_exploreActive) return;
+        useGLTF.preload(url);                            // 交 drei 解析入缓存(从浏览器缓存读)
+        await new Promise((res) => setTimeout(res, 200)); // 给解析/主线程喘息,再起下一个
+      } catch {
+        /* abort 或单个失败:不影响后续与进岛(进岛仍可各自 Suspense 流式) */
+      }
+    }
+  })();
 }
 
 // 陪伴精灵:跟随玩家漂浮的小灵兽(强化「情感陪伴」)。保留 glb 原材质(半透+发光),不套 toon。
@@ -766,6 +814,7 @@ function Companion({
   sleeping,
   chatter,
   onInteract,
+  collidersRef,
 }: {
   posRef: React.RefObject<THREE.Vector3>;
   action: CompanionActionSignal | null;
@@ -774,6 +823,7 @@ function Companion({
   sleeping?: boolean;
   chatter?: { text: string; nonce: number } | null;
   onInteract?: () => void;
+  collidersRef?: React.RefObject<Map<string, Collider[]> | null>;
 }) {
   const { scene, animations } = useGLTF(MODELS.companion);
   const obj = useMemo(() => {
@@ -862,14 +912,37 @@ function Companion({
     const talk = Math.min(1, lvl);
     // 漂浮高度：睡着下沉 + 起伏放慢；哼唱时随拍轻跳
     const bob = (Math.sin(t * 1.5) * 0.14 + Math.sin(t * 0.73) * 0.07) * (1 - sleep * 0.7);
-    const ay = exGroundY(p.x, p.z) + 1.5 - sleep * 0.72 + bob + talk * 0.12 + sing * Math.abs(beat) * 0.12;
     // 漂浮锚点:玩家身侧 + 缓慢公转 → 精灵在身边轻轻游弋,不再钉死在固定一点
     const orbit = t * 0.5;
-    const ax = p.x + 1.0 + Math.cos(orbit) * 0.4;
-    const az = p.z + 1.0 + Math.sin(orbit * 0.9) * 0.4;
+    let ax = p.x + 1.0 + Math.cos(orbit) * 0.4;
+    let az = p.z + 1.0 + Math.sin(orbit * 0.9) * 0.4;
+    // 防穿模:精灵的目标点也走玩家那套碰撞体推出 → 不再扎进树/房子/地标;
+    // 漂浮高度按「精灵脚下」地面(含地标抬升台坪)算,而非玩家脚下 → 跨坡/上台也不插进地里。
+    _compTmp.set(ax, 0, az);
+    _compVel.x = 0;
+    _compVel.z = 0;
+    resolveCollisions(collidersRef?.current ?? null, _compTmp, _compVel, 0.7);
+    ax = _compTmp.x;
+    az = _compTmp.z;
+    // 竖直保底:精灵脚下地面取「自己脚下地形 / 地标抬升台坪 / 玩家脚下高度」三者最高。
+    // 关键修穿模:玩家站在抬升平台/台阶/栈道上时,exGroundY(精灵处) 仍返回底层地面 → 精灵浮在底层+1.5 → 扎进平台;
+    // 用玩家实际脚下高度 p.y 兜底,精灵就不会沉到玩家所在台面之下。
+    const ay = Math.max(groundYWithRoad(ax, az).y, landmarkGroundLift(ax, az), p.y) + 1.5 - sleep * 0.72 + bob + talk * 0.12 + sing * Math.abs(beat) * 0.12;
     g.position.x += (ax - g.position.x) * k;
     g.position.z += (az - g.position.z) * k;
     g.position.y += (ay - g.position.y) * Math.min(1, dt * 3.0);
+    // 关键防穿模:只解「目标点」不够——精灵以 k≈dt*2.5 慢跟随 + 直线插值,lerp 后的实际渲染位置会斜穿过树/房子。
+    // 对 lerp 之后的实际位置本身再推一次碰撞 → 任何一帧精灵中心都被挤到碰撞体外,不再插进模型。
+    _compTmp.set(g.position.x, 0, g.position.z);
+    _compVel.x = 0; _compVel.z = 0;
+    resolveCollisions(collidersRef?.current ?? null, _compTmp, _compVel, 0.7);
+    g.position.x = _compTmp.x;
+    g.position.z = _compTmp.z;
+    // 竖直防穿模(修「地面/车道往下沉」):y 是慢 lerp(dt*3),玩家走上路面/坡时地面升高、精灵 y 跟不上 →
+    // 一瞬扎进地面/车道。每帧按精灵「实际所在位置」的地面(取地形/地标台坪/玩家脚下三者最高)把 y 钳到地面之上一点,
+    // 任何一帧都不沉下去。0.9 是身体半径余量(睡着低伏时也不扎地)。
+    const gGround = Math.max(groundYWithRoad(g.position.x, g.position.z).y, landmarkGroundLift(g.position.x, g.position.z), p.y);
+    if (g.position.y < gGround + 0.9) g.position.y = gGround + 0.9;
     // 朝向:缓缓看向玩家(陪伴感);睡着时不再追看,停在当前朝向
     if (sleep < 0.5) {
       const faceYaw = Math.atan2(p.x - g.position.x, p.z - g.position.z);
@@ -1401,6 +1474,45 @@ function onLandmarkPad(wx: number, wz: number): boolean {
   if (Math.hypot(wx - MANOR.x, wz - MANOR.z) < 9 + LANDMARK_SKIRT) return true;
   return false;
 }
+// 延迟挂载:进岛后过 ms 毫秒才渲染 children。给写实重地标(浴场 28M/街区/杜鹃/山庄)用 →
+// 它们的 GltfProp 深 clone(大几何同步开销)从「进岛首帧」挪到「世界已显示、可走之后」,
+// 错开几秒逐个到位 → 进岛瞬间只渲地形+小物件(轻),不再被重地标 clone 卡出长空白。
+function DelayedMount({ ms, children }: { ms: number; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setShow(true), ms);
+    return () => window.clearTimeout(t);
+  }, [ms]);
+  return show ? <>{children}</> : null;
+}
+
+// 运行时帧率「分级」自适应:平均帧率偏低时分两档降画质,保流畅。单向(不回弹,避免来回抖动;想恢复刷新即可)。
+//   ① 轻度卡(FPS<46,移动时最常见的「有点掉帧」):先把 dpr 砍到 1 → 像素 −~30%,多数轻掉帧靠这步就回来,
+//      且保住 Sobel 手绘风;
+//   ② 仍重度卡(FPS<28):再关掉最贵的 Sobel 全屏后期 + dpr 进一步降到 0.85,优先保流畅。
+// useFrame 只读 dt,仅在跨档时触发一次 setDpr/setState,符合「useFrame 不每帧 setState」红线。
+function PerfWatch({ onDegrade }: { onDegrade: () => void }) {
+  const setDpr = useThree((s) => s.setDpr);
+  const stage = useRef(0); // 0=满画质 1=降dpr 2=降dpr+关Sobel
+  const acc = useRef({ t: 0, n: 0, mild: 0, hard: 0 });
+  useFrame((_, dt) => {
+    if (stage.current >= 2) return;
+    const a = acc.current;
+    a.t += dt;
+    a.n += 1;
+    if (a.t >= 1) { // 每秒评估一次平均帧率
+      const fps = a.n / a.t;
+      a.mild = fps < 46 ? a.mild + 1 : 0;
+      a.hard = fps < 28 ? a.hard + 1 : 0;
+      if (stage.current < 1 && a.mild >= 2) { stage.current = 1; setDpr(1); }   // 连续 2s 轻度卡 → 降 dpr
+      if (a.hard >= 2) { stage.current = 2; setDpr(0.85); onDegrade(); }        // 连续 2s 重度卡 → 再关 Sobel
+      a.t = 0;
+      a.n = 0;
+    }
+  });
+  return null;
+}
+
 function LandmarkOnPad({ cfg, url, padR, padColor, grad, raw = true }: {
   cfg: { x: number; z: number; rot: number; scale: number; base: number };
   url: string;
@@ -1671,8 +1783,8 @@ function GltfAvatar({ avatar, legL, legR, armL, armR }: {
 }
 
 // glb 主角「记忆的守护者」:载入精修角色,保留其自带配色 + 海浪贴图(有 map 的材质保图) + Emissive_* 发光。
-// 暴露 LegL/LegR/ArmL/ArmR + Cape 节点给 Player 做走/跳摆动 + 披风随动。固定形象(不走「捏人」改色)。
-function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, cape, faces }: {
+// 暴露 LegL/LegR/ArmL/ArmR + Cape 节点给 Player 做待机兜底;运动/手势优先播放 GLB 内 NLA 动作。
+function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, cape, faces, actionRef }: {
   legL?: React.RefObject<THREE.Object3D | null>;
   legR?: React.RefObject<THREE.Object3D | null>;
   armL?: React.RefObject<THREE.Object3D | null>;
@@ -1683,8 +1795,10 @@ function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, ca
   foreArmR?: React.RefObject<THREE.Object3D | null>;
   cape?: React.RefObject<THREE.Object3D | null>;
   faces?: React.RefObject<Record<string, THREE.Object3D> | null>;
+  actionRef?: React.RefObject<CharacterActionClip>;
 }) {
-  const { scene } = useGLTF(MODELS.heroChar);
+  const { scene, animations } = useGLTF(MODELS.heroChar);
+  const ref = useRef<THREE.Group>(null);
   const grad = useMemo(() => makeToonGradient(), []);
   // 卡通描边:法线外扩的背面黑壳(inverted hull),让角色轮廓清晰、从背景里跳出来
   const outlineMat = useMemo(() => new THREE.ShaderMaterial({
@@ -1748,8 +1862,31 @@ function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, ca
       faces.current = map;
     }
   }, [obj, legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, cape, faces]);
-  useEffect(() => () => grad.dispose(), [grad]);
-  return <primitive object={obj} scale={0.6} rotation={[0, Math.PI, 0]} />;
+  const { actions, mixer } = useAnimations(animations, ref);
+  const activeClip = useRef<CharacterActionClip>("Idle");
+  const activeAction = useRef<THREE.AnimationAction | null>(null);
+  useFrame((_, dt) => {
+    const next = actionRef?.current ?? "Idle";
+    if (next !== activeClip.current) {
+      activeAction.current?.fadeOut(0.12);
+      const nextAction = next === "Idle" ? null : actions[next];
+      if (nextAction) {
+        nextAction.reset();
+        nextAction.clampWhenFinished = next !== "WalkLoop";
+        nextAction.setLoop(next === "WalkLoop" ? THREE.LoopRepeat : THREE.LoopOnce, next === "WalkLoop" ? Infinity : 1);
+        nextAction.fadeIn(next === "WalkLoop" ? 0.18 : 0.08).play();
+      }
+      activeAction.current = nextAction ?? null;
+      activeClip.current = next;
+    }
+    mixer.update(dt);
+  });
+  useEffect(() => () => { grad.dispose(); mixer.stopAllAction(); }, [grad, mixer]);
+  return (
+    <group ref={ref} scale={0.6} rotation={[0, Math.PI, 0]}>
+      <primitive object={obj} />
+    </group>
+  );
 }
 
 // 可切换主角的种类
@@ -1765,15 +1902,46 @@ const POCOYO_UPRIGHT_ROTATION: [number, number, number] = [Math.PI / 2, 0, 0];
 
 // Pocoyo 主角:静态 glb(手臂已在 Blender 烘焙成自然下垂,不再 T-pose)。
 // 整体随玩家位移/转向/起伏(Player 的 group 负责走路 bob/前倾/侧倾);自身再加一点待机轻晃,站着也有生气。
-function GltfPocoyo() {
+function GltfPocoyo({ actionRef }: { actionRef?: React.RefObject<CharacterActionClip> }) {
   const { scene } = useGLTF(MODELS.pocoyo);
   const obj = useMemo(() => rawClone(scene), [scene]);
   const ref = useRef<THREE.Group>(null);
-  useFrame((s) => {
+  useFrame((s, dt) => {
     if (!ref.current) return;
     const t = s.clock.elapsedTime;
-    ref.current.position.y = Math.sin(t * 1.9) * 0.02; // 呼吸起伏
-    ref.current.rotation.z = Math.sin(t * 1.3) * 0.03; // 轻微左右晃
+    const action = actionRef?.current ?? "Idle";
+    let y = Math.sin(t * 1.9) * 0.02;
+    let rx = 0;
+    let rz = Math.sin(t * 1.3) * 0.03;
+    let sx = 1;
+    let sy = 1;
+    if (action === "WalkLoop") {
+      y = Math.abs(Math.sin(t * 7.2)) * 0.045;
+      rz = Math.sin(t * 7.2) * 0.09;
+    } else if (action === "Jump") {
+      y = 0.08;
+      rx = -0.12;
+      rz = Math.sin(t * 8) * 0.05;
+      sx = 1.04; sy = 0.94;
+    } else if (action === "Wave") {
+      y = Math.sin(t * 4.4) * 0.025;
+      rz = 0.13 + Math.sin(t * 7.2) * 0.08;
+    } else if (action === "Flute") {
+      y = Math.sin(t * 1.7) * 0.024;
+      rx = 0.08;
+      rz = Math.sin(t * 2.2) * 0.025;
+    } else if (action === "Sit") {
+      y = -0.18 + Math.sin(t * 1.2) * 0.01;
+      rx = -0.06;
+      sx = 1.08; sy = 0.78;
+    }
+    const k = Math.min(1, dt * 12);
+    ref.current.position.y += (y - ref.current.position.y) * k;
+    ref.current.rotation.x += (rx - ref.current.rotation.x) * k;
+    ref.current.rotation.z += (rz - ref.current.rotation.z) * k;
+    ref.current.scale.x += (sx - ref.current.scale.x) * k;
+    ref.current.scale.y += (sy - ref.current.scale.y) * k;
+    ref.current.scale.z += (sx - ref.current.scale.z) * k;
   });
   return (
     <group ref={ref}>
@@ -1854,6 +2022,7 @@ function Player({
   const prevCheer = useRef(0); // 上帧拾取计数(变化 → 欢呼)
   const cheerT = useRef(0); // 欢呼剩余时长
   const facesRef = useRef<Record<string, THREE.Object3D> | null>(null); // 4 套表情节点(GltfHero 填充)
+  const characterActionRef = useRef<CharacterActionClip>("Idle"); // 当前角色动作:守护者播 GLB clip,其余角色走程序动作
   const idleT = useRef(0); // 连续待机时长(→ 久站坐下 + 平静表情)
   const curiousT = useRef(0); // 好奇表情剩余时长(靠近 NPC 触发)
   const prevNear = useRef(-1); // 上帧最近 NPC(检测靠近边沿)
@@ -1979,7 +2148,8 @@ function Player({
     // 加速/减速平滑(有重量感):速度向目标缓动,而非瞬时
     const tvx = moving ? _move.x * PLAYER_SPEED : 0;
     const tvz = moving ? _move.z * PLAYER_SPEED : 0;
-    const accel = 1 - Math.pow(0.0009, dt); // 帧率无关
+    // 加减速更柔(降低「灵敏度」):base 调大 → 起步/收步更有重量感,不再一推就窜、一松就停。
+    const accel = 1 - Math.pow(0.02, dt); // 帧率无关;时间常数 ~0.14s → ~0.26s
     vel.current.x += (tvx - vel.current.x) * accel;
     vel.current.z += (tvz - vel.current.z) * accel;
     pos.x += vel.current.x * dt;
@@ -2079,19 +2249,31 @@ function Player({
       playSample(wading ? "water_splash" : "footstep", { gain: wading ? 0.5 : 0.6, rate: 0.9 + Math.random() * 0.2 });
     }
     sq.current = Math.max(0, sq.current - dt * 3.5); // 压扁回弹衰减
+    characterActionRef.current = selectCharacterAction({
+      moving: gait > 0.12,
+      airborne: airborne.current,
+      waveActive: waveT.current > 0,
+      fluteActive: fluteT.current > 0,
+      sitAmount: sit.current,
+    });
+    const glbClipActive = character === "hero" && characterActionRef.current !== "Idle";
     const breathe = !airborne.current && gait < 0.12 ? Math.sin(s.clock.elapsedTime * 1.6) * 0.012 : 0; // 待机呼吸起伏
     const bob = airborne.current ? 0 : Math.abs(Math.sin(walkPhase.current)) * 0.088 * gait; // 走路身体起伏(每步一颠,弹性更足)
     const cheerHop = cheerT.current > 0 ? Math.sin((1 - cheerT.current / 0.85) * Math.PI) * 0.18 : 0; // 欢呼小跳
     const greetBob = waveT.current > 0 ? Math.sin(s.clock.elapsedTime * 4.4) * 0.016 : 0; // 招手时身体轻晃,更亲切
     const fluteBob = fluteT.current > 0 ? Math.sin(s.clock.elapsedTime * 1.7) * 0.02 : 0; // 吹奏时随气息缓缓起伏
-    g.position.set(pos.x, pos.y + bob + breathe - sq.current * 0.12 + cheerHop + greetBob + fluteBob - sit.current * 0.34, pos.z);
+    g.position.set(
+      pos.x,
+      pos.y + (glbClipActive ? 0 : bob + breathe + greetBob + fluteBob - sit.current * 0.34) - sq.current * 0.12 + cheerHop,
+      pos.z,
+    );
     g.scale.set(1 + sq.current * 0.12, 1 - sq.current * 0.2, 1 + sq.current * 0.12); // 落地压扁
 
     // 朝向(缓转) + 移动前倾 + 转身侧倾
     let dy = facing.current - g.rotation.y;
     while (dy > Math.PI) dy -= Math.PI * 2;
     while (dy < -Math.PI) dy += Math.PI * 2;
-    g.rotation.y += dy * Math.min(1, dt * 9);
+    g.rotation.y += dy * Math.min(1, dt * 6.5); // 转身更柔和(降灵敏度),不再急转
     if (headingRef) headingRef.current = carState.driving ? carState.heading : g.rotation.y; // 供小地图箭头朝向(开车时跟车头)
     g.rotation.order = "YXZ"; // 朝向(y)→前倾(x)→侧倾(z) 在朝向坐标系内复合
     const stepPitch = Math.sin(walkPhase.current * 2) * 0.044 * gait; // 每步前后微颠(像点头般的步态弹性,更足)
@@ -2162,28 +2344,30 @@ function Player({
     }
     const kd = Math.min(1, dt * 13);                                // 阻尼系数(平滑跟随,告别僵硬)
     const kdWave = waveT.current > 0 ? Math.min(1, dt * 24) : kd;   // 招手侧手臂跟得更紧 → ~1.15Hz 的挥动不被低通阻尼磨平(原 9.2 急抖正是被磨平才显僵)
-    if (legL.current) legL.current.rotation.x += (Lx - legL.current.rotation.x) * kd;
-    if (legR.current) legR.current.rotation.x += (Rx - legR.current.rotation.x) * kd;
-    if (shinL.current) shinL.current.rotation.x += (KLx - shinL.current.rotation.x) * kd; // 小腿屈膝
-    if (shinR.current) shinR.current.rotation.x += (KRx - shinR.current.rotation.x) * kd;
-    if (armR.current) {
-      armR.current.rotation.x += (ARx - armR.current.rotation.x) * kd;
-      armR.current.rotation.z += (ARz - armR.current.rotation.z) * kd;
-    }
-    if (armL.current) {
-      armL.current.rotation.x += (ALx - armL.current.rotation.x) * kdWave;
-      armL.current.rotation.z += (ALz - armL.current.rotation.z) * kdWave;
-    }
-    if (foreArmR.current) foreArmR.current.rotation.x += (ERx - foreArmR.current.rotation.x) * kd; // 小臂屈肘
-    if (foreArmL.current) foreArmL.current.rotation.x += (ELx - foreArmL.current.rotation.x) * kdWave;
-    if (cape.current) {  // 披风随动:走动后摆 + 腾空上扬 + 轻微待机飘
-      const t = s.clock.elapsedTime;
-      const fly = airborne.current ? 0.4 : 0;
-      cape.current.rotation.x = -0.12 * gait - fly + Math.sin(t * 1.6) * 0.05 + Math.sin(t * 0.6) * 0.03;
+    if (!glbClipActive) {
+      if (legL.current) legL.current.rotation.x += (Lx - legL.current.rotation.x) * kd;
+      if (legR.current) legR.current.rotation.x += (Rx - legR.current.rotation.x) * kd;
+      if (shinL.current) shinL.current.rotation.x += (KLx - shinL.current.rotation.x) * kd; // 小腿屈膝
+      if (shinR.current) shinR.current.rotation.x += (KRx - shinR.current.rotation.x) * kd;
+      if (armR.current) {
+        armR.current.rotation.x += (ARx - armR.current.rotation.x) * kd;
+        armR.current.rotation.z += (ARz - armR.current.rotation.z) * kd;
+      }
+      if (armL.current) {
+        armL.current.rotation.x += (ALx - armL.current.rotation.x) * kdWave;
+        armL.current.rotation.z += (ALz - armL.current.rotation.z) * kdWave;
+      }
+      if (foreArmR.current) foreArmR.current.rotation.x += (ERx - foreArmR.current.rotation.x) * kd; // 小臂屈肘
+      if (foreArmL.current) foreArmL.current.rotation.x += (ELx - foreArmL.current.rotation.x) * kdWave;
+      if (cape.current) {  // 披风随动:走动后摆 + 腾空上扬 + 轻微待机飘
+        const t = s.clock.elapsedTime;
+        const fly = airborne.current ? 0.4 : 0;
+        cape.current.rotation.x = -0.12 * gait - fly + Math.sin(t * 1.6) * 0.05 + Math.sin(t * 0.6) * 0.03;
+      }
     }
 
     // 笛子道具:吹奏时显形,随气息/指颤轻摆(rotation.x 由动画驱动,见下)。
-    const fluteOn = fluteT.current > 0;
+    const fluteOn = fluteT.current > 0 && !(character === "hero" && characterActionRef.current === "Flute");
     if (fluteRef.current) {
       fluteRef.current.visible = fluteOn;
       if (fluteOn) fluteRef.current.rotation.x = 0.14 + Math.sin(tw * 11) * 0.03 + Math.sin(tw * 1.7) * 0.02; // 指颤(快) + 气息(慢)
@@ -2243,8 +2427,8 @@ function Player({
     if (introT.current < 1) {
       const e = introT.current * introT.current * (3 - 2 * introT.current); // smoothstep 缓动
       const ang = ry + (1 - e) * 2.2; // 起始侧偏 → 收束到身后
-      const dist = CAM_DIST + (1 - e) * 90; // 起始远(收束更平顺,不猛拉)
-      const ht = CAM_HEIGHT + (1 - e) * 100; // 起始高
+      const dist = CAM_DIST + (1 - e) * 135; // 起始更远:从高空俯瞰整岛开始,smoothstep 在远端稍作停留,再缓缓收近到身后
+      const ht = CAM_HEIGHT + (1 - e) * 132; // 起始更高
       _camTarget.set(pos.x - Math.sin(ang) * dist, pos.y + ht, pos.z - Math.cos(ang) * dist);
       camera.position.lerp(_camTarget, Math.min(1, dt * 3.0));
     } else {
@@ -2295,9 +2479,9 @@ function Player({
     <>
       <group ref={group}>
         {character === "hero" ? (
-          <GltfHero legL={legL} legR={legR} armL={armL} armR={armR} shinL={shinL} shinR={shinR} foreArmL={foreArmL} foreArmR={foreArmR} cape={cape} faces={facesRef} />
+          <GltfHero legL={legL} legR={legR} armL={armL} armR={armR} shinL={shinL} shinR={shinR} foreArmL={foreArmL} foreArmR={foreArmR} cape={cape} faces={facesRef} actionRef={characterActionRef} />
         ) : character === "pocoyo" ? (
-          <GltfPocoyo />
+          <GltfPocoyo actionRef={characterActionRef} />
         ) : (
           <GltfAvatar avatar={avatar} legL={legL} legR={legR} armL={armL} armR={armR} />
         )}
@@ -2466,7 +2650,13 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
       {spots.map((s, i) => (
         <group key={i} ref={(el) => { refs.current[i] = el; }} position={[s.x, s.gy + 0.7, s.z]}>
           <mesh geometry={geos[shapeOf(imprints[i].emotion)]} material={mats[i]} />
-          <pointLight color={imprints[i].color} intensity={2.4} distance={3} decay={1.6} />
+          {/* 用叠加辉光 sprite 代替逐印记 pointLight:同样发光,但 sprite 不计入实时光照——
+              ① 省掉「N 枚印记 = N 个动态点光源」的每帧光照开销;
+              ② 关键:拾起时原本会让场景点光源数 -1 → three.js 把光源数烘进 shader,数量一变就重新编译全场所有材质
+                 → 每拾一枚都卡一下。改 sprite 后光源数恒定,拾取不再触发重编译,卡顿消除。 */}
+          <sprite scale={[1.7, 1.7, 1.7]}>
+            <spriteMaterial map={glowTexture()} color={imprints[i].color} transparent opacity={0.6} depthWrite={false} blending={THREE.AdditiveBlending} toneMapped={false} fog={false} />
+          </sprite>
         </group>
       ))}
     </>
@@ -2516,7 +2706,7 @@ function MemoryTree({ colors }: { colors: string[] }) {
 
 // 程序生成的小镇:房子 + 店招/雨棚 + 路 + 护栏 + 树/灌木 + 路牌/灯/售货机/邮筒/长椅/木箱。
 // toon 平涂,墨线由后期统一勾。
-function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; accent: string; collidersRef?: React.RefObject<Map<string, Collider[]> | null> }) {
+function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Texture; accent: string; collidersRef?: React.RefObject<Map<string, Collider[]> | null>; isNight?: boolean }) {
   const wall = useMemo(() => new THREE.MeshToonMaterial({ color: "#ece6d6", gradientMap: toonGrad }), [toonGrad]);
   const wall2 = useMemo(() => new THREE.MeshToonMaterial({ color: "#d6ccb4", gradientMap: toonGrad }), [toonGrad]);
   const wall3 = useMemo(() => new THREE.MeshToonMaterial({ color: "#c9b89a", gradientMap: toonGrad }), [toonGrad]);
@@ -2695,10 +2885,18 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
     return out;
   }, []);
 
-  // 电线(每档再细分多段:杆顶间走直线下垂,遇土丘/地坪则随地抬起 → 永不穿地、不横切台顶)
-  const wires = useMemo(() => {
-    const out: { pos: [number, number, number]; len: number; quat: [number, number, number, number] }[] = [];
+  // 电线杆 3 段几何各自的实例数据(原本每杆一个 group+3 mesh → 现每种几何一次实例绘制)
+  const poleItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 1.15, p.z] })), [poleSpots]);
+  const crossAItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 2.1, p.z] })), [poleSpots]);
+  const crossBItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 1.85, p.z] })), [poleSpots]);
+  // 电线(每档再细分多段:杆顶间走直线下垂,遇土丘/地坪则随地抬起 → 永不穿地、不横切台顶)。
+  // 直接产出 InstItem[](单位柱按段长 sv.y 缩放 + quat→euler 朝向),整片电线一次实例绘制。
+  const wireItems = useMemo<InstItem[]>(() => {
+    const out: InstItem[] = [];
     const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const e = new THREE.Euler();
     const SEG = 5;         // 每档分段数(够贴合起伏,绘制量仍很小)
     const TOP = 2.3;       // 线在杆顶的离地高
     const MIN_CLEAR = 1.4; // 跨档离地最小净空(翻过土丘也不入地)
@@ -2719,8 +2917,9 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
         const y = Math.max(ay + (by - ay) * t, exGroundY(x, z) + MIN_CLEAR); // 直线垂落,遇地形隆起则抬起
         const dx = x - px, dy = y - py, dz = z - pz;
         const len = Math.hypot(dx, dy, dz);
-        const q = new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(dx, dy, dz).normalize());
-        out.push({ pos: [(px + x) / 2, (py + y) / 2, (pz + z) / 2], len, quat: [q.x, q.y, q.z, q.w] });
+        q.setFromUnitVectors(up, dir.set(dx, dy, dz).normalize());
+        e.setFromQuaternion(q);
+        out.push({ p: [(px + x) / 2, (py + y) / 2, (pz + z) / 2], sv: [1, len, 1], r: [e.x, e.y, e.z] });
         px = x; py = y; pz = z;
       }
     }
@@ -2917,12 +3116,17 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
   const gMushStem = useMemo(() => new THREE.CylinderGeometry(0.04, 0.055, 0.18, 6), []);
   const gMushCap = useMemo(() => new THREE.SphereGeometry(0.13, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), []); // 蘑菇伞盖(半球)
   const gLily = useMemo(() => new THREE.CircleGeometry(0.42, 9), []); // 荷叶
+  // 电线杆 / 电线实例化几何(原本逐杆 3 mesh + 逐段电线 = ~135 draw call;实例化后每种 1 次绘制)
+  const gPole = useMemo(() => new THREE.CylinderGeometry(0.06, 0.08, 2.3, 6), []); // 杆柱
+  const gCrossA = useMemo(() => new THREE.BoxGeometry(0.9, 0.07, 0.07), []); // 横担(长)
+  const gCrossB = useMemo(() => new THREE.BoxGeometry(0.7, 0.07, 0.07), []); // 横担(短)
+  const gWire = useMemo(() => new THREE.CylinderGeometry(0.02, 0.02, 1, 4), []); // 电线(单位高,按段长 sv.y 缩放)
   // 环岛柏油路几何:路面(宽 6) + 双黄中线短块 + 浅灰路肩(窄长条,非均匀缩放铺长)
   // 环岛跑道带状几何(沿 ringRoad 生成连续 ribbon,raise=0.08 稳稳压在压平后的地基上,period=6m 一段中线虚线)
   const roadRibbonGeo = useMemo(() => buildRingRoadGeometry(ringRoad, ROAD_HALF_W, ROAD_SURFACE_RAISE, 6), [ringRoad]);
   useEffect(
-    () => () => [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, roadRibbonGeo].forEach((g) => g.dispose()),
-    [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, roadRibbonGeo],
+    () => () => [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, gPole, gCrossA, gCrossB, gWire, roadRibbonGeo].forEach((g) => g.dispose()),
+    [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, gPole, gCrossA, gCrossB, gWire, roadRibbonGeo],
   );
 
   // 实例化布点(由散布数组换算到世界矩阵)
@@ -3095,39 +3299,25 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       {([[-2.4, 2.6], [2.8, -1.2]] as const).map(([x, z], i) => (
         <group key={i} position={[x, exGroundY(x, z), z]}>
           <GltfProp url={MODELS.townLamppost} grad={toonGrad} position={[0, 0, 0]} scale={1.0} />
-          <pointLight position={[0, 2.6, 0]} color="#ffe6a0" intensity={2.4} distance={4.5} decay={1.6} />
+          {isNight && <pointLight position={[0, 2.6, 0]} color="#ffe6a0" intensity={2.4} distance={4.5} decay={1.6} />}
         </group>
       ))}
       {/* 售货机(glb) */}
       <GltfProp url={MODELS.vending} grad={toonGrad} position={[-4.0, exGroundY(-4.0, 0.6), 0.6]} rotation={[0, 0.8, 0]} scale={0.7} />
 
-      {/* 电线杆 */}
-      {poleSpots.map((p, i) => (
-        <group key={i} position={[p.x, exGroundY(p.x, p.z), p.z]}>
-          <mesh material={dark} position={[0, 1.15, 0]}>
-            <cylinderGeometry args={[0.06, 0.08, 2.3, 6]} />
-          </mesh>
-          <mesh material={dark} position={[0, 2.1, 0]}>
-            <boxGeometry args={[0.9, 0.07, 0.07]} />
-          </mesh>
-          <mesh material={dark} position={[0, 1.85, 0]}>
-            <boxGeometry args={[0.7, 0.07, 0.07]} />
-          </mesh>
-        </group>
-      ))}
+      {/* 电线杆(实例化:杆柱 / 长横担 / 短横担 各一次绘制,替代原逐杆 group+3 mesh) */}
+      <InstancedField geo={gPole} material={dark} items={poleItems} />
+      <InstancedField geo={gCrossA} material={dark} items={crossAItems} />
+      <InstancedField geo={gCrossB} material={dark} items={crossBItems} />
 
-      {/* 电线 */}
-      {wires.map((w, i) => (
-        <mesh key={i} material={dark} position={w.pos} quaternion={w.quat}>
-          <cylinderGeometry args={[0.02, 0.02, w.len, 4]} />
-        </mesh>
-      ))}
+      {/* 电线(实例化:单位柱按段长 sv.y 缩放 + quat→euler 朝向,整片一次绘制) */}
+      <InstancedField geo={gWire} material={dark} items={wireItems} />
 
       {/* 路灯排(glb + 暖光) */}
       {lampRow.map((p, i) => (
         <group key={i} position={[p.x, exGroundY(p.x, p.z), p.z]}>
           <GltfProp url={MODELS.townLamppost} grad={toonGrad} position={[0, 0, 0]} scale={0.95} />
-          <pointLight position={[0, 2.5, 0]} color="#ffe6a0" intensity={2} distance={4} decay={1.6} />
+          {isNight && <pointLight position={[0, 2.5, 0]} color="#ffe6a0" intensity={2} distance={4} decay={1.6} />}
         </group>
       ))}
 
@@ -3162,7 +3352,7 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       {/* 灯塔(glb,呼应心屿灯塔) */}
       <group position={[-WALK_RADIUS * 0.92, exGroundY(-WALK_RADIUS * 0.92, -WALK_RADIUS * 0.3), -WALK_RADIUS * 0.3]}>
         <GltfProp url={MODELS.lighthouse} grad={toonGrad} position={[0, 0, 0]} scale={0.6} />
-        <pointLight position={[0, 9.6, 0]} color="#ffeec0" intensity={8} distance={22} decay={1.3} />
+        {isNight && <pointLight position={[0, 9.6, 0]} color="#ffeec0" intensity={8} distance={22} decay={1.3} />}
       </group>
 
       {/* 小船(glb,停泊在东岸) */}
@@ -3187,25 +3377,37 @@ function Town({ toonGrad, accent, collidersRef }: { toonGrad: THREE.Texture; acc
       </Suspense>
       <TireDust />
 
-      {/* 杜鹃花(写实灌木,花丛点缀)——独立 Suspense,大模型晚到不阻塞首屏 */}
-      <Suspense fallback={null}>
-        {RHODOS.map((r, i) => (
-          <GltfProp key={`rh${i}`} url={MODELS.rhododendron} raw position={[r.x, exGroundY(r.x, r.z) + 1.0 * r.s, r.z]} rotation={[0, hash2(r.x + 2.3, 3.1) * 6.28, 0]} scale={r.s} />
-        ))}
-      </Suspense>
+      {/* 写实重地标:延迟挂载 + 独立 Suspense,错开几秒在「世界已可走」后逐个到位,深 clone 不卡进岛首帧。
+          延迟「轻→重」错峰:街区 → 杜鹃 → 山庄 → 浴场(28M 最重,最后)。 */}
+      {/* 建筑街区(写实地标,村南) */}
+      <DelayedMount ms={2000}>
+        <Suspense fallback={null}>
+          <LandmarkOnPad cfg={BLOCK} url={MODELS.townblock} padR={7.5} padColor="#b6a98f" grad={toonGrad} />
+        </Suspense>
+      </DelayedMount>
 
-      {/* 罗马浴场建筑群(写实地标,村北;地坪平整落地)——独立 Suspense */}
-      <Suspense fallback={null}>
-        <LandmarkOnPad cfg={BATH} url={MODELS.bathhouse} padR={10} padColor="#cabfa6" grad={toonGrad} />
-      </Suspense>
-
-      {/* 建筑街区(写实地标,村南;地坪平整落地)——独立 Suspense */}
-      <Suspense fallback={null}>
-        <LandmarkOnPad cfg={BLOCK} url={MODELS.townblock} padR={7.5} padColor="#b6a98f" grad={toonGrad} />
-      </Suspense>
+      {/* 杜鹃花(写实灌木,花丛点缀) */}
+      <DelayedMount ms={2800}>
+        <Suspense fallback={null}>
+          {RHODOS.map((r, i) => (
+            <GltfProp key={`rh${i}`} url={MODELS.rhododendron} raw position={[r.x, exGroundY(r.x, r.z) + 1.0 * r.s, r.z]} rotation={[0, hash2(r.x + 2.3, 3.1) * 6.28, 0]} scale={r.s} />
+          ))}
+        </Suspense>
+      </DelayedMount>
 
       {/* 山庄(复用 villa 精模放大为西侧第三座大地标;toon 卡通材质,带地坪+碰撞,不穿模) */}
-      <LandmarkOnPad cfg={MANOR} url={MODELS.houseVilla} padR={9} padColor="#bcc6a4" grad={toonGrad} raw={false} />
+      <DelayedMount ms={3600}>
+        <Suspense fallback={null}>
+          <LandmarkOnPad cfg={MANOR} url={MODELS.houseVilla} padR={9} padColor="#bcc6a4" grad={toonGrad} raw={false} />
+        </Suspense>
+      </DelayedMount>
+
+      {/* 罗马浴场建筑群(写实地标,村北;28M 最重 → 最后挂载) */}
+      <DelayedMount ms={4400}>
+        <Suspense fallback={null}>
+          <LandmarkOnPad cfg={BATH} url={MODELS.bathhouse} padR={10} padColor="#cabfa6" grad={toonGrad} />
+        </Suspense>
+      </DelayedMount>
 
       {/* 池塘 + 芦苇 */}
       <mesh material={pond} position={[WALK_RADIUS * 0.3, exGroundY(WALK_RADIUS * 0.3, WALK_RADIUS * 0.3) + 0.04, WALK_RADIUS * 0.3]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -4690,7 +4892,10 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
     return { cl, mats };
   }, [scene]);
   // 火星:绕灯口轻轻打转、明灭的暖色小光点
+  // 火星粒子只给「单灯放飞」(lit)。「放飞一片」的十几盏若各带一套每帧更新的 additive 粒子 →
+  // 海量 overdraw + 逐帧位置数组更新,是放飞一片卡顿的大头;flock 灯(lit=false)直接不建、不渲、不更新。
   const ember = useMemo(() => {
+    if (!lit) return null;
     const N = 9;
     const pos = new Float32Array(N * 3);
     // 用 (x,z) 派生确定性随机,而非 Math.random()(渲染须纯函数);每盏灯相位不同但稳定。
@@ -4701,8 +4906,8 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     const mat = new THREE.PointsMaterial({ size: 0.45, map: glowTexture(), color: "#ffd27a", transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, fog: false });
     return { geo, mat, ph, N };
-  }, [x, z]);
-  useEffect(() => () => { obj.mats.forEach((m) => m.dispose()); ember.geo.dispose(); ember.mat.dispose(); }, [obj, ember]);
+  }, [x, z, lit]);
+  useEffect(() => () => { obj.mats.forEach((m) => m.dispose()); ember?.geo.dispose(); ember?.mat.dispose(); }, [obj, ember]);
   useFrame((_, dt) => {
     t.current += dt; const tt = t.current; const go = g.current; if (!go) return;
     // 起步轻柔上浮 → 稳稳加速升空(可达 ~95,贴近远空微光带)
@@ -4719,7 +4924,7 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
     if (flame.current) flame.current.intensity = 3.6 * flick * f;
     if (core.current) { const cm = core.current.material as THREE.MeshBasicMaterial; cm.opacity = 0.85 * flick * f; core.current.scale.setScalar(0.5 + flick * 0.18); }
     if (halo.current) { const hm = halo.current.material as THREE.SpriteMaterial; hm.opacity = 0.5 * flick * f; const hs = 1.7 + Math.sin(tt * 2 + seed) * 0.12; halo.current.scale.set(hs, hs, hs); }
-    if (emit.current) {
+    if (emit.current && ember) {
       const arr = ember.geo.attributes.position.array as Float32Array;
       for (let i = 0; i < ember.N; i++) {
         const a = ember.ph[i] + tt * (0.8 + (i % 3) * 0.3);
@@ -4738,14 +4943,18 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
       <primitive object={obj.cl} scale={LANTERN_SCALE} />
       {/* 地面暖光仅给「单灯放飞」(1~2 盏);「放飞一片」的天灯不带光源——避免十几个动态点光源拖垮全场材质光照 */}
       {lit && <pointLight ref={flame} color="#ffce82" intensity={3.6} distance={8} decay={2} position={[0, 0.6, 0]} />}
-      <mesh ref={core} position={[0, 0.5, 0]}>
-        <sphereGeometry args={[0.4, 12, 10]} />
-        <meshBasicMaterial color="#ffd98a" transparent opacity={0.8} depthWrite={false} blending={THREE.AdditiveBlending} toneMapped={false} fog={false} />
-      </mesh>
+      {/* 内辉光球只给单灯;flock 靠发光本体 + 下面的 halo 光晕即可,省掉十几个 additive 球 */}
+      {lit && (
+        <mesh ref={core} position={[0, 0.5, 0]}>
+          <sphereGeometry args={[0.4, 12, 10]} />
+          <meshBasicMaterial color="#ffd98a" transparent opacity={0.8} depthWrite={false} blending={THREE.AdditiveBlending} toneMapped={false} fog={false} />
+        </mesh>
+      )}
       <sprite ref={halo} position={[0, 0.6, 0]} scale={[1.7, 1.7, 1.7]}>
         <spriteMaterial map={glowTexture()} color="#ffcf86" transparent opacity={0.5} depthWrite={false} blending={THREE.AdditiveBlending} toneMapped={false} fog={false} />
       </sprite>
-      <points ref={emit} geometry={ember.geo} material={ember.mat} frustumCulled={false} />
+      {/* 火星粒子只给单灯(见 ember useMemo);flock 不渲染 → 省海量 additive 绘制 + 逐帧粒子更新 */}
+      {lit && ember && <points ref={emit} geometry={ember.geo} material={ember.mat} frustumCulled={false} />}
     </group>
   );
 }
@@ -4803,6 +5012,10 @@ function GroundBlessing({ x, z, onDone }: { x: number; z: number; onDone: () => 
   );
 }
 function SkyLanterns({ launchRef, posRef }: { launchRef: React.RefObject<number>; posRef: React.RefObject<THREE.Vector3> }) {
+  // 进岛即预先加载天灯模型:顶层 useGLTF 让本组件在自己的 Suspense 里挂起直到 kmd.glb 载完,
+  // 而非等首次放飞才加载。载完(本组件成功挂载)即置位全局就绪标志,供放飞前判断「缓存好没」。
+  useGLTF(MODELS.skyLantern);
+  useEffect(() => { _lanternModelReady = true; }, []);
   type Lan = { id: number; x: number; z: number; lit: boolean };
   const [list, setList] = useState<Lan[]>([]);
   const [bless, setBless] = useState<{ id: number; x: number; z: number }[]>([]);
@@ -5845,6 +6058,8 @@ function ExploreScene({
   const shallowHex = useMemo(() => new THREE.Color(visual.seaHighlight).lerp(new THREE.Color("#eafdff"), 0.5).getStyle(), [visual.seaHighlight]); // 浅滩:海面高光再提亮
   const sketch = useMemo(() => new SketchEffect(), []);
   useEffect(() => () => sketch.dispose(), [sketch]);
+  // 帧率持续偏低时自动降级:关掉 Sobel 手绘后期 + 降 dpr(由 PerfWatch 触发,见下方)
+  const [degraded, setDegraded] = useState(false);
   // 渐变天空作 scene.background(放进 3D,否则 EffectComposer 会把空域清成黑)
   const skyTex = useMemo(() => {
     const W = 64, H = 512; // 提分辨率:低分辨率渐变拉伸到全天空会出明显色带(banding)
@@ -5936,12 +6151,19 @@ function ExploreScene({
         <ringGeometry args={[WALK_RADIUS * 1.0, WALK_RADIUS * 1.1, 96]} />
         <meshBasicMaterial color="#e6f6f8" transparent opacity={0.3} depthWrite={false} toneMapped={false} />
       </mesh>
-      {/* 程序小镇 */}
-      <Town toonGrad={toonGrad} accent={visual.accent} collidersRef={collidersRef} />
-      {/* 海岛村落建筑 + 岛上设施(Batch 5/7) */}
-      <Village toonGrad={toonGrad} />
-      {/* 近海地形 + 海滩物 + 发光海水(Batch 6) */}
-      <Coastline toonGrad={toonGrad} accent={visual.accent} />
+      {/* 程序小镇 / 村落 / 海岸:模型量最大(~百个模型的几何烘焙 + clone,是进岛首帧最重的同步开销)。
+          DelayedMount 延迟 ~250ms 挂载 → 进岛首帧只渲地形/水/光(秒现),这堆建筑/道具一个 blink 后补上,
+          几乎无感却把长空白彻底消除。内层 Suspense 仍兜住模型加载。 */}
+      <DelayedMount ms={250}>
+        <Suspense fallback={null}>
+          {/* 程序小镇 */}
+          <Town toonGrad={toonGrad} accent={visual.accent} collidersRef={collidersRef} isNight={isNight} />
+          {/* 海岛村落建筑 + 岛上设施(Batch 5/7) */}
+          <Village toonGrad={toonGrad} />
+          {/* 近海地形 + 海滩物 + 发光海水(Batch 6) */}
+          <Coastline toonGrad={toonGrad} accent={visual.accent} />
+        </Suspense>
+      </DelayedMount>
       {/* 海面(大) */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
         <planeGeometry args={[10000, 10000]} />
@@ -5956,11 +6178,17 @@ function ExploreScene({
         <meshStandardMaterial color={shallowHex} roughness={0.22} metalness={0.3} transparent opacity={0.62} depthWrite={false} />
       </mesh>
 
-      <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
+      {/* 玩家(角色模型,小、加载快):自己一个 Suspense → 不被建筑/道具拖住,相机&角色尽快就位 */}
+      <Suspense fallback={null}>
+        <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
+      </Suspense>
       {/* 灯塔精灵 4.4M 重模型：独立 Suspense，不阻塞「可上岛」，世界就绪后随即淡入 */}
       <Suspense fallback={null}>
-        <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} />
+        <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} collidersRef={collidersRef} />
       </Suspense>
+      {/* 其余道具 / 彩蛋 / NPC / 互动(大多用模型):统一包进 Suspense → 加载时不挂起整场，
+          世界(地形/海/光 + 已就位的建筑)先可见可走，这些随后陆续淡入，不再整屏空白等加载。 */}
+      <Suspense fallback={null}>
       <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={(id) => { nearRef.current = id; onNear(id); }} />
       <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
       <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
@@ -5999,10 +6227,15 @@ function ExploreScene({
       <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
       <LocationAudio posRef={posRef} night={visual.time === "night" || visual.stars} />
       {songDone && <Fireflies />}
+      </Suspense>
+
+      {/* 帧率自适应:非 low 档才监测;持续 <30fps 触发 degraded → 关 Sobel + 降 dpr,机器忙时自动保流畅 */}
+      {tier !== "low" && <PerfWatch onDegrade={() => setDegraded(true)} />}
 
       {/* 手绘后期:墨线 + 色阶 + 纸纹。low 档(移动端/弱设备)跳过 Sobel 后期，
-          直接用 toon 材质的卡通感——Sobel 是本场景最大开销。?perf=high 仍可解锁。 */}
-      {tier !== "low" && (
+          直接用 toon 材质的卡通感——Sobel 是本场景最大开销。?perf=high 仍可解锁。
+          运行时帧率持续偏低(degraded)也自动跳过它,优先保流畅。 */}
+      {tier !== "low" && !degraded && (
         <EffectComposer>
           <primitive object={sketch} />
         </EffectComposer>
@@ -6421,6 +6654,8 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const total = 5;
   const isTouch = useIsTouch();
   const tier = getPerfTier(); // 弱设备/移动端降档：去后期 + 降 dpr，避免卡顿（?perf=high 可强制解锁）
+  // 进岛即掐断首页的后台重模型预热,把 CPU/带宽全让给进岛时的场景挂载(否则两边抢资源 → 进岛更卡)。
+  useEffect(() => { setExploreActive(true); return () => setExploreActive(false); }, []);
   const [collected, setCollected] = useState(0);
   const imp = imprints;
   const [pickedImprints, setPickedImprints] = useState<number[]>([]); // 已拾起的心灵印记下标
@@ -6478,7 +6713,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     ? `箱底压着一句你说过的话 —— ${bottleNotes[bottleNotes.length - 1]}`
     : undefined;
   const [companionState, setCompanionState] = useState<CompanionState>(() => loadCompanionState(userId, typeof window === "undefined" ? undefined : window.localStorage));
-  const [companionMessage, setCompanionMessage] = useState("它绕着你慢慢漂浮，灯塔里亮着一小盏只属于你的光。");
+  const [companionMessage, setCompanionMessage] = useState(pickCompanionOpenLine); // 每次进岛挑一句开场白，像它一直在等你
   const [companionTalkText, setCompanionTalkText] = useState("");
   const [companionAction, setCompanionAction] = useState<CompanionActionSignal | null>(null);
   const [companionSecret, setCompanionSecret] = useState<CompanionSecretId | null>(null);
@@ -6713,6 +6948,8 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [lanternText, setLanternText] = useState("");
   const [lanternCount, setLanternCount] = useState<number>(() => { try { return parseInt(localStorage.getItem("xy_lanterns") || "0", 10) || 0; } catch { return 0; } });
   const lanternLaunch = useRef(0);
+  const [lanternPrep, setLanternPrep] = useState(false); // 天灯模型还没缓存好时:显示「准备中」,就绪后自动放飞
+  const lanternWaitRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [atWater, setAtWater] = useState(false);
   const [fishing, setFishing] = useState<"idle" | "cast" | "bite">("idle");
   const [shownCatch, setShownCatch] = useState<{ icon: string; title: string; line: string } | null>(null);
@@ -6724,12 +6961,14 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   useEffect(() => { try { localStorage.setItem("xy_garden", JSON.stringify(flowers.slice(-120))); } catch { /* ignore */ } }, [flowers]);
   useEffect(() => { try { localStorage.setItem("xy_night", night ? "1" : "0"); } catch { /* ignore */ } }, [night]);
   useEffect(() => { try { localStorage.setItem("xy_lanterns", String(lanternCount)); } catch { /* ignore */ } }, [lanternCount]);
-  // 天灯曲目后台预热(idle,避开上岛首帧资源争抢):使首次放飞即可奏真实音乐而非回退合成。
+  // 天灯曲目 + 天灯模型(kmd.glb 2.9M)后台预热(idle,避开上岛首帧资源争抢):
+  // 使首次放飞即可奏真实音乐、且天灯模型已在缓存——避免「首次放飞才加载解析 kmd.glb」的卡顿尖峰。
   useEffect(() => {
     const w = window as Window & { requestIdleCallback?: (cb: () => void) => number; cancelIdleCallback?: (id: number) => void };
     let idle = 0; let to: ReturnType<typeof setTimeout> | undefined;
-    if (w.requestIdleCallback) idle = w.requestIdleCallback(() => prewarmLanternCues());
-    else to = setTimeout(() => prewarmLanternCues(), 4000);
+    const warm = () => { prewarmLanternCues(); useGLTF.preload(MODELS.skyLantern); };
+    if (w.requestIdleCallback) idle = w.requestIdleCallback(warm);
+    else to = setTimeout(warm, 4000);
     return () => { if (idle && w.cancelIdleCallback) w.cancelIdleCallback(idle); if (to) clearTimeout(to); };
   }, []);
   useEffect(() => { try { localStorage.setItem("xy_song", songDone ? "1" : "0"); } catch { /* ignore */ } }, [songDone]);
@@ -6745,7 +6984,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     if (!songDone && songProgress >= SONG.length) { setSongDone(true); setSongFlash(true); playSfx("bloom"); const t = setTimeout(() => setSongFlash(false), 4500); return () => clearTimeout(t); }
   }, [songProgress, songDone, SONG.length]);
   const plantFlower = (x: number, z: number, color: string) => { setFlowers((f) => [...f, { x, z, color, t: Date.now() }].slice(-120)); playSfx("bloom"); emitCompanionEvent("plant"); };
-  const releaseLantern = () => {
+  const doReleaseLantern = () => {
     lanternLaunch.current += 1;
     setTimeout(() => { lanternLaunch.current += 1; }, 850); // 再补一轮 → 单灯也连放两束烟花
     setLanternCount((c) => c + 1); setLanternOpen(false); setLanternText("");
@@ -6754,7 +6993,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     emitCompanionEvent("lantern");
   };
   // 放飞一片:一次性放出一整片天灯 + 仰头跟拍 + 一连串盛大烟花
-  const releaseLanternFlock = () => {
+  const doReleaseLanternFlock = () => {
     const p = posRef.current; const px = p ? p.x : 0, pz = p ? p.z : 0;
     lanternFlock.x = px; lanternFlock.z = pz; lanternFlock.v += 1;
     lanternCam.x = px; lanternCam.z = pz; lanternCam.gy = exGroundY(px, pz); lanternCam.t = 0; lanternCam.on = true;
@@ -6766,6 +7005,26 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     const rounds = tier === "low" ? 2 : 3;
     for (let k = 0; k < rounds; k++) setTimeout(() => { lanternLaunch.current += 1; }, 350 + k * 620);
   };
+  // 放飞前确保天灯模型已缓存好:就绪 → 立刻放;还没好 → 关面板 + 提示「准备中」,轮询到就绪即自动放飞,
+  // 这样「放天灯,等缓存好再放」不会出现「点了才加载解析 kmd.glb」的卡顿尖峰。6s 兜底防极端情况卡死。
+  const ensureLantern = (kind: "single" | "flock") => {
+    const go = () => (kind === "single" ? doReleaseLantern() : doReleaseLanternFlock());
+    if (_lanternModelReady) { go(); return; }
+    if (kind === "single") setLanternOpen(false); else setMenuOpen(false);
+    setLanternPrep(true);
+    if (lanternWaitRef.current) clearInterval(lanternWaitRef.current);
+    let waited = 0;
+    lanternWaitRef.current = setInterval(() => {
+      waited += 120;
+      if (_lanternModelReady || waited > 6000) {
+        if (lanternWaitRef.current) clearInterval(lanternWaitRef.current);
+        lanternWaitRef.current = null; setLanternPrep(false); go();
+      }
+    }, 120);
+  };
+  const releaseLantern = () => ensureLantern("single");
+  const releaseLanternFlock = () => ensureLantern("flock");
+  useEffect(() => () => { if (lanternWaitRef.current) clearInterval(lanternWaitRef.current); }, []); // 卸载时清掉等待轮询
   const CATCHES: { icon: string; title: string; lines: string[] }[] = [
     { icon: "🐚", title: "一枚贝壳", lines: ["贴近耳边,你听见很远很远的海。", "它把潮声收了起来,等你想听的时候。", "纹路温温的,像谁的指纹。"] },
     { icon: "🍾", title: "一只漂流瓶", lines: ["「今天也辛苦了,记得好好吃饭。」", "「看见这行字的此刻,你正被惦记着。」", "「慢慢来,海不会催你。」"] },
@@ -6992,8 +7251,12 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   return (
     <div className="fixed inset-0 z-[70] overflow-hidden" style={{ background: sky }}>
       <Canvas
-        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-        dpr={tier === "low" ? [1, 1.25] : [1, 1.75]}
+        // antialias 跟随性能分档（对齐 Island3D）：低端/软渲染/移动端关掉 MSAA 省开销，
+        // 反正这档已走 toon 材质、跳过 Sobel 手绘后期，画面观感损失极小。
+        gl={{ antialias: tier === "high", alpha: false, powerPreference: "high-performance" }}
+        // dpr 上限收一档(高端 1.75→1.4):Retina 上每帧像素 −36%,写实模型逐帧渲染 + Sobel 全屏后期都更轻,
+        // 移动时掉帧明显改善(画面更顺),清晰度肉眼几乎无损。弱设备仍 1.25 不变。
+        dpr={tier === "low" ? [1, 1.25] : [1, 1.4]}
         camera={{ position: [0, 150, 290], fov: 55, near: 0.1, far: 3400 }}
         // 林间土路(DriveScene)是覆盖在上方的独立 Canvas,且与本场景共用 inputRef——
         // 不冻结的话踩油门(W)会让被遮住的小人在底下「走路」,蹭出脚步声(还白白渲染全遮挡场景)。
@@ -7398,6 +7661,14 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
             <textarea value={lanternText} onChange={(e) => setLanternText(e.target.value)} placeholder="把它交给夜空…" rows={3} className="w-full resize-none rounded-card border border-white/12 bg-white/10 px-3 py-2 text-[13px] text-white/90 placeholder:text-white/35" />
             <button onClick={releaseLantern} className="btn-primary w-full mt-3">放飞 🏮</button>
             {lanternCount > 0 && <p className="text-caption text-white/45 text-center mt-2">你已放下 {lanternCount} 盏</p>}
+          </div>
+        </div>
+      )}
+      {/* 天灯模型还没缓存好时的轻提示:就绪后 ensureLantern 自动放飞并撤下此条 */}
+      {lanternPrep && (
+        <div className="absolute inset-x-0 top-[20%] z-40 flex justify-center px-4 pointer-events-none">
+          <div className="panel-glass-2 rounded-full px-4 py-2 flex items-center gap-2 text-[13px] text-white/90">
+            <span className="animate-pulse">🏮</span> 天灯准备中，马上为你放飞…
           </div>
         </div>
       )}

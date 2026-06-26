@@ -96,7 +96,7 @@ export default function IslandLetter({ userId, memoryCount }: Props) {
               type="button"
               onClick={close}
               aria-label="收起信件"
-              className="absolute top-2 right-3 text-white/35 hover:text-white/80 text-sm transition"
+              className="touch-target absolute top-1 right-1 text-white/35 hover:text-white/80 text-lg transition"
             >
               ×
             </button>

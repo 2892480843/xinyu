@@ -11,7 +11,7 @@ async function readExploreSource() {
 
 async function readPocoyoBlock() {
   const source = await readExploreSource();
-  const start = source.indexOf("function GltfPocoyo()");
+  const start = source.indexOf("function GltfPocoyo");
   const end = source.indexOf("function Player", start);
   assert.notEqual(start, -1, "GltfPocoyo function should exist");
   assert.notEqual(end, -1, "Player function should follow GltfPocoyo");

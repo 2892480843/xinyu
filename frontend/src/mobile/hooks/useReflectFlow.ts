@@ -29,6 +29,8 @@ export function useReflectFlow(userId: string | null, onReflected?: () => void) 
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<ErrorVoiceKind>("server");
   const [lastMood, setLastMood] = useState("");
+  // 记住最近一次提交是否无痕，用于错误后「再说一次」重试时复现同样语义。
+  const lastEphemeralRef = useRef(false);
   const [growthBurst, setGrowthBurst] = useState(false);
 
   // 跟踪当前活跃请求：用户取消 / 再次提交后，忽略旧请求的迟到结果与流事件。
@@ -59,6 +61,7 @@ export function useReflectFlow(userId: string | null, onReflected?: () => void) 
       setLiveIsland(null);
       setLiveScene(null);
       setLastMood(text);
+      lastEphemeralRef.current = ephemeral;
       setLoadingText("岛屿在远处望见你了……");
       setPhase("loading");
       // 同一次提交用同一个 request_id：WS 超时回退 HTTP 时后端据此去重，避免重复落库。
@@ -129,12 +132,23 @@ export function useReflectFlow(userId: string | null, onReflected?: () => void) 
     window.setTimeout(() => setGrowthBurst(false), 1900);
   }, []);
 
+  // 错误后「再说一次」：用上次的文本与无痕语义重试。
+  const retry = useCallback(() => {
+    if (!userId || !lastMood) return;
+    void submit(lastMood, lastEphemeralRef.current);
+  }, [userId, lastMood, submit]);
+
+  // 「先记在心里」：清掉错误，回到干净的输入态。
+  const dismissError = useCallback(() => {
+    setError(null);
+  }, []);
+
   return {
     phase, setPhase,
     result, loadingText,
     liveAgents, liveScene, liveIsland,
     island, setIsland,
     error, errorKind, lastMood, growthBurst,
-    submit, reset, cancel, handleActed, handleNarrativeDone,
+    submit, reset, cancel, retry, dismissError, handleActed, handleNarrativeDone,
   };
 }

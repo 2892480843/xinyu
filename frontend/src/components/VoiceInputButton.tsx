@@ -148,7 +148,7 @@ export default function VoiceInputButton({ disabled = false, baseText = "", onTr
           type="button"
           disabled
           title="当前浏览器不支持语音输入"
-          className="grid h-8 w-8 place-items-center rounded-full bg-white/8 text-white/35 border border-white/10 cursor-not-allowed"
+          className="grid h-10 w-10 place-items-center rounded-full bg-white/8 text-white/35 border border-white/10 cursor-not-allowed"
         >
           麦
         </button>
@@ -164,7 +164,7 @@ export default function VoiceInputButton({ disabled = false, baseText = "", onTr
           type="button"
           disabled
           title="麦克风需 HTTPS 安全连接（用 https:// 或 localhost 打开）"
-          className="grid h-8 w-8 place-items-center rounded-full bg-white/8 text-white/35 border border-white/10 cursor-not-allowed"
+          className="grid h-10 w-10 place-items-center rounded-full bg-white/8 text-white/35 border border-white/10 cursor-not-allowed"
         >
           麦
         </button>
@@ -180,7 +180,7 @@ export default function VoiceInputButton({ disabled = false, baseText = "", onTr
         onClick={listening ? stop : start}
         disabled={disabled}
         title={listening ? "停止语音输入" : "开始语音输入"}
-        className="grid h-8 w-8 place-items-center rounded-full bg-white/12 hover:bg-white/20 text-white/82 border border-white/15 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        className="grid h-10 w-10 place-items-center rounded-full bg-white/12 hover:bg-white/20 text-white/82 border border-white/15 transition disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {listening ? "■" : "麦"}
       </button>

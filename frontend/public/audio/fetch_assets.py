@@ -25,7 +25,8 @@ from pathlib import Path
 API = "https://commons.wikimedia.org/w/api.php"
 UA = "XinyuBot/1.0 (audio asset fetch for the Xinyu project; contact: dev)"
 BASE = Path(__file__).resolve().parent
-RAW_DIR = BASE / "raw"
+# raw 源料已移出 public(避免被 vite 原样打进 dist) → frontend/_audio_raw；m4a 产物仍写回 public/audio/。
+RAW_DIR = BASE.parent.parent / "_audio_raw"
 META_PATH = BASE / "meta.json"
 
 

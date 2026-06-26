@@ -8,9 +8,12 @@
  *   - 跨源字体 (Google Fonts) → stale-while-revalidate
  *   - 其它 / 非 GET / WS      → 直接走网络
  *
- * 升级缓存策略时请提升 VERSION，activate 时会清理旧缓存。
+ * 升级缓存策略、**或当同 URL 资源(模型/音频/场景)内容变化时(如重导出 .glb)**，请提升 VERSION：
+ * activate 时会清掉旧 VERSION 的全部缓存，强制重新拉取新内容。否则同名资源会被 stale-while-revalidate
+ * 先喂旧缓存(本次访问拿到旧版，下次才更新)——曾导致重导出带 WalkLoop 动画的主角 glb 后「网站走路动作没了」。
+ * 注:js/css 走内容哈希文件名(改了即换 URL，自然刷新)，无需为它们提升 VERSION；只有固定 URL 的资源需要。
  */
-const VERSION = "xinyu-v2";
+const VERSION = "xinyu-v4";
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 const API_CACHE = `${VERSION}-api`;
@@ -86,7 +89,10 @@ async function networkFirst(request, cacheName, fallback) {
 async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
-  const network = fetch(request)
+  // 网络取用 cache:"no-cache"=带 ETag/Last-Modified 条件请求,绕过浏览器 HTTP 缓存的「同 URL 旧内容」:
+  // 模型/音频是固定 URL、内容可随重导出变化,若走默认缓存(max-age 7天)会一直拿旧文件;
+  // 条件请求让服务器在内容变了时返 200 新文件、没变返 304(便宜)。这样 SW 缓存始终跟随服务器真实内容。
+  const network = fetch(request, { cache: "no-cache" })
     .then((res) => {
       if (res && res.ok) cache.put(request, res.clone());
       return res;

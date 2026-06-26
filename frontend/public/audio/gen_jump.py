@@ -23,7 +23,7 @@ SR = 48000          # 采样率，与其余 env 采样对齐
 DUR = 0.30          # 总时长（秒）——起跳点缀，远短于 3.6s 的旧 boing
 N = int(SR * DUR)
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_WAV = os.path.join(HERE, "raw", "env", "jump.wav")
+OUT_WAV = os.path.join(HERE, "..", "..", "_audio_raw", "env", "jump.wav")  # raw 已移出 public
 
 
 def glide(t, f0, f1, tau):

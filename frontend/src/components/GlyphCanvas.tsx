@@ -201,7 +201,8 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
 
   return (
     <motion.div
-      className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-slate-950/68 backdrop-blur-md px-6"
+      className="fixed inset-0 z-[90] flex flex-col items-center justify-center bg-slate-950/68 backdrop-blur-md px-6"
+      style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -255,7 +256,7 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
               <button
                 type="button"
                 onClick={() => onClose(null)}
-                className="text-white/40 text-[12px] hover:text-white/80 transition"
+                className="touch-target px-3 text-white/40 text-[13px] hover:text-white/80 transition"
               >
                 先不写了
               </button>
@@ -263,7 +264,7 @@ export default function GlyphCanvas({ userId, onClose }: Props) {
                 <button
                   type="button"
                   onClick={clear}
-                  className="text-white/45 text-[12px] hover:text-white/85 transition"
+                  className="touch-target px-3 text-white/45 text-[13px] hover:text-white/85 transition"
                 >
                   重写
                 </button>
