@@ -5623,6 +5623,14 @@ function PoiIcon({ kind, night }: { kind: PoiKind; night: boolean }) {
       return (<g>{shadow}
         <path d="M-5 4.4 H5 M-3.8 2.5 H3.8 M-2.8 0.7 H2.8" stroke={wood} strokeWidth={1} strokeLinecap="round" />
         <path d="M0 -5 L1.2 -1.3 L5 -1.3 L1.9 0.9 L3.1 4.4 L0 2.1 L-3.1 4.4 L-1.9 0.9 L-5 -1.3 L-1.2 -1.3 Z" fill={night ? "#ffe9a0" : "#ffcf5a"} stroke={ink} strokeWidth={0.7} strokeLinejoin="round" /></g>);
+    case "town":
+      return (<g>{shadow}
+        <rect x={-4.6} y={-1.2} width={3.4} height={6.2} rx={0.5} fill={wall} {...co} />
+        <rect x={-1} y={-3.6} width={3} height={8.6} rx={0.5} fill={wall} {...co} />
+        <rect x={2.2} y={0.2} width={3} height={4.8} rx={0.5} fill={wall} {...co} />
+        <rect x={-3.9} y={0.4} width={1.1} height={1.1} fill={win} /><rect x={-3.9} y={2.3} width={1.1} height={1.1} fill={win} />
+        <rect x={-0.1} y={-1.8} width={1.2} height={1.2} fill={win} /><rect x={-0.1} y={0.6} width={1.2} height={1.2} fill={win} />
+        <rect x={3.1} y={1.5} width={1.1} height={1.1} fill={win} /></g>);
     case "beach":
       return (<g>{shadow}
         <path d="M0.4 4.6 L-1.4 -2" stroke={wood} strokeWidth={1} strokeLinecap="round" />

@@ -23,7 +23,7 @@ test("explore map is driven by the C1 zone registry", async () => {
   assert.match(source, /EXPLORE_MAP_POIS/);
   assert.match(mapBlock, /type PoiKind = ExplorePoiKind/);
   assert.match(mapBlock, /const MAP_POIS: MapPoi\[] = EXPLORE_MAP_POIS/);
-  for (const kind of ["home", "rice", "farm", "mountain", "forest", "zoo", "swamp", "scenic"]) {
+  for (const kind of ["beach", "town", "home", "rice", "farm", "mountain", "forest", "zoo", "swamp", "scenic"]) {
     assert.match(iconBlock, new RegExp(`case "${kind}"`));
   }
 });
