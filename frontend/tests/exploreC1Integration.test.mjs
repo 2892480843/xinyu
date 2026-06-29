@@ -124,3 +124,32 @@ test("explore districts drive proximity prompts and location ambience", async ()
   assert.match(proximityBlock, /key !== lastKey\.current/);
   assert.match(proximityBlock, /onNear\(zone\)/);
 });
+
+test("explore C1 uses healing-walk presentation tuning", async () => {
+  const source = await readExploreSource();
+  const presentation = await readFile(path.resolve("src/lib/explorePresentation.ts"), "utf8");
+  const playerBlock = sourceBlock(source, "function Player", "function Wishes");
+  const rainBlock = sourceBlock(source, "function ExploreRain", "function HomeDistrict");
+  const districtBlock = sourceBlock(source, "function DistrictGroundPatch", "function IslandDistricts");
+
+  assert.match(source, /HEALING_WALK_CAMERA/);
+  assert.match(source, /HEALING_RAIN_PRESENTATION/);
+  assert.match(source, /HEALING_DISTRICT_PRESENTATION/);
+  assert.match(presentation, /introExtraDist:\s*34/);
+  assert.match(presentation, /introExtraHeight:\s*22/);
+  assert.match(presentation, /lookAhead:\s*1\.9/);
+  assert.match(presentation, /normalCount:\s*260/);
+  assert.match(presentation, /lowCount:\s*140/);
+  assert.match(playerBlock, /HEALING_WALK_CAMERA\.introExtraDist/);
+  assert.match(playerBlock, /HEALING_WALK_CAMERA\.introExtraHeight/);
+  assert.match(playerBlock, /HEALING_WALK_CAMERA\.lookAhead/);
+  assert.match(rainBlock, /HEALING_RAIN_PRESENTATION\.normalCount/);
+  assert.match(rainBlock, /HEALING_RAIN_PRESENTATION\.lowCount/);
+  assert.match(districtBlock, /HEALING_DISTRICT_PRESENTATION\.home/);
+  assert.match(districtBlock, /HEALING_DISTRICT_PRESENTATION\.rice/);
+  assert.match(districtBlock, /HEALING_DISTRICT_PRESENTATION\.farm/);
+  assert.match(districtBlock, /HEALING_DISTRICT_PRESENTATION\.zoo/);
+  assert.match(districtBlock, /HEALING_DISTRICT_PRESENTATION\.swamp/);
+  assert.match(districtBlock, /HEALING_DISTRICT_PRESENTATION\.scenic/);
+  assert.match(source, /<DistrictGroundPatch/);
+});

@@ -24,6 +24,7 @@ import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
 import { selectCharacterAction, type CharacterActionClip } from "../lib/protagonistAction";
 import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
+import { HEALING_DISTRICT_PRESENTATION, HEALING_RAIN_PRESENTATION, HEALING_WALK_CAMERA } from "../lib/explorePresentation";
 import { EXPLORE_MAP_POIS, exploreZoneAmbience, findExploreZone, type ExplorePoiKind, type ExploreZone } from "../lib/exploreZones";
 import {
   DEFAULT_EXPLORE_ENVIRONMENT,
@@ -458,8 +459,8 @@ function nearIsleProp(x: number, z: number, margin = 0): boolean {
 const PLAYER_SPEED = 14.0; // 移动速度(大岛散步式探索:再放慢一档,从容的慢步)
 const JUMP_V = 11.0; // 起跳初速度
 const GRAVITY = 34.0; // 重力加速度(跳跃抛物);跳跃高度 ≈ V²/2g ≈ 1.8 单位
-const CAM_DIST = 7.0; // 相机跟在身后的距离(再拉近一档,角色更大、更有代入感)
-const CAM_HEIGHT = 4.2; // 相机高度(随距离同比降,俯角维持 ~31° 不变只是更近;仍够高让丘陵不挡视线)
+const CAM_DIST = HEALING_WALK_CAMERA.distance; // 相机跟在身后的距离:近景散步,角色更大、更有代入感
+const CAM_HEIGHT = HEALING_WALK_CAMERA.height; // 相机高度:保留一点俯角看路,但不再像航拍
 
 // 模块级临时向量(单 Player 实例,逐帧复用,避开 react-hooks 对组件内值变异的规则)
 const _fwd = new THREE.Vector3();
@@ -467,6 +468,7 @@ const _right = new THREE.Vector3();
 const _move = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
 const _camLookTarget = new THREE.Vector3();
+const _camVel = { x: 0, z: 0 };
 const _up = new THREE.Vector3(0, 1, 0);
 const dist2 = (ax: number, az: number, bx: number, bz: number): number => {
   const dx = ax - bx;
@@ -2684,7 +2686,7 @@ function Player({
       lastFace.current = eff;
     }
 
-    // 第三人称跟随相机;开场先来一段从高空侧俯、边降边收到身后的俯冲运镜(约 3.2s)
+    // 第三人称跟随相机;开场从低位斜后方缓入,避免第一眼变成航拍全岛。
     const ry = g.rotation.y;
     // 放飞天灯后:相机仰起跟拍天灯升空(入 / 保持 / 出 缓动),约 6s 后回到角色
     let watch = 0;
@@ -2693,17 +2695,20 @@ function Player({
       if (lanternCam.t > 6.2) lanternCam.on = false;
       else { const w = lanternCam.t; watch = w < 0.7 ? w / 0.7 : w > 4.6 ? Math.max(0, 1 - (w - 4.6) / 1.6) : 1; }
     }
-    introT.current = Math.min(1, introT.current + dt / 3.2);
+    introT.current = Math.min(1, introT.current + dt / HEALING_WALK_CAMERA.introSeconds);
     if (introT.current < 1) {
       const e = introT.current * introT.current * (3 - 2 * introT.current); // smoothstep 缓动
-      const ang = ry + (1 - e) * 2.2; // 起始侧偏 → 收束到身后
-      const dist = CAM_DIST + (1 - e) * 135; // 起始更远:从高空俯瞰整岛开始,smoothstep 在远端稍作停留,再缓缓收近到身后
-      const ht = CAM_HEIGHT + (1 - e) * 132; // 起始更高
+      const ang = ry + (1 - e) * HEALING_WALK_CAMERA.introSideAngle; // 起始小侧偏 → 收束到身后
+      const dist = CAM_DIST + (1 - e) * HEALING_WALK_CAMERA.introExtraDist;
+      const ht = CAM_HEIGHT + (1 - e) * HEALING_WALK_CAMERA.introExtraHeight;
       _camTarget.set(pos.x - Math.sin(ang) * dist, pos.y + ht, pos.z - Math.cos(ang) * dist);
-      camera.position.lerp(_camTarget, Math.min(1, dt * 3.0));
+      _camVel.x = 0; _camVel.z = 0;
+      resolveCollisions(collidersRef?.current ?? null, _camTarget, _camVel, HEALING_WALK_CAMERA.collisionRadius);
+      camera.position.lerp(_camTarget, Math.min(1, dt * HEALING_WALK_CAMERA.followLerp));
     } else {
       // 跟拍天灯时:略微后撤 + 抬高,腾出仰视天空的余地
-      const cd = CAM_DIST + 5 * watch, ch = CAM_HEIGHT + 1.8 * watch;
+      const cd = CAM_DIST + HEALING_WALK_CAMERA.lanternExtraDist * watch;
+      const ch = CAM_HEIGHT + HEALING_WALK_CAMERA.lanternExtraHeight * watch;
       _camTarget.set(pos.x - Math.sin(ry) * cd, pos.y + ch, pos.z - Math.cos(ry) * cd);
       // 轻量避障:相机若被丘陵/地形挡住(镜头处地面高于镜头 y),沿「角色→相机」方向抬一点、收近,
       // 避免穿山/卡到地下。纯解析判断(用 groundYWithRoad + 地标地坪抬升,无射线),零额外开销。
@@ -2714,20 +2719,26 @@ function Player({
         _camTarget.x -= Math.sin(ry) * -push * 0.4; // 沿镜头方向靠近角色一点
         _camTarget.z -= Math.cos(ry) * -push * 0.4;
       }
-      camera.position.lerp(_camTarget, Math.min(1, dt * 3.0)); // 更跟手(原 2.4 偏滞后)
+      _camVel.x = 0; _camVel.z = 0;
+      resolveCollisions(collidersRef?.current ?? null, _camTarget, _camVel, HEALING_WALK_CAMERA.collisionRadius);
+      camera.position.lerp(_camTarget, Math.min(1, dt * HEALING_WALK_CAMERA.followLerp));
     }
     // 注视点:平时看角色;放飞天灯后按 watch 缓动插值到天灯所在的高空(略抬,把上方烟花也带进画面)
     if (watch > 0) {
       const ly = lanternCam.gy + 1.3 + lanternRise(lanternCam.t) + 6;
       _camLookTarget.set(pos.x + (lanternCam.x - pos.x) * watch, pos.y + 1.5 + (ly - (pos.y + 1.5)) * watch, pos.z + (lanternCam.z - pos.z) * watch);
     } else {
-      _camLookTarget.set(pos.x, pos.y + 1.5, pos.z);
+      _camLookTarget.set(
+        pos.x + Math.sin(ry) * HEALING_WALK_CAMERA.lookAhead,
+        pos.y + HEALING_WALK_CAMERA.lookHeight,
+        pos.z + Math.cos(ry) * HEALING_WALK_CAMERA.lookAhead,
+      );
     }
     if (!camLookReady.current) {
       camLook.current.copy(_camLookTarget);
       camLookReady.current = true;
     } else {
-      camLook.current.lerp(_camLookTarget, Math.min(1, dt * 6));
+      camLook.current.lerp(_camLookTarget, Math.min(1, dt * HEALING_WALK_CAMERA.lookLerp));
     }
     camera.lookAt(camLook.current);
     // 🛠️ DEBUG 鸟瞰:离线截图脚本设 window.__XYCAM={px,py,pz,tx,ty,tz} 时,相机改用该机位(查穿模用)。
@@ -5847,17 +5858,17 @@ function Minimap({ posRef, headingRef, night }: { posRef: React.RefObject<THREE.
         type="button"
         onClick={openMap}
         aria-label="打开全岛地图"
-        className="xy-explore-minimap panel-glass-2 absolute z-10 rounded-2xl p-1.5 active:scale-95 transition-transform"
-        style={{ position: "absolute", left: "calc(1.2rem + env(safe-area-inset-left))", top: "calc(4.5rem + env(safe-area-inset-top))" }}
+        className="xy-explore-minimap panel-glass-2 absolute z-10 rounded-2xl p-1 active:scale-95 transition-transform sm:p-1.5"
+        style={{ position: "absolute", left: "calc(0.85rem + env(safe-area-inset-left))", top: "calc(4.25rem + env(safe-area-inset-top))" }}
       >
-        <svg viewBox={`0 0 ${MAP_VIEW} ${MAP_VIEW}`} width={116} height={116} className="block rounded-xl">
+        <svg viewBox={`0 0 ${MAP_VIEW} ${MAP_VIEW}`} className="block h-24 w-24 rounded-xl sm:h-[116px] sm:w-[116px]">
           <IslandMapBody night={night} labeled={false} />
           <g ref={miniArrow}>
             <circle r={9} fill={night ? "#ffd0d8" : "#ffffff"} opacity={0.22} />
             <path d="M0,-11 L7,7 L0,3 L-7,7 Z" fill="#ff3b6b" stroke="#ffffff" strokeWidth={1.4} strokeLinejoin="round" />
           </g>
         </svg>
-        <span className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-2 py-0.5 text-[10px] tracking-wide text-white/85">🔍 地图</span>
+        <span className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/45 px-2 py-0.5 text-[10px] leading-none tracking-wide text-white/85">🔍 地图</span>
       </button>
 
       {/* 放大后的全岛地图(可缩放/平移 + 标注 + 图例) */}
@@ -6362,18 +6373,18 @@ function ExploreLoading() {
 
 function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: number; tier: PerfTier }) {
   const ref = useRef<THREE.InstancedMesh>(null);
-  const count = tier === "low" ? 90 : 180;
-  const geo = useMemo(() => new THREE.CylinderGeometry(0.012, 0.012, 2.4, 4), []);
+  const count = tier === "low" ? HEALING_RAIN_PRESENTATION.lowCount : HEALING_RAIN_PRESENTATION.normalCount;
+  const geo = useMemo(() => new THREE.CylinderGeometry(HEALING_RAIN_PRESENTATION.dropRadius, HEALING_RAIN_PRESENTATION.dropRadius, HEALING_RAIN_PRESENTATION.dropLength, 4), []);
   const mat = useMemo(
-    () => new THREE.MeshBasicMaterial({ color: "#dbeafe", transparent: true, opacity, depthWrite: false, toneMapped: false }),
+    () => new THREE.MeshBasicMaterial({ color: "#edf8ff", transparent: true, opacity, depthWrite: false, toneMapped: false }),
     [opacity],
   );
   const drops = useMemo(
     () => Array.from({ length: count }, (_, i) => ({
-      x: (hash2(i, 1.2) - 0.5) * 340,
-      y: 36 + hash2(i, 3.4) * 70,
-      z: (hash2(i, 5.6) - 0.5) * 340,
-      speed: 18 + hash2(i, 7.8) * 18,
+      x: (hash2(i, 1.2) - 0.5) * HEALING_RAIN_PRESENTATION.radius,
+      y: HEALING_RAIN_PRESENTATION.startY + hash2(i, 3.4) * HEALING_RAIN_PRESENTATION.heightRange,
+      z: (hash2(i, 5.6) - 0.5) * HEALING_RAIN_PRESENTATION.radius,
+      speed: HEALING_RAIN_PRESENTATION.minSpeed + hash2(i, 7.8) * HEALING_RAIN_PRESENTATION.speedRange,
     })),
     [count],
   );
@@ -6384,7 +6395,7 @@ function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: numb
     if (!mesh || !active) return;
     for (let i = 0; i < drops.length; i++) {
       dummy.position.set(drops[i].x, drops[i].y, drops[i].z);
-      dummy.rotation.set(0.35, 0, -0.18);
+      dummy.rotation.set(HEALING_RAIN_PRESENTATION.tiltX, 0, HEALING_RAIN_PRESENTATION.tiltZ);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     }
@@ -6402,9 +6413,9 @@ function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: numb
     for (let i = 0; i < drops.length; i++) {
       const drop = drops[i];
       drop.y -= drop.speed * dt;
-      if (drop.y < 2) drop.y = 70;
+      if (drop.y < 2) drop.y = HEALING_RAIN_PRESENTATION.resetY;
       dummy.position.set(drop.x, drop.y, drop.z);
-      dummy.rotation.set(0.35, 0, -0.18);
+      dummy.rotation.set(HEALING_RAIN_PRESENTATION.tiltX, 0, HEALING_RAIN_PRESENTATION.tiltZ);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     }
@@ -6415,39 +6426,81 @@ function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: numb
   return <instancedMesh ref={ref} args={[geo, mat, count]} frustumCulled={false} />;
 }
 
+function DistrictGroundPatch({
+  patch,
+  shape = "circle",
+}: {
+  patch: {
+    x: number;
+    z: number;
+    radius?: number;
+    width?: number;
+    depth?: number;
+    color: string;
+    ring: string;
+    opacity: number;
+    ringOpacity: number;
+  };
+  shape?: "circle" | "rect";
+}) {
+  const width = patch.width ?? (patch.radius ?? 20) * 2;
+  const depth = patch.depth ?? (patch.radius ?? 20) * 2;
+  const radius = patch.radius ?? Math.max(width, depth) * 0.5;
+  const y = exGroundY(patch.x, patch.z);
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[patch.x, y + 0.045, patch.z]}>
+        {shape === "rect" ? <planeGeometry args={[width, depth]} /> : <circleGeometry args={[radius, 64]} />}
+        <meshBasicMaterial color={patch.color} transparent opacity={patch.opacity} depthWrite={false} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[patch.x, y + 0.058, patch.z]}>
+        {shape === "rect" ? <planeGeometry args={[width + 5, depth + 5]} /> : <ringGeometry args={[radius * 0.98, radius * 1.08, 72]} />}
+        <meshBasicMaterial color={patch.ring} transparent opacity={patch.ringOpacity} depthWrite={false} toneMapped={false} wireframe={shape === "rect"} />
+      </mesh>
+    </group>
+  );
+}
+
 function HomeDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
   const lamps = night ? "#ffd98a" : undefined;
   return (
     <group>
-      <GroundProp url={MODELS.houseCottage} grad={grad} x={-26} z={-24} rot={0.55} scale={1.1} />
-      <GroundProp url={MODELS.houseLoft} grad={grad} x={-15} z={-16} rot={-0.4} scale={0.9} />
-      <GroundProp url={MODELS.townMailbox} grad={grad} x={-31} z={-15} rot={0.8} scale={0.9} tint={lamps} />
-      <GroundProp url={MODELS.townBench} grad={grad} x={-19} z={-31} rot={1.8} scale={0.9} />
-      <GroundProp url={MODELS.isleWell} grad={grad} x={-34} z={-28} scale={0.75} />
+      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.home} />
+      <GroundProp url={MODELS.houseCottage} grad={grad} x={-39} z={-32} rot={0.55} scale={1.12} />
+      <GroundProp url={MODELS.houseLoft} grad={grad} x={-9} z={-15} rot={-0.4} scale={0.86} />
+      <GroundProp url={MODELS.townMailbox} grad={grad} x={-31} z={-13} rot={0.8} scale={1.08} tint={lamps} />
+      <GroundProp url={MODELS.townBench} grad={grad} x={-23} z={-17} rot={1.35} scale={1.05} />
+      <GroundProp url={MODELS.isleWell} grad={grad} x={-19} z={-31} scale={0.92} />
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={-11} z={-28} rot={-0.2} scale={0.82} tint={lamps} />
     </group>
   );
 }
 
 function RiceFieldDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: boolean }) {
-  const rows = lowTier ? 8 : 14;
-  const cols = lowTier ? 7 : 11;
+  const rows = lowTier ? 9 : 16;
+  const cols = lowTier ? 8 : 13;
   const items = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const x = 42 + c * 3.1 + (r % 2) * 0.8;
-      const z = -99 + r * 3.0;
-      items.push(<GroundProp key={`${r}-${c}`} url={MODELS.natCropSprout} grad={grad} x={x} z={z} rot={(c * 0.37 + r * 0.21) % 6.28} scale={0.82} />);
+      const x = 40 + c * 3.15 + (r % 2) * 0.8;
+      const z = -101 + r * 3.05;
+      items.push(<GroundProp key={`${r}-${c}`} url={MODELS.natCropSprout} grad={grad} x={x} z={z} rot={(c * 0.37 + r * 0.21) % 6.28} scale={0.96} />);
     }
   }
   return (
     <group>
+      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.rice} shape="rect" />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[58, exGroundY(58, -80) + 0.04, -80]}>
-        <planeGeometry args={[48, 38]} />
-        <meshBasicMaterial color="#9fcf7a" transparent opacity={0.22} depthWrite={false} />
+        <planeGeometry args={[55, 42]} />
+        <meshBasicMaterial color="#d7ecaa" transparent opacity={0.18} depthWrite={false} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[58, exGroundY(58, -80) + 0.055, -80]}>
+        <planeGeometry args={[56, 3.2]} />
+        <meshBasicMaterial color="#bfe9dc" transparent opacity={0.28} depthWrite={false} toneMapped={false} />
       </mesh>
       {items}
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={79} z={-86} rot={0.4} scale={1.2} />
-      <GroundProp url={MODELS.paperboat} grad={grad} x={47} z={-73} rot={-0.6} scale={0.9} />
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={79} z={-86} rot={0.4} scale={1.38} />
+      <GroundProp url={MODELS.paperboat} grad={grad} x={47} z={-73} rot={-0.6} scale={1.05} />
     </group>
   );
 }
@@ -6455,11 +6508,13 @@ function RiceFieldDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: bo
 function FarmDistrict({ grad }: { grad: THREE.Texture }) {
   return (
     <group>
-      <GroundProp url={MODELS.houseVilla} grad={grad} x={-58} z={-93} rot={-0.8} scale={1.0} />
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={-43} z={-82} rot={0.3} scale={1.35} />
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={-66} z={-78} rot={1.4} scale={1.0} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={-51} z={-70} rot={0.1} scale={1.4} />
-      <GroundProp url={MODELS.windmill} grad={grad} x={-72} z={-104} rot={0.7} scale={1.1} />
+      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.farm} />
+      <GroundProp url={MODELS.houseVilla} grad={grad} x={-58} z={-93} rot={-0.8} scale={1.16} />
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={-43} z={-82} rot={0.3} scale={1.55} />
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={-66} z={-78} rot={1.4} scale={1.18} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={-51} z={-70} rot={0.1} scale={1.62} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={-67} z={-88} rot={Math.PI / 2} scale={1.45} />
+      <GroundProp url={MODELS.windmill} grad={grad} x={-72} z={-104} rot={0.7} scale={1.28} />
     </group>
   );
 }
@@ -6468,13 +6523,15 @@ function ZooDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
   const tint = night ? "#ffe9a0" : undefined;
   return (
     <group>
-      <GroundProp url={MODELS.townFence} grad={grad} x={76} z={-19} rot={0.0} scale={1.5} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={88} z={-19} rot={0.0} scale={1.5} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={82} z={-31} rot={Math.PI / 2} scale={1.5} />
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={70} z={-36} rot={0.5} scale={1.0} tint={tint} />
-      <GroundProp url={MODELS.critterFox} grad={grad} x={79} z={-24} rot={0.5} scale={0.9} />
-      <GroundProp url={MODELS.critterCat} grad={grad} x={88} z={-28} rot={-0.8} scale={0.9} />
-      <GroundProp url={MODELS.critterOwl} grad={grad} x={84} z={-15} rot={0.2} scale={0.85} />
+      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.zoo} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={74} z={-18} rot={0.0} scale={1.62} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={90} z={-18} rot={0.0} scale={1.62} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={82} z={-34} rot={Math.PI / 2} scale={1.7} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={82} z={-10} rot={Math.PI / 2} scale={1.35} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={70} z={-36} rot={0.5} scale={1.15} tint={tint} />
+      <GroundProp url={MODELS.critterFox} grad={grad} x={79} z={-24} rot={0.5} scale={1.08} />
+      <GroundProp url={MODELS.critterCat} grad={grad} x={88} z={-28} rot={-0.8} scale={1.04} />
+      <GroundProp url={MODELS.critterOwl} grad={grad} x={84} z={-15} rot={0.2} scale={1.0} />
     </group>
   );
 }
@@ -6488,14 +6545,15 @@ function SwampDistrict({ grad, accent, lowTier }: { grad: THREE.Texture; accent:
   });
   return (
     <group>
+      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.swamp} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[92, exGroundY(92, -104) + 0.05, -104]}>
-        <circleGeometry args={[27, 48]} />
-        <meshStandardMaterial color={accent} roughness={0.4} metalness={0.1} transparent opacity={0.2} depthWrite={false} />
+        <circleGeometry args={[29, 56]} />
+        <meshStandardMaterial color={accent} roughness={0.4} metalness={0.1} transparent opacity={0.3} depthWrite={false} />
       </mesh>
       {reeds}
-      <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.1} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={0.9} />
-      <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.1} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.25} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={1.08} />
+      <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.28} />
     </group>
   );
 }
@@ -6504,11 +6562,12 @@ function ScenicDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }
   const glow = night ? "#ffe9a0" : undefined;
   return (
     <group>
-      <GroundProp url={MODELS.torii} grad={grad} x={18} z={112} rot={Math.PI} scale={1.1} />
-      <GroundProp url={MODELS.isleLookout} grad={grad} x={31} z={105} rot={-0.5} scale={1.05} />
-      <GroundProp url={MODELS.stonelantern} grad={grad} x={8} z={104} rot={0.4} scale={1.0} tint={glow} />
-      <GroundProp url={MODELS.stonelantern} grad={grad} x={38} z={115} rot={-0.3} scale={1.0} tint={glow} />
-      <GroundProp url={MODELS.isleWindchime} grad={grad} x={23} z={98} rot={0.2} scale={0.9} />
+      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.scenic} />
+      <GroundProp url={MODELS.torii} grad={grad} x={18} z={112} rot={Math.PI} scale={1.26} />
+      <GroundProp url={MODELS.isleLookout} grad={grad} x={31} z={105} rot={-0.5} scale={1.18} />
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={8} z={104} rot={0.4} scale={1.1} tint={glow} />
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={38} z={115} rot={-0.3} scale={1.1} tint={glow} />
+      <GroundProp url={MODELS.isleWindchime} grad={grad} x={23} z={98} rot={0.2} scale={1.02} />
     </group>
   );
 }
@@ -6780,7 +6839,7 @@ function ExploreScene({
       {environment.weather === "rain" && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.09, 0]}>
           <circleGeometry args={[WALK_RADIUS * 0.92, 96]} />
-          <meshBasicMaterial color="#dbeafe" transparent opacity={Math.min(0.18, envVisual.rainOpacity * 0.35)} depthWrite={false} toneMapped={false} />
+          <meshBasicMaterial color="#dbeafe" transparent opacity={Math.min(HEALING_RAIN_PRESENTATION.wetGroundMaxOpacity, envVisual.rainOpacity * HEALING_RAIN_PRESENTATION.wetGroundOpacityFactor)} depthWrite={false} toneMapped={false} />
         </mesh>
       )}
 
@@ -7905,7 +7964,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         // dpr 上限收一档(高端 1.75→1.4):Retina 上每帧像素 −36%,写实模型逐帧渲染 + Sobel 全屏后期都更轻。
         // low 档再降到 0.85~1，移动端优先保触控响应和稳定帧率。
         dpr={tier === "low" ? [0.85, 1] : [1, 1.4]}
-        camera={{ position: [0, 150, 290], fov: 55, near: 0.1, far: 3400 }}
+        camera={{ position: [HEALING_WALK_CAMERA.canvasPosition[0], HEALING_WALK_CAMERA.canvasPosition[1], HEALING_WALK_CAMERA.canvasPosition[2]], fov: HEALING_WALK_CAMERA.canvasFov, near: 0.1, far: 3400 }}
         // 林间土路(DriveScene)是覆盖在上方的独立 Canvas,且与本场景共用 inputRef——
         // 不冻结的话踩油门(W)会让被遮住的小人在底下「走路」,蹭出脚步声(还白白渲染全遮挡场景)。
         // 覆盖期间冻结本场景:脚步声消失,而加油门/引擎声由 DriveScene 自管,不受影响。
@@ -7963,9 +8022,9 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
 
       {/* 任务 HUD：主进度突出，次要发现（心愿/鲸落/漂流瓶）收成一行淡出，避免堆叠多行。
           顶部居中整列用 flex-col + gap 排布——风铃提示作为次级 pill 自动叠在主面板下方，绝不重叠。 */}
-      <div className="xy-explore-hud pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-2 px-3" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
+      <div className="xy-explore-hud pointer-events-none absolute inset-x-0 top-0 flex flex-col items-end gap-1.5 pl-[8.4rem] pr-3 sm:items-center sm:gap-2 sm:px-3" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
         {/* 主目标收成一颗 slim 胶囊：去掉教学副标题（计数已自明），次要发现压成图标+数字缀在后面，整体更轻、更像游戏 HUD */}
-        <div className="panel-glass-2 flex min-w-0 max-w-[92vw] items-center gap-2 rounded-full px-4 py-1.5">
+        <div className="panel-glass-2 flex min-w-0 max-w-[calc(100vw-9.2rem)] items-center gap-2 rounded-full px-4 py-1.5 sm:max-w-[92vw]">
           <span className="shrink-0 whitespace-nowrap font-display text-[15px] tracking-wide text-white/90">
             {hasImprints
               ? (imprintsDone ? "✦ 你走过的每一刻，都还在 ✦" : `✦ 心灵印记 ${pickedImprints.length}/${imp.length}`)
@@ -7984,13 +8043,13 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           )}
         </div>
         {nearDistrict && (
-          <div className="panel-glass-1 max-w-[92vw] rounded-full px-3.5 py-1 text-caption text-white/72">
+          <div className="panel-glass-1 max-w-[calc(100vw-9.2rem)] truncate rounded-full px-3.5 py-1 text-caption text-white/72 sm:max-w-[92vw]">
             {nearDistrict.icon} {nearDistrict.label} · {districtLine(nearDistrict)}
           </div>
         )}
         {/* 风铃心曲：精简引导——进度圆点已表达「依次」，只留一句方向提示 */}
         {!songDone && (
-          <div className="panel-glass-1 whitespace-nowrap rounded-full px-3.5 py-1 text-caption text-white/70">🎐 跟着发光的风铃 {SONG.map((_, i) => (i < songProgress ? "◍" : "○")).join(" ")}</div>
+          <div className="panel-glass-1 max-w-[calc(100vw-9.2rem)] truncate whitespace-nowrap rounded-full px-3.5 py-1 text-caption text-white/70 sm:max-w-[92vw]">🎐 跟着发光的风铃 {SONG.map((_, i) => (i < songProgress ? "◍" : "○")).join(" ")}</div>
         )}
       </div>
 
@@ -8143,7 +8202,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
 
       {/* 操作提示 */}
       <p
-        className="xy-explore-control-hint absolute text-caption text-white/45"
+        className="xy-explore-control-hint absolute hidden text-caption text-white/45 sm:block"
         style={{ right: "calc(1.6rem + env(safe-area-inset-right))", bottom: "calc(2rem + env(safe-area-inset-bottom))" }}
       >
         {carPrompt === "exit"
