@@ -2524,6 +2524,7 @@ function Player({
       moving: gait > 0.12,
       running: character === "hero" && moveHoldT.current >= XYSHZ_RUN_HOLD_SECONDS,
       airborne: airborne.current,
+      cheerActive: cheerT.current > 0,
       waveActive: waveT.current > 0,
       fluteActive: fluteT.current > 0,
       sitAmount: sit.current,
@@ -6461,17 +6462,96 @@ function DistrictGroundPatch({
   );
 }
 
+function DistrictFlatTile({
+  x,
+  z,
+  width,
+  depth,
+  color,
+  opacity = 0.32,
+  rot = 0,
+}: {
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  color: string;
+  opacity?: number;
+  rot?: number;
+}) {
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, rot]} position={[x, exGroundY(x, z) + 0.07, z]}>
+      <planeGeometry args={[width, depth]} />
+      <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
+
+function DistrictCircleTile({
+  x,
+  z,
+  radius,
+  color,
+  opacity = 0.3,
+}: {
+  x: number;
+  z: number;
+  radius: number;
+  color: string;
+  opacity?: number;
+}) {
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[x, exGroundY(x, z) + 0.072, z]}>
+      <circleGeometry args={[radius, 64]} />
+      <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
+
+function DistrictLanternPair({ grad, x, z, night, rot = 0 }: { grad: THREE.Texture; x: number; z: number; night: boolean; rot?: number }) {
+  const glow = night ? "#ffe9a0" : undefined;
+  return (
+    <group>
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={x - 3.4} z={z} rot={rot + 0.2} scale={0.9} tint={glow} />
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={x + 3.4} z={z} rot={rot - 0.2} scale={0.9} tint={glow} />
+    </group>
+  );
+}
+
 function HomeDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
   const lamps = night ? "#ffd98a" : undefined;
   return (
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.home} />
+      <DistrictFlatTile x={-24} z={-23} width={26} depth={5} color="#ffe6b2" opacity={0.28} rot={-0.35} />
       <GroundProp url={MODELS.houseCottage} grad={grad} x={-39} z={-32} rot={0.55} scale={1.12} />
       <GroundProp url={MODELS.houseLoft} grad={grad} x={-9} z={-15} rot={-0.4} scale={0.86} />
       <GroundProp url={MODELS.townMailbox} grad={grad} x={-31} z={-13} rot={0.8} scale={1.08} tint={lamps} />
       <GroundProp url={MODELS.townBench} grad={grad} x={-23} z={-17} rot={1.35} scale={1.05} />
       <GroundProp url={MODELS.isleWell} grad={grad} x={-19} z={-31} scale={0.92} />
       <GroundProp url={MODELS.stonelantern} grad={grad} x={-11} z={-28} rot={-0.2} scale={0.82} tint={lamps} />
+    </group>
+  );
+}
+
+function BeachDistrict({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.beach;
+  return (
+    <group>
+      <DistrictGroundPatch patch={p} shape="rect" />
+      <DistrictFlatTile x={p.x + 6} z={p.z - 6} width={44} depth={7} color="#f7e3bc" opacity={0.44} rot={0.55} />
+      <DistrictFlatTile x={p.x - 8} z={p.z + 7} width={32} depth={4} color="#bfe6ee" opacity={0.28} rot={0.5} />
+      <GroundProp url={MODELS.beachDeckchair} grad={grad} x={p.x - 18} z={p.z + 4} rot={0.8} scale={1.25} />
+      <GroundProp url={MODELS.beachSurfboard} grad={grad} x={p.x - 7} z={p.z - 9} rot={1.2} scale={1.12} />
+      <GroundProp url={MODELS.beachBucket} grad={grad} x={p.x + 9} z={p.z + 5} rot={-0.5} scale={1.18} />
+      <GroundProp url={MODELS.beachBall} grad={grad} x={p.x + 17} z={p.z - 2} rot={0.2} scale={1.04} />
+      <GroundProp url={MODELS.beachSign} grad={grad} x={p.x - 23} z={p.z - 11} rot={0.25} scale={1.15} />
+      <GroundProp url={MODELS.beachPalm} grad={grad} x={p.x + 22} z={p.z + 11} rot={-0.35} scale={1.1} />
+      <GroundProp url={MODELS.beachFirepit} grad={grad} x={p.x + 3} z={p.z + 14} rot={0.1} scale={1.0} />
+      <GroundProp url={MODELS.beachFootprint} grad={grad} x={p.x - 3} z={p.z + 1} rot={0.65} scale={1.45} />
+      <GroundProp url={MODELS.beachStarfish} grad={grad} x={p.x + 24} z={p.z - 9} rot={0.5} scale={1.1} />
+      <GroundProp url={MODELS.beachTidepool} grad={grad} x={p.x - 18} z={p.z + 13} rot={-0.2} scale={1.16} />
+      <GroundProp url={MODELS.beachSandcastle} grad={grad} x={p.x + 15} z={p.z + 10} rot={0.35} scale={1.08} />
     </group>
   );
 }
@@ -6494,6 +6574,7 @@ function RiceFieldDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: bo
         <planeGeometry args={[55, 42]} />
         <meshBasicMaterial color="#d7ecaa" transparent opacity={0.18} depthWrite={false} toneMapped={false} />
       </mesh>
+      {[47, 58, 69].map((x) => <DistrictFlatTile key={x} x={x} z={-80} width={2.2} depth={43} color="#bfe9dc" opacity={0.34} />)}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[58, exGroundY(58, -80) + 0.055, -80]}>
         <planeGeometry args={[56, 3.2]} />
         <meshBasicMaterial color="#bfe9dc" transparent opacity={0.28} depthWrite={false} toneMapped={false} />
@@ -6501,6 +6582,86 @@ function RiceFieldDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: bo
       {items}
       <GroundProp url={MODELS.townHaystack} grad={grad} x={79} z={-86} rot={0.4} scale={1.38} />
       <GroundProp url={MODELS.paperboat} grad={grad} x={47} z={-73} rot={-0.6} scale={1.05} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={38} z={-62} rot={0.45} scale={1.12} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={80} z={-70} rot={0.1} scale={1.35} />
+    </group>
+  );
+}
+
+function MountainDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.mountain;
+  const rocks = [
+    [p.x - 18, p.z - 8, 1.4, 0.2],
+    [p.x - 6, p.z + 12, 1.1, 1.2],
+    [p.x + 16, p.z + 6, 1.35, -0.4],
+    [p.x + 22, p.z - 12, 1.0, 0.8],
+  ] as const;
+  return (
+    <group>
+      <DistrictGroundPatch patch={p} />
+      <DistrictFlatTile x={p.x - 10} z={p.z - 12} width={8} depth={30} color="#d6c8ad" opacity={0.3} rot={-0.78} />
+      <DistrictFlatTile x={p.x + 7} z={p.z + 4} width={8} depth={28} color="#d6c8ad" opacity={0.28} rot={-0.35} />
+      <GroundProp url={MODELS.isleStepstones} grad={grad} x={p.x - 11} z={p.z - 15} rot={-0.75} scale={1.55} />
+      <GroundProp url={MODELS.torii} grad={grad} x={p.x - 25} z={p.z - 20} rot={0.82} scale={1.24} />
+      <GroundProp url={MODELS.isleLookout} grad={grad} x={p.x + 18} z={p.z + 16} rot={-0.55} scale={1.12} />
+      <DistrictLanternPair grad={grad} x={p.x - 14} z={p.z - 3} night={night} rot={-0.4} />
+      {rocks.map(([x, z, s, r], i) => <GroundProp key={i} url={MODELS.natRock} grad={grad} x={x} z={z} rot={r} scale={s} />)}
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 2} z={p.z - 23} rot={0.35} scale={1.05} />
+    </group>
+  );
+}
+
+function ForestDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.forest;
+  const treeSpots = lowTier
+    ? [[-30, -18, 1.8], [-18, 17, 1.55], [4, -23, 1.65], [24, -8, 1.75], [28, 18, 1.45], [-2, 3, 1.3]]
+    : [[-34, -21, 2.0], [-29, 18, 1.72], [-18, -13, 1.78], [-10, 26, 1.5], [5, -25, 1.74], [17, 18, 1.62], [28, -11, 1.9], [34, 18, 1.55], [-2, 2, 1.38], [22, 4, 1.42]];
+  const bushSpots = [[-26, 0, 1.2], [-12, -23, 1.1], [10, 23, 1.0], [30, 3, 1.15], [-4, 15, 0.95]] as const;
+  const mushrooms = [[-10, -1, 1.25], [-5, 5, 1.05], [2, 4, 1.0], [7, -3, 1.1], [-1, -7, 0.95], [12, 8, 0.9], [-15, 9, 0.92]] as const;
+  return (
+    <group>
+      <DistrictGroundPatch patch={p} />
+      <DistrictCircleTile x={p.x + 1} z={p.z} radius={22} color="#376f4b" opacity={0.22} />
+      <DistrictFlatTile x={p.x + 4} z={p.z} width={12} depth={58} color="#9fca84" opacity={0.32} rot={1.05} />
+      {treeSpots.map(([dx, dz, s], i) => (
+        <GroundProp
+          key={i}
+          url={i % 2 === 0 ? MODELS.natPine : MODELS.natBroad}
+          grad={grad}
+          x={p.x + dx}
+          z={p.z + dz}
+          rot={hash2(i + 401, 2.5) * Math.PI * 2}
+          scale={s}
+        />
+      ))}
+      {bushSpots.map(([dx, dz, s], i) => <GroundProp key={i} url={MODELS.natBush} grad={grad} x={p.x + dx} z={p.z + dz} rot={i * 0.7} scale={s} />)}
+      {mushrooms.map(([dx, dz, s], i) => <GroundProp key={i} url={MODELS.natMushroom} grad={grad} x={p.x + dx} z={p.z + dz} rot={i * 0.9} scale={s} />)}
+      <GroundProp url={MODELS.isleSwing} grad={grad} x={p.x - 5} z={p.z - 2} rot={0.38} scale={1.08} />
+      <GroundProp url={MODELS.isleHammock} grad={grad} x={p.x + 15} z={p.z + 4} rot={-0.5} scale={1.16} />
+      <GroundProp url={MODELS.isleTent} grad={grad} x={p.x - 23} z={p.z + 24} rot={0.25} scale={1.15} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 30} z={p.z - 21} rot={-0.25} scale={1.18} />
+      <GroundProp url={MODELS.natFlowers} grad={grad} x={p.x - 2} z={p.z + 14} rot={0.2} scale={1.22} />
+    </group>
+  );
+}
+
+function TownDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.town;
+  const lamps = night ? "#ffe9a0" : undefined;
+  return (
+    <group>
+      <DistrictGroundPatch patch={p} />
+      <DistrictFlatTile x={p.x} z={p.z} width={40} depth={18} color="#d8c0a0" opacity={0.36} rot={0.08} />
+      <DistrictFlatTile x={p.x + 4} z={p.z + 4} width={8} depth={42} color="#efe0bd" opacity={0.24} rot={Math.PI / 2} />
+      <GroundProp url={MODELS.houseCottage} grad={grad} x={p.x - 24} z={p.z - 11} rot={0.45} scale={0.95} />
+      <GroundProp url={MODELS.houseLoft} grad={grad} x={p.x + 24} z={p.z - 14} rot={-0.4} scale={0.9} />
+      <GroundProp url={MODELS.isleStall} grad={grad} x={p.x - 7} z={p.z + 3} rot={0.1} scale={1.05} />
+      <GroundProp url={MODELS.townParasol} grad={grad} x={p.x + 8} z={p.z + 8} rot={-0.2} scale={1.05} />
+      <GroundProp url={MODELS.townCrate} grad={grad} x={p.x - 14} z={p.z + 10} rot={0.4} scale={1.18} />
+      <GroundProp url={MODELS.townBench} grad={grad} x={p.x + 16} z={p.z - 1} rot={1.55} scale={1.0} />
+      <GroundProp url={MODELS.townMailbox} grad={grad} x={p.x - 2} z={p.z - 19} rot={0.2} scale={1.02} tint={lamps} />
+      <GroundProp url={MODELS.townLamppost} grad={grad} x={p.x - 19} z={p.z + 7} rot={0} scale={1.06} tint={lamps} />
+      <GroundProp url={MODELS.townLamppost} grad={grad} x={p.x + 20} z={p.z + 4} rot={0} scale={1.06} tint={lamps} />
     </group>
   );
 }
@@ -6509,6 +6670,8 @@ function FarmDistrict({ grad }: { grad: THREE.Texture }) {
   return (
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.farm} />
+      <DistrictFlatTile x={-56} z={-78} width={42} depth={8} color="#c9d779" opacity={0.22} rot={0.08} />
+      <DistrictFlatTile x={-57} z={-88} width={42} depth={8} color="#c9d779" opacity={0.2} rot={0.08} />
       <GroundProp url={MODELS.houseVilla} grad={grad} x={-58} z={-93} rot={-0.8} scale={1.16} />
       <GroundProp url={MODELS.townHaystack} grad={grad} x={-43} z={-82} rot={0.3} scale={1.55} />
       <GroundProp url={MODELS.townHaystack} grad={grad} x={-66} z={-78} rot={1.4} scale={1.18} />
@@ -6521,17 +6684,33 @@ function FarmDistrict({ grad }: { grad: THREE.Texture }) {
 
 function ZooDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
   const tint = night ? "#ffe9a0" : undefined;
+  const p = HEALING_DISTRICT_PRESENTATION.zoo;
+  const fences = [
+    [p.x - 12, p.z + 9, 0, 1.72],
+    [p.x + 9, p.z + 9, 0, 1.72],
+    [p.x - 12, p.z - 11, 0, 1.72],
+    [p.x + 9, p.z - 11, 0, 1.72],
+    [p.x - 24, p.z - 1, Math.PI / 2, 1.55],
+    [p.x + 22, p.z - 1, Math.PI / 2, 1.55],
+    [p.x - 2, p.z - 22, Math.PI / 2, 1.65],
+    [p.x - 2, p.z + 19, Math.PI / 2, 1.65],
+  ] as const;
   return (
     <group>
-      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.zoo} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={74} z={-18} rot={0.0} scale={1.62} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={90} z={-18} rot={0.0} scale={1.62} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={82} z={-34} rot={Math.PI / 2} scale={1.7} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={82} z={-10} rot={Math.PI / 2} scale={1.35} />
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={70} z={-36} rot={0.5} scale={1.15} tint={tint} />
-      <GroundProp url={MODELS.critterFox} grad={grad} x={79} z={-24} rot={0.5} scale={1.08} />
-      <GroundProp url={MODELS.critterCat} grad={grad} x={88} z={-28} rot={-0.8} scale={1.04} />
-      <GroundProp url={MODELS.critterOwl} grad={grad} x={84} z={-15} rot={0.2} scale={1.0} />
+      <DistrictGroundPatch patch={p} />
+      <DistrictCircleTile x={p.x} z={p.z - 1} radius={20} color="#d8b977" opacity={0.28} />
+      <DistrictCircleTile x={p.x + 13} z={p.z + 3} radius={6.5} color="#7fc7d4" opacity={0.35} />
+      <DistrictFlatTile x={p.x - 8} z={p.z + 15} width={20} depth={5} color="#f1d99e" opacity={0.32} rot={0.12} />
+      {fences.map(([x, z, r, s], i) => <GroundProp key={i} url={MODELS.townFence} grad={grad} x={x} z={z} rot={r} scale={s} />)}
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x - 24} z={p.z - 20} rot={0.5} scale={1.35} tint={tint} />
+      <GroundProp url={MODELS.townCrate} grad={grad} x={p.x - 11} z={p.z + 15} rot={0.4} scale={1.12} />
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={p.x - 1} z={p.z + 15} rot={-0.2} scale={1.1} />
+      <GroundProp url={MODELS.townBench} grad={grad} x={p.x + 14} z={p.z - 14} rot={1.45} scale={0.95} />
+      <GroundProp url={MODELS.critterFox} grad={grad} x={p.x - 7} z={p.z - 1} rot={0.5} scale={1.28} />
+      <GroundProp url={MODELS.critterCat} grad={grad} x={p.x + 5} z={p.z - 6} rot={-0.8} scale={1.2} />
+      <GroundProp url={MODELS.critterOwl} grad={grad} x={p.x - 3} z={p.z + 9} rot={0.2} scale={1.16} />
+      <GroundProp url={MODELS.critterFish} grad={grad} x={p.x + 13} z={p.z + 3} rot={-0.6} scale={0.9} />
+      <GroundProp url={MODELS.natBush} grad={grad} x={p.x + 22} z={p.z + 16} rot={0.2} scale={1.1} />
     </group>
   );
 }
@@ -6543,17 +6722,41 @@ function SwampDistrict({ grad, accent, lowTier }: { grad: THREE.Texture; accent:
     const r = 5 + hash2(i + 31, 4.4) * 20;
     return <GroundProp key={i} url={MODELS.natReed} grad={grad} x={92 + Math.cos(a) * r} z={-104 + Math.sin(a) * r} rot={a} scale={0.9 + hash2(i, 6.6) * 0.5} />;
   });
+  const fixedReeds = [
+    [-21, -11, 1.35], [-15, 15, 1.2], [-7, -24, 1.42], [4, 22, 1.18], [15, -18, 1.32], [22, 8, 1.25],
+  ] as const;
   return (
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.swamp} />
+      <DistrictCircleTile x={92} z={-104} radius={28} color="#4f887d" opacity={0.42} />
+      <DistrictCircleTile x={81} z={-116} radius={24} color="#5f9d91" opacity={0.42} />
+      <DistrictCircleTile x={82} z={-96} radius={10} color="#6ca79d" opacity={0.34} />
+      <DistrictCircleTile x={104} z={-113} radius={9} color="#5c9189" opacity={0.34} />
+      <DistrictFlatTile x={92} z={-104} width={9} depth={50} color="#a6875f" opacity={0.46} rot={0.85} />
+      <DistrictFlatTile x={86} z={-97} width={7} depth={24} color="#bd9a64" opacity={0.32} rot={1.34} />
+      <DistrictFlatTile x={85} z={-116} width={34} depth={16} color="#79b6ad" opacity={0.32} rot={0.22} />
+      <DistrictFlatTile x={80} z={-116} width={7} depth={25} color="#b58d58" opacity={0.38} rot={0.85} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[92, exGroundY(92, -104) + 0.05, -104]}>
         <circleGeometry args={[29, 56]} />
-        <meshStandardMaterial color={accent} roughness={0.4} metalness={0.1} transparent opacity={0.3} depthWrite={false} />
+        <meshStandardMaterial color="#4a8279" roughness={0.48} metalness={0.08} transparent opacity={0.3} depthWrite={false} />
       </mesh>
       {reeds}
-      <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.25} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={1.08} />
-      <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.28} />
+      {fixedReeds.map(([dx, dz, s], i) => <GroundProp key={`fixed-${i}`} url={MODELS.natReed} grad={grad} x={92 + dx} z={-104 + dz} rot={i * 0.75} scale={s} />)}
+      <GroundProp url={MODELS.isleBridge} grad={grad} x={91} z={-103} rot={0.85} scale={0.64} />
+      <GroundProp url={MODELS.isleBridge} grad={grad} x={84} z={-95} rot={1.32} scale={0.46} />
+      <GroundProp url={MODELS.isleBridge} grad={grad} x={80} z={-116} rot={0.85} scale={0.42} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.42} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={77} z={-116} rot={-0.25} scale={1.42} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={89} z={-118} rot={0.36} scale={1.12} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={1.26} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={95} z={-92} rot={0.1} scale={1.0} />
+      <GroundProp url={MODELS.critterFish} grad={grad} x={101} z={-103} rot={0.4} scale={0.78} tint={accent} />
+      <GroundProp url={MODELS.natReed} grad={grad} x={72} z={-117} rot={0.2} scale={1.34} />
+      <GroundProp url={MODELS.natReed} grad={grad} x={83} z={-123} rot={-0.4} scale={1.18} />
+      <GroundProp url={MODELS.natReed} grad={grad} x={91} z={-115} rot={0.7} scale={1.26} />
+      <GroundProp url={MODELS.natReed} grad={grad} x={87} z={-110} rot={-0.15} scale={1.18} />
+      <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.42} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={75} z={-119} rot={0.7} scale={1.05} />
     </group>
   );
 }
@@ -6563,6 +6766,7 @@ function ScenicDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }
   return (
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.scenic} />
+      <DistrictFlatTile x={23} z={106} width={8} depth={34} color="#e7d8a6" opacity={0.24} rot={1.2} />
       <GroundProp url={MODELS.torii} grad={grad} x={18} z={112} rot={Math.PI} scale={1.26} />
       <GroundProp url={MODELS.isleLookout} grad={grad} x={31} z={105} rot={-0.5} scale={1.18} />
       <GroundProp url={MODELS.stonelantern} grad={grad} x={8} z={104} rot={0.4} scale={1.1} tint={glow} />
@@ -6578,7 +6782,11 @@ function IslandDistricts({ grad, accent, environment, tier }: { grad: THREE.Text
   return (
     <group>
       <HomeDistrict grad={grad} night={night} />
+      <BeachDistrict grad={grad} />
       <RiceFieldDistrict grad={grad} lowTier={lowTier} />
+      <MountainDistrict grad={grad} night={night} />
+      <ForestDistrict grad={grad} lowTier={lowTier} />
+      <TownDistrict grad={grad} night={night} />
       <FarmDistrict grad={grad} />
       <ZooDistrict grad={grad} night={night} />
       <SwampDistrict grad={grad} accent={accent} lowTier={lowTier} />

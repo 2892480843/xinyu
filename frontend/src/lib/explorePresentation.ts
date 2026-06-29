@@ -1,3 +1,8 @@
+import { EXPLORE_WALK_RADIUS } from "./exploreWorld";
+
+const BEACH_SCENE_X = Math.cos(0.55) * EXPLORE_WALK_RADIUS * 0.91;
+const BEACH_SCENE_Z = Math.sin(0.55) * EXPLORE_WALK_RADIUS * 0.91;
+
 export const HEALING_WALK_CAMERA = {
   distance: 7,
   height: 4.2,
@@ -43,6 +48,16 @@ export const HEALING_DISTRICT_PRESENTATION = {
     opacity: 0.34,
     ringOpacity: 0.28,
   },
+  beach: {
+    x: BEACH_SCENE_X,
+    z: BEACH_SCENE_Z,
+    width: 62,
+    depth: 38,
+    color: "#f4d69c",
+    ring: "#fff0c7",
+    opacity: 0.38,
+    ringOpacity: 0.26,
+  },
   rice: {
     x: 59,
     z: -80,
@@ -51,6 +66,33 @@ export const HEALING_DISTRICT_PRESENTATION = {
     color: "#a6d87b",
     ring: "#edf7ba",
     opacity: 0.34,
+    ringOpacity: 0.24,
+  },
+  mountain: {
+    x: -70,
+    z: 70,
+    radius: 34,
+    color: "#9fa99c",
+    ring: "#d9d1bc",
+    opacity: 0.28,
+    ringOpacity: 0.22,
+  },
+  forest: {
+    x: -118,
+    z: 20,
+    radius: 43,
+    color: "#4f8b61",
+    ring: "#a9d38c",
+    opacity: 0.4,
+    ringOpacity: 0.3,
+  },
+  town: {
+    x: -12,
+    z: -54,
+    radius: 30,
+    color: "#d2b08a",
+    ring: "#f4d7a8",
+    opacity: 0.32,
     ringOpacity: 0.24,
   },
   farm: {
@@ -65,20 +107,20 @@ export const HEALING_DISTRICT_PRESENTATION = {
   zoo: {
     x: 82,
     z: -25,
-    radius: 24,
-    color: "#c8dd8a",
+    radius: 28,
+    color: "#d6cf83",
     ring: "#f5f1bc",
-    opacity: 0.3,
-    ringOpacity: 0.24,
+    opacity: 0.38,
+    ringOpacity: 0.3,
   },
   swamp: {
     x: 92,
     z: -104,
-    radius: 31,
-    color: "#5f8d86",
+    radius: 35,
+    color: "#4d827c",
     ring: "#a8d1bd",
-    opacity: 0.25,
-    ringOpacity: 0.24,
+    opacity: 0.36,
+    ringOpacity: 0.28,
   },
   scenic: {
     x: 24,

@@ -89,18 +89,53 @@ test("explore mode renders rain visuals and enables weather ambience", async () 
 test("explore scene renders C1 district groups", async () => {
   const source = await readExploreSource();
   const sceneBlock = sourceBlock(source, "function ExploreScene", "function ExploreMode");
+  const districtBlock = sourceBlock(source, "function HomeDistrict", "function ExploreScene");
 
-  for (const name of ["HomeDistrict", "RiceFieldDistrict", "FarmDistrict", "ZooDistrict", "SwampDistrict", "ScenicDistrict", "IslandDistricts"]) {
+  for (const name of [
+    "HomeDistrict",
+    "BeachDistrict",
+    "RiceFieldDistrict",
+    "MountainDistrict",
+    "ForestDistrict",
+    "TownDistrict",
+    "FarmDistrict",
+    "ZooDistrict",
+    "SwampDistrict",
+    "ScenicDistrict",
+    "IslandDistricts",
+  ]) {
     assert.match(source, new RegExp(`function ${name}`));
+  }
+  for (const tag of [
+    "<HomeDistrict",
+    "<BeachDistrict",
+    "<RiceFieldDistrict",
+    "<MountainDistrict",
+    "<ForestDistrict",
+    "<TownDistrict",
+    "<FarmDistrict",
+    "<ZooDistrict",
+    "<SwampDistrict",
+    "<ScenicDistrict",
+  ]) {
+    assert.match(source, new RegExp(tag));
   }
   assert.match(sceneBlock, /<IslandDistricts/);
   assert.match(sceneBlock, /environment=\{environment\}/);
-  assert.match(source, /MODELS\.natCropSprout/);
-  assert.match(source, /MODELS\.natReed/);
-  assert.match(source, /MODELS\.natLotus/);
-  assert.match(source, /MODELS\.critterFox/);
-  assert.match(source, /MODELS\.critterCat/);
-  assert.match(source, /MODELS\.critterOwl/);
+  assert.match(districtBlock, /MODELS\.natCropSprout/);
+  assert.match(districtBlock, /MODELS\.beachDeckchair/);
+  assert.match(districtBlock, /MODELS\.beachTidepool/);
+  assert.match(districtBlock, /MODELS\.isleStepstones/);
+  assert.match(districtBlock, /MODELS\.isleSwing/);
+  assert.match(districtBlock, /MODELS\.isleBridge/);
+  assert.match(districtBlock, /MODELS\.natPine/);
+  assert.match(districtBlock, /MODELS\.townParasol/);
+  assert.match(districtBlock, /MODELS\.natReed/);
+  assert.match(districtBlock, /MODELS\.natLotus/);
+  assert.match(districtBlock, /MODELS\.critterFox/);
+  assert.match(districtBlock, /MODELS\.critterCat/);
+  assert.match(districtBlock, /MODELS\.critterOwl/);
+  assert.match(districtBlock, /MODELS\.critterFish/);
 });
 
 test("explore districts drive proximity prompts and location ambience", async () => {
