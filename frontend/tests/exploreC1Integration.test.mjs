@@ -85,3 +85,20 @@ test("explore mode renders rain visuals and enables weather ambience", async () 
   assert.match(stopBlock, /clearWeatherFade\(weather\)/);
   assert.match(stopBlock, /el\.pause\(\);\n\s*el\.currentTime = 0;/);
 });
+
+test("explore scene renders C1 district groups", async () => {
+  const source = await readExploreSource();
+  const sceneBlock = sourceBlock(source, "function ExploreScene", "function ExploreMode");
+
+  for (const name of ["HomeDistrict", "RiceFieldDistrict", "FarmDistrict", "ZooDistrict", "SwampDistrict", "ScenicDistrict", "IslandDistricts"]) {
+    assert.match(source, new RegExp(`function ${name}`));
+  }
+  assert.match(sceneBlock, /<IslandDistricts/);
+  assert.match(sceneBlock, /environment=\{environment\}/);
+  assert.match(source, /MODELS\.natCropSprout/);
+  assert.match(source, /MODELS\.natReed/);
+  assert.match(source, /MODELS\.natLotus/);
+  assert.match(source, /MODELS\.critterFox/);
+  assert.match(source, /MODELS\.critterCat/);
+  assert.match(source, /MODELS\.critterOwl/);
+});

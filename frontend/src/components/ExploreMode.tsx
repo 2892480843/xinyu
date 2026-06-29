@@ -809,7 +809,9 @@ const MODELS = {
   natBush: "/models/xy_nat_bush.glb",
   natFlowers: "/models/xy_nat_flowers.glb",
   natRock: "/models/xy_nat_rock_a.glb",
+  natLotus: "/models/xy_nat_lotus.glb",
   natMushroom: "/models/xy_nat_mushroom.glb",
+  natReed: "/models/xy_nat_reed.glb",
   natCropSprout: "/models/xy_nat_crop_sprout.glb",
   // 小镇道具(替换程序化点缀)
   townParasol: "/models/xy_town_parasol.glb",
@@ -819,6 +821,7 @@ const MODELS = {
   townSignpost: "/models/xy_town_signpost.glb",
   townMailbox: "/models/xy_town_mailbox.glb",
   townBench: "/models/xy_town_bench.glb",
+  townFence: "/models/xy_town_fence.glb",
   townCrate: "/models/xy_town_crate.glb",
   townHaystack: "/models/xy_town_haystack.glb",
   qiche: "/models/qiche.glb", // 汽车(Porsche 911 Targa,原生约 98 长 → scale 0.05;轮底在原点下 15.47 → 落地偏移 +0.77)
@@ -1290,6 +1293,19 @@ function GltfProp({
     else spinNode.rotateZ(amount);
   });
   return <primitive object={obj} position={position} rotation={rotation} scale={scale} />;
+}
+
+function GroundProp({ url, grad, x, z, scale = 1, rot = 0, yOffset = 0, tint }: {
+  url: string;
+  grad: THREE.Texture;
+  x: number;
+  z: number;
+  scale?: number;
+  rot?: number;
+  yOffset?: number;
+  tint?: string;
+}) {
+  return <GltfProp url={url} grad={grad} tint={tint} position={[x, exGroundY(x, z) + yOffset, z]} rotation={[0, rot, 0]} scale={scale} />;
 }
 
 type RitualArtifactKey = keyof typeof ARTIFACT_3D_REGISTRY;
@@ -6378,6 +6394,119 @@ function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: numb
   return <instancedMesh ref={ref} args={[geo, mat, count]} frustumCulled={false} />;
 }
 
+function HomeDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const lamps = night ? "#ffd98a" : undefined;
+  return (
+    <group>
+      <GroundProp url={MODELS.houseCottage} grad={grad} x={-26} z={-24} rot={0.55} scale={1.1} />
+      <GroundProp url={MODELS.houseLoft} grad={grad} x={-15} z={-16} rot={-0.4} scale={0.9} />
+      <GroundProp url={MODELS.townMailbox} grad={grad} x={-31} z={-15} rot={0.8} scale={0.9} tint={lamps} />
+      <GroundProp url={MODELS.townBench} grad={grad} x={-19} z={-31} rot={1.8} scale={0.9} />
+      <GroundProp url={MODELS.isleWell} grad={grad} x={-34} z={-28} scale={0.75} />
+    </group>
+  );
+}
+
+function RiceFieldDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: boolean }) {
+  const rows = lowTier ? 8 : 14;
+  const cols = lowTier ? 7 : 11;
+  const items = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = 42 + c * 3.1 + (r % 2) * 0.8;
+      const z = -99 + r * 3.0;
+      items.push(<GroundProp key={`${r}-${c}`} url={MODELS.natCropSprout} grad={grad} x={x} z={z} rot={(c * 0.37 + r * 0.21) % 6.28} scale={0.82} />);
+    }
+  }
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[58, exGroundY(58, -80) + 0.04, -80]}>
+        <planeGeometry args={[48, 38]} />
+        <meshBasicMaterial color="#9fcf7a" transparent opacity={0.22} depthWrite={false} />
+      </mesh>
+      {items}
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={79} z={-86} rot={0.4} scale={1.2} />
+      <GroundProp url={MODELS.paperboat} grad={grad} x={47} z={-73} rot={-0.6} scale={0.9} />
+    </group>
+  );
+}
+
+function FarmDistrict({ grad }: { grad: THREE.Texture }) {
+  return (
+    <group>
+      <GroundProp url={MODELS.houseVilla} grad={grad} x={-58} z={-93} rot={-0.8} scale={1.0} />
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={-43} z={-82} rot={0.3} scale={1.35} />
+      <GroundProp url={MODELS.townHaystack} grad={grad} x={-66} z={-78} rot={1.4} scale={1.0} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={-51} z={-70} rot={0.1} scale={1.4} />
+      <GroundProp url={MODELS.windmill} grad={grad} x={-72} z={-104} rot={0.7} scale={1.1} />
+    </group>
+  );
+}
+
+function ZooDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const tint = night ? "#ffe9a0" : undefined;
+  return (
+    <group>
+      <GroundProp url={MODELS.townFence} grad={grad} x={76} z={-19} rot={0.0} scale={1.5} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={88} z={-19} rot={0.0} scale={1.5} />
+      <GroundProp url={MODELS.townFence} grad={grad} x={82} z={-31} rot={Math.PI / 2} scale={1.5} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={70} z={-36} rot={0.5} scale={1.0} tint={tint} />
+      <GroundProp url={MODELS.critterFox} grad={grad} x={79} z={-24} rot={0.5} scale={0.9} />
+      <GroundProp url={MODELS.critterCat} grad={grad} x={88} z={-28} rot={-0.8} scale={0.9} />
+      <GroundProp url={MODELS.critterOwl} grad={grad} x={84} z={-15} rot={0.2} scale={0.85} />
+    </group>
+  );
+}
+
+function SwampDistrict({ grad, accent, lowTier }: { grad: THREE.Texture; accent: string; lowTier: boolean }) {
+  const count = lowTier ? 10 : 18;
+  const reeds = Array.from({ length: count }, (_, i) => {
+    const a = hash2(i + 31, 2.2) * Math.PI * 2;
+    const r = 5 + hash2(i + 31, 4.4) * 20;
+    return <GroundProp key={i} url={MODELS.natReed} grad={grad} x={92 + Math.cos(a) * r} z={-104 + Math.sin(a) * r} rot={a} scale={0.9 + hash2(i, 6.6) * 0.5} />;
+  });
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[92, exGroundY(92, -104) + 0.05, -104]}>
+        <circleGeometry args={[27, 48]} />
+        <meshStandardMaterial color={accent} roughness={0.4} metalness={0.1} transparent opacity={0.2} depthWrite={false} />
+      </mesh>
+      {reeds}
+      <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.1} />
+      <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={0.9} />
+      <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.1} />
+    </group>
+  );
+}
+
+function ScenicDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const glow = night ? "#ffe9a0" : undefined;
+  return (
+    <group>
+      <GroundProp url={MODELS.torii} grad={grad} x={18} z={112} rot={Math.PI} scale={1.1} />
+      <GroundProp url={MODELS.isleLookout} grad={grad} x={31} z={105} rot={-0.5} scale={1.05} />
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={8} z={104} rot={0.4} scale={1.0} tint={glow} />
+      <GroundProp url={MODELS.stonelantern} grad={grad} x={38} z={115} rot={-0.3} scale={1.0} tint={glow} />
+      <GroundProp url={MODELS.isleWindchime} grad={grad} x={23} z={98} rot={0.2} scale={0.9} />
+    </group>
+  );
+}
+
+function IslandDistricts({ grad, accent, environment, tier }: { grad: THREE.Texture; accent: string; environment: ExploreEnvironment; tier: PerfTier }) {
+  const night = environment.timeOfDay === "night";
+  const lowTier = tier === "low";
+  return (
+    <group>
+      <HomeDistrict grad={grad} night={night} />
+      <RiceFieldDistrict grad={grad} lowTier={lowTier} />
+      <FarmDistrict grad={grad} />
+      <ZooDistrict grad={grad} night={night} />
+      <SwampDistrict grad={grad} accent={accent} lowTier={lowTier} />
+      <ScenicDistrict grad={grad} night={night} />
+    </group>
+  );
+}
+
 function ExploreScene({
   visual,
   environment,
@@ -6494,6 +6623,7 @@ function ExploreScene({
     town: lowTier ? 5200 : 250,
     village: lowTier ? 7600 : 250,
     coastline: lowTier ? 9600 : 250,
+    districts: lowTier ? 12500 : 500,
     interactions: lowTier ? 11200 : 0,
     companion: lowTier ? 14000 : 0,
     car: lowTier ? 9000 : 0,
@@ -6604,6 +6734,11 @@ function ExploreScene({
         <Suspense fallback={null}>
           {/* 近海地形 + 海滩物 + 发光海水(Batch 6) */}
           <Coastline toonGrad={toonGrad} accent={visual.accent} />
+        </Suspense>
+      </DelayedMount>
+      <DelayedMount ms={revealDelay.districts}>
+        <Suspense fallback={null}>
+          <IslandDistricts grad={toonGrad} accent={visual.accent} environment={environment} tier={tier} />
         </Suspense>
       </DelayedMount>
       {/* 海面(大) */}
