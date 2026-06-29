@@ -49,6 +49,6 @@ test("explore zones expose position and ambience helpers", async () => {
   assert.match(source, /export function findExploreZone/);
   assert.match(source, /export function exploreZoneAmbience/);
   assert.match(source, /ambience: "brook"/);
-  assert.match(source, /ambience: "wind_forest"/);
+  assert.match(source, /ambience: "forest"/);
   assert.match(source, /ambience: "bay"/);
 });
