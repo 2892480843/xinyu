@@ -24,6 +24,7 @@ import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
 import { selectCharacterAction, type CharacterActionClip } from "../lib/protagonistAction";
 import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
+import { EXPLORE_MAP_POIS, type ExplorePoiKind } from "../lib/exploreZones";
 import {
   createCompanionVoice,
   getCompanionLevel,
@@ -5510,21 +5511,10 @@ const MAP_EXTENT = WALK_RADIUS * 1.12; // 视野半径(含海岸/码头/一圈�
 const mapX = (wx: number) => MAP_C + (wx / MAP_EXTENT) * MAP_C;
 const mapY = (wz: number) => MAP_C - (wz / MAP_EXTENT) * MAP_C; // +z 在上
 const MAP_ISLAND_R = (WALK_RADIUS / MAP_EXTENT) * MAP_C; // 岛(可走圈)在地图上的半径
-const MAP_BAY = { x: Math.cos(BAY_ANGLE) * WALK_RADIUS, z: Math.sin(BAY_ANGLE) * WALK_RADIUS }; // 东南海湾中心
 
-type PoiKind = "village" | "bonfire" | "bath" | "pond" | "town" | "manor" | "pier" | "lighthouse" | "beach";
+type PoiKind = ExplorePoiKind;
 interface MapPoi { x: number; z: number; label: string; icon: string; kind: PoiKind; color: string; dx?: number; dy?: number }
-const MAP_POIS: MapPoi[] = [
-  { x: 0, z: 0, label: "村落中心", icon: "🏡", kind: "village", color: "#ffd9a0", dy: -12 },
-  { x: BONFIRE.x, z: BONFIRE.z, label: "篝火营地", icon: "🔥", kind: "bonfire", color: "#ff9b6b", dx: 34, dy: 8 },
-  { x: BATH.x, z: BATH.z, label: "海湾浴场", icon: "♨️", kind: "bath", color: "#bfe9ff", dy: -12 },
-  { x: POND.x, z: POND.z, label: "心愿池塘", icon: "💧", kind: "pond", color: "#9fd8ff", dy: -12 },
-  { x: BLOCK.x, z: BLOCK.z, label: "老城街区", icon: "🏘️", kind: "town", color: "#e8c8a0", dy: -12 },
-  { x: MANOR.x, z: MANOR.z, label: "西岭山庄", icon: "🏯", kind: "manor", color: "#d8c0ff", dy: -12 },
-  { x: PIER.x, z: PIER.z, label: "码头", icon: "⚓", kind: "pier", color: "#cfe6ff", dy: -12 },
-  { x: LIGHTHOUSE.x, z: LIGHTHOUSE.z, label: "灯塔", icon: "🗼", kind: "lighthouse", color: "#ffe6a0", dy: -13 },
-  { x: MAP_BAY.x * 0.95, z: MAP_BAY.z * 0.95, label: "心屿湾沙滩", icon: "🏖️", kind: "beach", color: "#ffe7bf", dy: -12 },
-];
+const MAP_POIS: MapPoi[] = EXPLORE_MAP_POIS;
 
 // —— 平滑闭合路径(CatmullRom→三次贝塞尔):有机海岸线 / 环岛路共用 ——
 function smoothClosedPath(pts: [number, number][]): string {
@@ -5588,55 +5578,51 @@ function PoiIcon({ kind, night }: { kind: PoiKind; night: boolean }) {
   const ink = night ? "#0b1733" : "#46341f";
   const wall = night ? "#cfd8ec" : "#fbf3e0";
   const roof = night ? "#9f6b7e" : "#d9613f";
-  const roof2 = night ? "#7a6aa0" : "#8c6fc4";
   const wood = night ? "#6a5640" : "#b07a44";
-  const water = night ? "#2f6aa0" : "#8fd6ef";
   const win = night ? "#3a4a66" : "#7fb0c8";
   const co = { stroke: ink, strokeWidth: 0.9, strokeLinejoin: "round" as const, strokeLinecap: "round" as const };
   const shadow = <ellipse cx={0} cy={5} rx={6.2} ry={2.1} fill="#000" opacity={night ? 0.3 : 0.16} />;
   switch (kind) {
-    case "village":
+    case "home":
       return (<g>{shadow}
-        <g transform="translate(-3 0.4)"><rect x={-2.7} y={-0.4} width={5.4} height={4.6} rx={0.7} fill={wall} {...co} /><path d="M-3.5 -0.4 L0 -3.7 L3.5 -0.4 Z" fill={roof} {...co} /><rect x={-0.8} y={1.6} width={1.6} height={2.6} rx={0.2} fill={wood} {...co} /></g>
-        <g transform="translate(2.8 -0.6)"><rect x={-2.3} y={-0.2} width={4.6} height={4} rx={0.6} fill={wall} {...co} /><path d="M-3 -0.2 L0 -2.9 L3 -0.2 Z" fill={roof} {...co} /><rect x={-1.4} y={0.8} width={1.3} height={1.3} fill={win} /></g></g>);
-    case "manor":
+        <rect x={-4.4} y={-0.6} width={8.8} height={5.6} rx={0.9} fill={wall} {...co} />
+        <path d="M-5.6 -0.6 L0 -5.3 L5.6 -0.6 Z" fill={roof} {...co} />
+        <rect x={-1.1} y={1.5} width={2.2} height={3.5} rx={0.35} fill={wood} {...co} />
+        <circle cx={2.8} cy={1.6} r={1.1} fill={win} /></g>);
+    case "rice":
       return (<g>{shadow}
-        <rect x={-4.4} y={-0.6} width={8.8} height={5.6} rx={0.8} fill={wall} {...co} />
-        <path d="M-5.4 -0.6 L0 -5 L5.4 -0.6 Z" fill={roof2} {...co} />
-        <rect x={-3.3} y={0.7} width={1.6} height={1.6} fill={win} /><rect x={1.7} y={0.7} width={1.6} height={1.6} fill={win} />
-        <rect x={-1.1} y={1.6} width={2.2} height={3.4} rx={0.4} fill={wood} {...co} /></g>);
-    case "town":
+        <rect x={-5.5} y={-4.2} width={11} height={8.5} rx={1.2} fill={night ? "#69805e" : "#b8d776"} {...co} />
+        <path d="M-3.7 -3.2 V3.3 M-1.2 -3.5 V3.6 M1.2 -3.5 V3.6 M3.7 -3.2 V3.3" stroke={night ? "#d8e2a0" : "#f7f0a8"} strokeWidth={0.75} strokeLinecap="round" />
+        <path d="M-5.1 -1.5 H5.1 M-5.1 1.4 H5.1" stroke={night ? "#4f6448" : "#87b55d"} strokeWidth={0.75} /></g>);
+    case "farm":
       return (<g>{shadow}
-        <rect x={-4.6} y={-1.2} width={3.4} height={6.2} rx={0.5} fill={wall} {...co} />
-        <rect x={-1} y={-3.6} width={3} height={8.6} rx={0.5} fill={wall} {...co} />
-        <rect x={2.2} y={0.2} width={3} height={4.8} rx={0.5} fill={wall} {...co} />
-        <rect x={-3.9} y={0.4} width={1.1} height={1.1} fill={win} /><rect x={-3.9} y={2.3} width={1.1} height={1.1} fill={win} />
-        <rect x={-0.1} y={-1.8} width={1.2} height={1.2} fill={win} /><rect x={-0.1} y={0.6} width={1.2} height={1.2} fill={win} />
-        <rect x={3.1} y={1.5} width={1.1} height={1.1} fill={win} /></g>);
-    case "bonfire":
+        <rect x={-4.8} y={-0.4} width={9.6} height={5.4} rx={0.8} fill={wall} {...co} />
+        <path d="M-5.8 -0.4 L0 -4.7 L5.8 -0.4 Z" fill={night ? "#8f5f4f" : "#c96b42"} {...co} />
+        <path d="M-5.6 5.3 H5.6 M-4.4 3.6 H4.4" stroke={wood} strokeWidth={0.9} strokeLinecap="round" /></g>);
+    case "mountain":
       return (<g>{shadow}
-        <path d="M0 4.4 C-3.4 1.6 -2 -1.4 -0.4 -4.4 C0.2 -1.8 2.4 -2.2 1.2 0.2 C2.8 0 3 2.2 0 4.4 Z" fill={night ? "#ff9d5a" : "#ff7a3c"} {...co} />
-        <path d="M0 4.2 C-1.7 2.6 -1 0.6 -0.1 -1.2 C0.3 0.2 1.3 0 0.7 1.2 C1.4 1.6 1.2 2.8 0 4.2 Z" fill={night ? "#ffd98a" : "#ffd24a"} stroke="none" />
-        <circle cx={-4} cy={4.7} r={0.9} fill={night ? "#5a6478" : "#9a8a72"} /><circle cx={4} cy={4.7} r={0.9} fill={night ? "#5a6478" : "#9a8a72"} /></g>);
-    case "pond":
+        <path d="M-6 4.8 L-1.6 -5.2 L1.1 0.2 L3 -3.6 L6 4.8 Z" fill={night ? "#65758a" : "#9ab29a"} {...co} />
+        <path d="M-1.6 -5.2 L-0.1 -2.1 L-2.4 -2.4 Z" fill="#eef5f7" stroke="none" />
+        <path d="M3 -3.6 L4.2 -1 L2.2 -1.2 Z" fill="#eef5f7" stroke="none" /></g>);
+    case "forest":
       return (<g>{shadow}
-        <ellipse cx={0} cy={1.4} rx={6} ry={4} fill={water} {...co} />
-        <path d="M-3 0.2 q1.6 -1.2 3.2 0" fill="none" stroke={night ? "#9fcfe8" : "#ffffff"} strokeWidth={0.7} opacity={0.8} strokeLinecap="round" /></g>);
-    case "bath":
+        <path d="M-4.2 3.8 L-1.6 -1.2 L-3.2 -1.2 L-0.7 -5 L1.8 -1.2 H0.3 L3 3.8 Z" fill={night ? "#315641" : "#4f9a57"} {...co} />
+        <path d="M1.8 4.4 L4.7 4.4 L3.2 -0.2 L4.4 -0.2 L2.5 -3.2 L0.6 -0.2 H1.8 Z" fill={night ? "#284735" : "#6fb46a"} {...co} /></g>);
+    case "zoo":
       return (<g>{shadow}
-        <ellipse cx={0} cy={2.2} rx={5.6} ry={3.4} fill={water} {...co} />
-        <path d="M-2.4 -0.6 q-1 -1.6 0 -3.2 M0 -0.6 q-1 -1.6 0 -3.2 M2.4 -0.6 q-1 -1.6 0 -3.2" fill="none" stroke={night ? "#cfe0ff" : "#ffffff"} strokeWidth={0.8} strokeLinecap="round" opacity={0.85} /></g>);
-    case "pier":
+        <rect x={-5.2} y={-4.2} width={10.4} height={8.8} rx={1.4} fill={night ? "#4a5365" : "#f1d2a0"} {...co} />
+        <path d="M-3.8 -2.4 V3.6 M-1.2 -2.4 V3.6 M1.2 -2.4 V3.6 M3.8 -2.4 V3.6" stroke={wood} strokeWidth={0.85} />
+        <circle cx={-1.4} cy={-0.2} r={1.1} fill={night ? "#d6c2a0" : "#8f6b52"} />
+        <circle cx={1.4} cy={-0.2} r={1.1} fill={night ? "#d6c2a0" : "#8f6b52"} /></g>);
+    case "swamp":
       return (<g>{shadow}
-        <ellipse cx={1} cy={2} rx={6.4} ry={4.2} fill={water} stroke="none" opacity={night ? 0.5 : 0.55} />
-        <rect x={-5.2} y={-1.2} width={9} height={2.4} rx={0.6} fill={wood} transform="rotate(-12)" {...co} />
-        <circle cx={3.6} cy={-1.8} r={0.8} fill={wood} {...co} /><circle cx={-3.8} cy={1.7} r={0.8} fill={wood} {...co} /></g>);
-    case "lighthouse":
+        <ellipse cx={0} cy={1.4} rx={6.1} ry={4.2} fill={night ? "#315c55" : "#8fc5a7"} {...co} />
+        <path d="M-4.5 2.8 C-2.4 0.8 -0.8 4 1.1 1.8 C2.7 0 4.2 2.4 5.2 1" fill="none" stroke={night ? "#b7dec4" : "#e6ffe8"} strokeWidth={0.8} strokeLinecap="round" />
+        <path d="M-3.6 -2.5 C-3.2 -0.8 -3.2 0.4 -3.7 1.7 M3.6 -2.6 C3.1 -0.7 3.2 0.5 3.7 1.8" stroke={wood} strokeWidth={0.75} strokeLinecap="round" /></g>);
+    case "scenic":
       return (<g>{shadow}
-        <path d="M-2.4 4.6 L-1.5 -3 L1.5 -3 L2.4 4.6 Z" fill={wall} {...co} />
-        <path d="M-2.05 1.8 L2.05 1.8 M-1.75 -0.4 L1.75 -0.4" stroke={roof} strokeWidth={1.4} />
-        <rect x={-1.7} y={-5} width={3.4} height={2.2} rx={0.4} fill={night ? "#ffe9a0" : "#ffd24a"} {...co} />
-        <path d="M1.9 -4.4 L4.8 -5.3 M1.9 -3.4 L4.6 -3" stroke={night ? "#ffe9a0" : "#ffcf5a"} strokeWidth={0.7} opacity={0.8} strokeLinecap="round" /></g>);
+        <path d="M-5 4.4 H5 M-3.8 2.5 H3.8 M-2.8 0.7 H2.8" stroke={wood} strokeWidth={1} strokeLinecap="round" />
+        <path d="M0 -5 L1.2 -1.3 L5 -1.3 L1.9 0.9 L3.1 4.4 L0 2.1 L-3.1 4.4 L-1.9 0.9 L-5 -1.3 L-1.2 -1.3 Z" fill={night ? "#ffe9a0" : "#ffcf5a"} stroke={ink} strokeWidth={0.7} strokeLinejoin="round" /></g>);
     case "beach":
       return (<g>{shadow}
         <path d="M0.4 4.6 L-1.4 -2" stroke={wood} strokeWidth={1} strokeLinecap="round" />
@@ -5858,10 +5844,10 @@ function Minimap({ posRef, headingRef, night }: { posRef: React.RefObject<THREE.
               </div>
             </div>
             {/* 图例 / 标注 */}
-            <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1 px-1 text-[11px] text-white/72">
+            <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 px-1 text-[11px] text-white/72 sm:grid-cols-3">
               <span className="text-[#ff8aa3]">▲ 你的位置</span>
               {MAP_POIS.map((p) => (
-                <span key={p.label}>{p.icon} {p.label}</span>
+                <span key={p.label} className="truncate">{p.icon} {p.label}</span>
               ))}
             </div>
             <p className="mt-1.5 px-1 text-[10px] text-white/45">滚轮 / ＋－ 缩放 · 拖动平移 · ◎ 回到我的位置</p>
