@@ -23,6 +23,7 @@ import { getPerfTier } from "../lib/perfTier";
 import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
 import { selectCharacterAction, type CharacterActionClip } from "../lib/protagonistAction";
+import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
 import {
   createCompanionVoice,
   getCompanionLevel,
@@ -56,9 +57,9 @@ import {
 } from "../lib/companionSpirit";
 
 // 探索地形:岛屿轮廓大幅水平放大 → 一座很大很大的可走岛
-const EXS = 80.0; // 水平放大(极巨大岛)
-const EYS = 0.6; // 整体岛形高度系数
-const HILLS = 15.0; // 世界尺度丘陵幅度(让岛明显起伏,不是平盘子)
+const EXS = EXPLORE_SCALE; // 水平放大(极巨大岛)
+const EYS = EXPLORE_HEIGHT_SCALE; // 整体岛形高度系数
+const HILLS = EXPLORE_HILLS; // 世界尺度丘陵幅度(让岛明显起伏,不是平盘子)
 // 地表高度:大岛盘形(含海岸) + 世界频率多倍频丘陵。村落中心保持平整(密集小屋不卡坡),
 // 丘陵在村外中环隆起、近海岸渐隐(岛仍干净沉入海)。
 function exGroundY(wx: number, wz: number): number {
@@ -416,7 +417,7 @@ interface CompanionActionSignal {
 
 const CHATTER_MODE_KEY = "xinyu.companionChatter.v1"; // 「主动陪聊」开关持久化
 
-const WALK_RADIUS = ISLAND_RADIUS * EXS * 0.74; // 可走范围(留出海岸,随大岛自动放大)
+const WALK_RADIUS = EXPLORE_WALK_RADIUS; // 可走范围(留出海岸,随大岛自动放大)
 const FENCE_RADIUS = WALK_RADIUS + 0.6; // 护栏所在半径,岸边入口与玩家边界共用
 const NEAR_SHORE_WALK_MARGIN = 2.8; // 允许走到护栏外一点点,够进入沙滩/浅滩,但不会远离岛屿
 const BEACH_FENCE_GATE_HALF_WIDTH = 0.34; // 海湾护栏留口半角,视觉上就是沙滩入口
