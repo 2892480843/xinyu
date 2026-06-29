@@ -217,7 +217,9 @@ export function setLocationAmbienceMuted(next: boolean) {
       const el = weatherPool.get(weather)!;
       if (!el.paused) fadeWeather(weather, 0, () => el.pause());
     }
-  } else if (enabled && activeZone) {
+    return;
+  }
+  if (enabled && activeZone) {
     // 取消静音：恢复当前区域
     const el = pool.get(activeZone);
     if (el && el.paused) {
@@ -226,14 +228,14 @@ export function setLocationAmbienceMuted(next: boolean) {
     } else if (el) {
       fadeZone(activeZone, TARGET_VOLUME);
     }
-    if (activeWeather) {
-      const weatherEl = weatherPool.get(activeWeather);
-      if (weatherEl && weatherEl.paused) {
-        const p = weatherEl.play();
-        if (p) p.then(() => fadeWeather(activeWeather!, TARGET_VOLUME * 0.75)).catch(() => { /* ignore */ });
-      } else if (weatherEl) {
-        fadeWeather(activeWeather, TARGET_VOLUME * 0.75);
-      }
+  }
+  if (activeWeather) {
+    const weatherEl = weatherPool.get(activeWeather);
+    if (weatherEl && weatherEl.paused) {
+      const p = weatherEl.play();
+      if (p) p.then(() => fadeWeather(activeWeather!, TARGET_VOLUME * 0.75)).catch(() => { /* ignore */ });
+    } else if (weatherEl) {
+      fadeWeather(activeWeather, TARGET_VOLUME * 0.75);
     }
   }
 }

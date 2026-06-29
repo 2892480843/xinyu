@@ -65,6 +65,9 @@ test("explore mode exposes time-of-day and rain controls", async () => {
 test("explore mode renders rain visuals and enables weather ambience", async () => {
   const explore = await readExploreSource();
   const ambience = await readFile(path.resolve("src/lib/locationAmbience.ts"), "utf8");
+  const mutedBlock = sourceBlock(ambience, "export function setLocationAmbienceMuted", "export function setWeatherAmbience");
+  const weatherBlock = sourceBlock(ambience, "export function setWeatherAmbience", "export function stopLocationAmbience");
+  const stopBlock = ambience.slice(ambience.indexOf("export function stopLocationAmbience"));
 
   assert.match(explore, /function ExploreRain/);
   assert.match(explore, /<ExploreRain/);
@@ -72,4 +75,13 @@ test("explore mode renders rain visuals and enables weather ambience", async () 
   assert.match(ambience, /setWeatherAmbience/);
   assert.match(ambience, /rain: "rain"/);
   assert.match(ambience, /weatherPool/);
+  assert.match(ambience, /activeWeather/);
+  assert.match(mutedBlock, /if \(enabled && activeZone\)[\s\S]*?\n\s*}\n\s*if \(activeWeather\)/);
+  assert.match(weatherBlock, /if \(!on \|\| weather === "clear"\)/);
+  assert.match(weatherBlock, /activeWeather = null;/);
+  assert.match(weatherBlock, /clearWeatherFade\(w\)/);
+  assert.match(weatherBlock, /el\.pause\(\);\n\s*el\.currentTime = 0;/);
+  assert.match(stopBlock, /activeWeather = null;/);
+  assert.match(stopBlock, /clearWeatherFade\(weather\)/);
+  assert.match(stopBlock, /el\.pause\(\);\n\s*el\.currentTime = 0;/);
 });
