@@ -18,9 +18,14 @@ export default function BottomSheet({ open, onClose, children, label, accent }: 
   // 打开时锁背景滚动
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
+    const prevOverflow = document.body.style.overflow;
+    const prevTouchAction = document.body.style.touchAction;
     document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+    document.body.style.touchAction = "none";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.touchAction = prevTouchAction;
+    };
   }, [open]);
 
   // Esc 关闭
@@ -56,7 +61,7 @@ export default function BottomSheet({ open, onClose, children, label, accent }: 
           />
           {/* sheet 面板：贴底，键盘弹起时上移 */}
           <motion.div
-            className="panel-glass-2 relative w-full max-w-[34rem] rounded-t-card-lg px-4 pt-2"
+            className="panel-glass-2 relative w-full max-w-[34rem] overscroll-contain rounded-t-card-lg px-4 pt-2"
             style={{
               paddingBottom: "calc(1rem + env(safe-area-inset-bottom))",
               marginBottom: "var(--kb-inset, 0px)",
@@ -98,7 +103,7 @@ export default function BottomSheet({ open, onClose, children, label, accent }: 
               </div>
             )}
             {/* children 垂直间距：让 MoodInput 等复用组件在窄 Sheet 里不挤作一团 */}
-            <div className="space-y-1.5">
+            <div className="mobile-sheet-content space-y-1.5">
               {children}
             </div>
           </motion.div>

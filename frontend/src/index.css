@@ -255,6 +255,71 @@ textarea { resize: none; }
   min-height: 44px;
 }
 
+.mobile-app-shell {
+  min-height: 100dvh;
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+
+.mobile-bottom-buffer {
+  padding-bottom: calc(7.5rem + env(safe-area-inset-bottom));
+}
+
+.mobile-sheet-content {
+  overflow-wrap: anywhere;
+}
+
+.mobile-tab-mark {
+  position: relative;
+  display: grid;
+  height: 18px;
+  width: 18px;
+  place-items: center;
+}
+
+.mobile-tab-mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: radial-gradient(circle, var(--tab-accent) 0%, transparent 70%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.mobile-tab-mark > span {
+  position: relative;
+  height: 8px;
+  width: 8px;
+  border-radius: 9999px;
+  border: 1.5px solid rgba(255, 255, 255, 0.32);
+  transition: all 0.3s ease;
+}
+
+.mobile-tab-mark[data-active="true"]::before {
+  opacity: 1;
+}
+
+.mobile-tab-mark[data-active="true"] > span {
+  background: var(--tab-accent);
+  border-color: var(--tab-accent);
+  box-shadow: 0 0 8px var(--tab-accent);
+}
+
+.mobile-self-panel {
+  position: relative;
+  width: 100%;
+  max-width: 30rem;
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(10, 14, 31, 0.58) 0%, rgba(10, 14, 31, 0.34) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.10) inset,
+    0 24px 54px -28px rgba(8, 12, 28, 0.72);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
 /* 「上岛走走」主行动召唤 —— 明亮糖果药丸 + 玻璃高光 + 光晕脉冲 + 声纳环 + 微光扫过,务求显眼 */
 .island-cta {
   position: relative;
@@ -315,16 +380,15 @@ textarea { resize: none; }
   0% { transform: translateX(-160%) skewX(-16deg); }
   20%, 100% { transform: translateX(330%) skewX(-16deg); }
 }
-.island-cta__emoji { font-size: 19px; }
 .island-cta__arrow { opacity: 0.8; font-size: 17px; }
 
-/* 次 CTA（移动端「上岛走走」）：玻璃描边幽灵按钮，与主 CTA 拉开主次。
-   不用渐变高亮，靠半透明玻璃 + 描边 + emoji 点缀，安静地待在主 CTA 下方。 */
+/* 次 CTA（移动端「上岛走走」）：玻璃描边幽灵按钮，与主 CTA 拉开主次。 */
 .mobile-cta-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
+  max-width: calc(100vw - 2rem);
   padding: 0.7rem 1.9rem;
   min-height: 48px;
   border-radius: 9999px;
@@ -338,6 +402,7 @@ textarea { resize: none; }
   -webkit-backdrop-filter: blur(10px);
   box-shadow: 0 6px 20px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14);
   cursor: pointer;
+  white-space: nowrap;
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 .mobile-cta-ghost > span:first-child { font-size: 16px; }

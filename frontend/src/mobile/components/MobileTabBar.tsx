@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 export type MobileTab = "island" | "memory" | "self";
 
 interface Props {
@@ -18,21 +20,14 @@ function TabButton({
       className="flex w-14 min-h-[44px] flex-col items-center justify-center gap-1.5 py-1 transition active:scale-95"
       aria-pressed={active}
     >
-      {/* 圆点 + active 柔光晕（halo 绝对定位，不影响行高，与倾诉 FAB / Sheet 标题点同 accent） */}
-      <span className="relative flex h-2.5 w-2.5 items-center justify-center" aria-hidden>
-        <span
-          className="absolute h-5 w-5 rounded-full transition-opacity duration-300"
-          style={{ background: `radial-gradient(circle, ${accent}55 0%, transparent 70%)`, opacity: active ? 1 : 0 }}
-        />
-        <span
-          className="relative h-2 w-2 rounded-full transition-all duration-300"
-          style={{
-            background: active ? accent : "transparent",
-            border: `1.5px solid ${active ? accent : "rgba(255,255,255,0.32)"}`,
-            boxShadow: active ? `0 0 8px ${accent}` : "none",
-            transform: active ? "scale(1.05)" : "scale(1)",
-          }}
-        />
+      {/* 圆点 + active 柔光晕，与倾诉 FAB / Sheet 标题点同 accent。 */}
+      <span
+        className="mobile-tab-mark"
+        data-active={active ? "true" : "false"}
+        style={{ "--tab-accent": accent } as CSSProperties}
+        aria-hidden
+      >
+        <span />
       </span>
       <span
         className="text-[11px] tracking-[0.2em] transition-colors duration-300"

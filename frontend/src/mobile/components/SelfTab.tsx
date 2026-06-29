@@ -30,7 +30,7 @@ export default function SelfTab({ identity, onClear, onDeleteData, extra }: Prop
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-          className="w-full"
+          className="mobile-self-panel px-4 py-4"
         >
           <UserBadge identity={identity} onClear={onClear} onDeleteData={onDeleteData} variant="cards" />
         </motion.div>
@@ -55,7 +55,7 @@ export default function SelfTab({ identity, onClear, onDeleteData, extra }: Prop
       </div>
 
       {/* 危机热线声明：与桌面 footer 同源，移动端落在「我」Tab 底部 */}
-      <div className="w-full max-w-[30rem] px-6 pb-2 pt-4">
+      <div className="w-full max-w-[30rem] px-6 pb-4 pt-4">
         <p className="text-center text-[10px] leading-relaxed tracking-wider text-white/28">
           《心屿》提供情感陪伴，并非心理咨询或医疗服务 · 如处于危机请联系专业热线
         </p>

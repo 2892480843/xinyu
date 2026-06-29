@@ -43,7 +43,7 @@ export default function MobileBrand({ subtitle = true }: { subtitle?: boolean })
           className="absolute inset-x-0 top-1/2 -translate-y-1/2 mx-auto h-px w-20"
           style={{ background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent)" }}
         />
-        <h1 className="relative inline-block font-display text-[22px] font-light tracking-[0.5em] pl-[0.5em] bg-gradient-to-b from-white via-white to-white/65 bg-clip-text text-transparent px-5">
+        <h1 className="relative inline-block bg-gradient-to-b from-white via-white to-white/65 bg-clip-text px-4 pl-[0.42em] font-display text-[clamp(19px,5.8vw,22px)] font-light tracking-[0.42em] text-transparent">
           心 屿
         </h1>
       </div>

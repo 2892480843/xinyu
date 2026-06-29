@@ -209,21 +209,14 @@ In `MobileTabBar.tsx`, keep calls as:
 
 Expected: The tab bar still reads as the same quiet glass UI and all targets remain at least 44px high.
 
-- [ ] **Step 4: Remove emoji from CTA text**
+- [ ] **Step 4: Remove decorative glyphs from CTA text**
 
-In `HomeMobile.tsx`, remove decorative emoji spans from the two CTAs. For the primary CTA, delete this span:
+In `HomeMobile.tsx`, remove decorative spans from the two CTAs:
 
-```tsx
-<span className="island-cta__emoji" aria-hidden>🌊</span>
-```
+- Delete the primary CTA span with class `island-cta__emoji`.
+- Delete the ghost CTA leading `aria-hidden` icon span before `上岛走走`.
 
-For the ghost CTA, delete this span:
-
-```tsx
-<span aria-hidden>🏝</span>
-```
-
-Expected: CTA typography aligns with the desktop title and glass UI without emoji visual mismatch.
+Expected: CTA typography aligns with the desktop title and glass UI without decorative icon mismatch.
 
 - [ ] **Step 5: Ensure ghost CTA text fits**
 
@@ -343,7 +336,7 @@ Run:
 
 ```bash
 cd /Users/a111/chen/code/心屿/frontend
-node -e "const m=require('./public/manifest.mobile.webmanifest'); if(m.start_url!=='/mobile.html') process.exit(1); console.log(m.name, m.start_url, m.display)"
+node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('./public/manifest.mobile.webmanifest','utf8')); if(m.start_url!=='/mobile.html') process.exit(1); console.log(m.name, m.start_url, m.display)"
 ```
 
 Expected:

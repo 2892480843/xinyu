@@ -36,7 +36,9 @@ export default function UserBadge({ identity, onClear, onDeleteData, variant = "
           onClick={onClear}
           className="panel-glass-1 flex min-h-[52px] w-full items-center gap-3 rounded-card px-4 py-3 text-left transition active:scale-[0.98]"
         >
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[17px]" aria-hidden>👤</span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10" aria-hidden>
+            <span className="h-3.5 w-3.5 rounded-full border border-white/55 shadow-[0_0_10px_rgba(255,255,255,0.16)]" />
+          </span>
           <span className="flex-1">
             <span className="block text-[14px] text-white/85">切换称呼</span>
             <span className="block text-[11px] text-white/40">换一个昵称，或清除本地身份</span>
@@ -50,7 +52,9 @@ export default function UserBadge({ identity, onClear, onDeleteData, variant = "
           className="flex min-h-[52px] w-full items-center gap-3 rounded-card px-4 py-3 text-left transition active:scale-[0.98]"
           style={{ background: "rgba(244,160,138,0.08)", border: "1px solid rgba(244,160,138,0.22)" }}
         >
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[17px]" style={{ background: "rgba(244,160,138,0.14)" }} aria-hidden>🗑</span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full" style={{ background: "rgba(244,160,138,0.14)" }} aria-hidden>
+            <span className="h-3.5 w-3.5 rounded-sm border border-coral/70 shadow-[0_0_10px_rgba(240,160,138,0.18)]" />
+          </span>
           <span className="flex-1">
             <span className="block text-[14px] text-coral/90">删除这座岛屿的全部痕迹</span>
             <span className="block text-[11px] text-white/38">记忆、物件与私房话，不可恢复</span>

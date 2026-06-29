@@ -283,7 +283,6 @@ export default function HomeMobile() {
           transition={{ duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" }}
         />
         <span className="island-cta__shine" aria-hidden />
-        <span className="island-cta__emoji" aria-hidden>🌊</span>
         说给岛屿
       </motion.button>
       {/* 次 CTA：上岛走走 —— 玻璃描边幽灵按钮，与主 CTA 拉开主次，不抢视觉重心 */}
@@ -298,7 +297,6 @@ export default function HomeMobile() {
         whileTap={{ scale: 0.96 }}
         className="mobile-cta-ghost"
       >
-        <span aria-hidden>🏝</span>
         上岛走走
         <span className="mobile-cta-ghost__arrow" aria-hidden>›</span>
       </motion.button>
@@ -306,7 +304,7 @@ export default function HomeMobile() {
   );
 
   return (
-    <div className="relative min-h-[100dvh] overflow-hidden">
+    <div className="relative min-h-[100dvh] overflow-x-hidden overflow-y-hidden">
       {/* 常驻岛屿背景：默认 2D；「我」Tab 开启真 3D 旗舰皮且支持 WebGL + 沉浸态时接管，崩溃回退 2D */}
       <div className="fixed inset-0" style={{ zIndex: 0 }} aria-hidden>
         {skin3d.active && immersive ? (
@@ -390,8 +388,8 @@ export default function HomeMobile() {
           {flow.phase === "input" && (
             <>
               <div
-                className="relative z-20 mx-auto flex min-h-[100dvh] w-full max-w-[34rem] flex-col px-4"
-                style={{ paddingTop: "calc(1rem + env(safe-area-inset-top))", paddingBottom: "7.5rem" }}
+                className="mobile-app-shell mobile-bottom-buffer relative z-20 mx-auto flex w-full max-w-[34rem] flex-col"
+                style={{ paddingTop: "calc(1rem + env(safe-area-inset-top))" }}
               >
                 {tab === "island" && (
                   islandHasTop ? (
@@ -458,6 +456,7 @@ export default function HomeMobile() {
                 {tab === "memory" && (
                   <MemoryTab
                     memoryCount={memories.length}
+                    accent={visual.accent}
                     onMindMap={() => setMindOpen(true)}
                     onTimeMachine={() => setTmOpen(true)}
                     onIslandMap={() => setMapOpen(true)}
@@ -487,7 +486,7 @@ export default function HomeMobile() {
                         aria-pressed={skin3d.wanted}
                         className="panel-glass-1 flex min-h-[52px] w-full items-center gap-3 rounded-card px-4 py-3 text-left transition active:scale-[0.98]"
                       >
-                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[16px]" aria-hidden>🏝</span>
+                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[16px]" aria-hidden />
                         <span className="min-w-0 flex-1">
                           <span className="block text-[14px] text-white/85">真 3D 岛屿背景</span>
                           <span className="block text-[11px] text-white/40">{skin3d.wanted ? "已开启 · 更耗电" : "实验功能 · 更耗电"}</span>
