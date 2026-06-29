@@ -61,3 +61,15 @@ test("explore mode exposes time-of-day and rain controls", async () => {
   assert.match(menuBlock, /下雨/);
   assert.doesNotMatch(menuBlock, /切白天|切夜晚/);
 });
+
+test("explore mode renders rain visuals and enables weather ambience", async () => {
+  const explore = await readExploreSource();
+  const ambience = await readFile(path.resolve("src/lib/locationAmbience.ts"), "utf8");
+
+  assert.match(explore, /function ExploreRain/);
+  assert.match(explore, /<ExploreRain/);
+  assert.match(explore, /environment\.weather === "rain"/);
+  assert.match(ambience, /setWeatherAmbience/);
+  assert.match(ambience, /rain: "rain"/);
+  assert.match(ambience, /weatherPool/);
+});

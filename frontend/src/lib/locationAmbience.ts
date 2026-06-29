@@ -19,6 +19,8 @@ export type LocationZone =
   | "meadow_day" // 草地/村落（白天）
   | "meadow_night"; // 草地/村落（夜晚）
 
+export type WeatherAmbience = "clear" | "rain";
+
 /** 区域 → ambience 文件名（public/audio/ambience/）。 */
 const ZONE_FILES: Record<LocationZone, string> = {
   ocean: "ocean_waves",
@@ -31,17 +33,24 @@ const ZONE_FILES: Record<LocationZone, string> = {
   meadow_night: "crickets",
 };
 
+const WEATHER_FILES: Record<Exclude<WeatherAmbience, "clear">, string> = {
+  rain: "rain",
+};
+
 const FADE_STEP_MS = 50;
 const FADE_DURATION_MS = 1200; // 区域切换比情绪切换更柔和
 const TARGET_VOLUME = 0.4;
 
 // 区域元素池：同一区域复用同一 audio 元素，避免反复创建。
 const pool = new Map<LocationZone, HTMLAudioElement>();
+const weatherPool = new Map<Exclude<WeatherAmbience, "clear">, HTMLAudioElement>();
 const brokenSrc = new Set<string>(); // 加载失败的 src，避免反复重试
 let muted = false;
 let enabled = false;
 let activeZone: LocationZone | null = null;
+let activeWeather: Exclude<WeatherAmbience, "clear"> | null = null;
 const fadeTimers = new Map<LocationZone, number>();
+const weatherFadeTimers = new Map<Exclude<WeatherAmbience, "clear">, number>();
 
 function zoneUrl(zone: LocationZone): string {
   return `/audio/ambience/${ZONE_FILES[zone]}.m4a`;
@@ -65,6 +74,31 @@ function getEl(zone: LocationZone): HTMLAudioElement | null {
       pool.delete(zone);
     });
     pool.set(zone, el);
+  }
+  return el;
+}
+
+function weatherUrl(weather: Exclude<WeatherAmbience, "clear">): string {
+  return `/audio/ambience/${WEATHER_FILES[weather]}.m4a`;
+}
+
+function getWeatherEl(weather: Exclude<WeatherAmbience, "clear">): HTMLAudioElement | null {
+  if (typeof window === "undefined") return null;
+  let el = weatherPool.get(weather);
+  if (!el) {
+    const src = weatherUrl(weather);
+    if (brokenSrc.has(src)) return null;
+    el = new Audio();
+    el.loop = true;
+    el.preload = "none";
+    el.volume = 0;
+    el.setAttribute("data-src", src);
+    el.src = src;
+    el.addEventListener("error", () => {
+      brokenSrc.add(src);
+      weatherPool.delete(weather);
+    });
+    weatherPool.set(weather, el);
   }
   return el;
 }
@@ -94,6 +128,38 @@ function fadeZone(zone: LocationZone, target: number, onDone?: () => void) {
       el.volume = Math.max(0, Math.min(1, start + (target - start) * (i / steps)));
       if (i >= steps) {
         clearFade(zone);
+        el.volume = target;
+        onDone?.();
+      }
+    }, FADE_STEP_MS),
+  );
+}
+
+function clearWeatherFade(weather: Exclude<WeatherAmbience, "clear">) {
+  const t = weatherFadeTimers.get(weather);
+  if (t !== undefined) {
+    window.clearInterval(t);
+    weatherFadeTimers.delete(weather);
+  }
+}
+
+function fadeWeather(weather: Exclude<WeatherAmbience, "clear">, target: number, onDone?: () => void) {
+  const el = weatherPool.get(weather);
+  if (!el) {
+    onDone?.();
+    return;
+  }
+  clearWeatherFade(weather);
+  const start = el.volume;
+  const steps = Math.max(1, Math.round(FADE_DURATION_MS / FADE_STEP_MS));
+  let i = 0;
+  weatherFadeTimers.set(
+    weather,
+    window.setInterval(() => {
+      i += 1;
+      el.volume = Math.max(0, Math.min(1, start + (target - start) * (i / steps)));
+      if (i >= steps) {
+        clearWeatherFade(weather);
         el.volume = target;
         onDone?.();
       }
@@ -147,6 +213,10 @@ export function setLocationAmbienceMuted(next: boolean) {
       const el = pool.get(z)!;
       if (!el.paused) fadeZone(z, 0, () => el.pause());
     }
+    for (const weather of weatherPool.keys()) {
+      const el = weatherPool.get(weather)!;
+      if (!el.paused) fadeWeather(weather, 0, () => el.pause());
+    }
   } else if (enabled && activeZone) {
     // 取消静音：恢复当前区域
     const el = pool.get(activeZone);
@@ -156,6 +226,48 @@ export function setLocationAmbienceMuted(next: boolean) {
     } else if (el) {
       fadeZone(activeZone, TARGET_VOLUME);
     }
+    if (activeWeather) {
+      const weatherEl = weatherPool.get(activeWeather);
+      if (weatherEl && weatherEl.paused) {
+        const p = weatherEl.play();
+        if (p) p.then(() => fadeWeather(activeWeather!, TARGET_VOLUME * 0.75)).catch(() => { /* ignore */ });
+      } else if (weatherEl) {
+        fadeWeather(activeWeather, TARGET_VOLUME * 0.75);
+      }
+    }
+  }
+}
+
+export function setWeatherAmbience(weather: WeatherAmbience, on: boolean) {
+  if (!on || weather === "clear") {
+    for (const w of weatherPool.keys()) {
+      const el = weatherPool.get(w)!;
+      clearWeatherFade(w);
+      el.pause();
+      el.currentTime = 0;
+    }
+    activeWeather = null;
+    return;
+  }
+  const el = getWeatherEl(weather);
+  if (!el) return;
+  if (activeWeather && activeWeather !== weather) {
+    const prevEl = weatherPool.get(activeWeather);
+    if (prevEl && !prevEl.paused) fadeWeather(activeWeather, 0, () => { prevEl.pause(); prevEl.currentTime = 0; });
+  }
+  activeWeather = weather;
+  if (muted) {
+    el.pause();
+    el.currentTime = 0;
+    el.volume = 0;
+    return;
+  }
+  if (el.paused) {
+    el.currentTime = 0;
+    const p = el.play();
+    if (p) p.then(() => fadeWeather(weather, TARGET_VOLUME * 0.75)).catch(() => { /* ignore */ });
+  } else {
+    fadeWeather(weather, TARGET_VOLUME * 0.75);
   }
 }
 
@@ -163,9 +275,16 @@ export function setLocationAmbienceMuted(next: boolean) {
 export function stopLocationAmbience() {
   enabled = false;
   activeZone = null;
+  activeWeather = null;
   for (const z of pool.keys()) {
     const el = pool.get(z)!;
     clearFade(z);
+    el.pause();
+    el.currentTime = 0;
+  }
+  for (const weather of weatherPool.keys()) {
+    const el = weatherPool.get(weather)!;
+    clearWeatherFade(weather);
     el.pause();
     el.currentTime = 0;
   }

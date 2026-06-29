@@ -18,7 +18,7 @@ import { play as playSfx, chimeNote, startEngine, stopEngine, setEngineSpeed, pl
 import { emitCompanionEvent, pickChatterLine, subscribeCompanionEvents, type CompanionChatterEvent } from "../lib/companionChatter";
 import { playSample } from "../lib/samples";
 import { playLanternCue, prewarmLanternCues } from "../lib/lanternMusic";
-import { setLocationZone, stopLocationAmbience, type LocationZone } from "../lib/locationAmbience";
+import { setLocationZone, setWeatherAmbience, stopLocationAmbience, type LocationZone } from "../lib/locationAmbience";
 import { getPerfTier } from "../lib/perfTier";
 import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
@@ -6323,6 +6323,61 @@ function ExploreLoading() {
   );
 }
 
+function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: number; tier: PerfTier }) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const count = tier === "low" ? 90 : 180;
+  const geo = useMemo(() => new THREE.CylinderGeometry(0.012, 0.012, 2.4, 4), []);
+  const mat = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: "#dbeafe", transparent: true, opacity, depthWrite: false, toneMapped: false }),
+    [opacity],
+  );
+  const drops = useMemo(
+    () => Array.from({ length: count }, (_, i) => ({
+      x: (hash2(i, 1.2) - 0.5) * 340,
+      y: 36 + hash2(i, 3.4) * 70,
+      z: (hash2(i, 5.6) - 0.5) * 340,
+      speed: 18 + hash2(i, 7.8) * 18,
+    })),
+    [count],
+  );
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh || !active) return;
+    for (let i = 0; i < drops.length; i++) {
+      dummy.position.set(drops[i].x, drops[i].y, drops[i].z);
+      dummy.rotation.set(0.35, 0, -0.18);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [active, drops, dummy]);
+
+  useEffect(() => () => {
+    geo.dispose();
+    mat.dispose();
+  }, [geo, mat]);
+
+  useFrame((_, dt) => {
+    const mesh = ref.current;
+    if (!mesh || !active) return;
+    for (let i = 0; i < drops.length; i++) {
+      const drop = drops[i];
+      drop.y -= drop.speed * dt;
+      if (drop.y < 2) drop.y = 70;
+      dummy.position.set(drop.x, drop.y, drop.z);
+      dummy.rotation.set(0.35, 0, -0.18);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  });
+
+  if (!active) return null;
+  return <instancedMesh ref={ref} args={[geo, mat, count]} frustumCulled={false} />;
+}
+
 function ExploreScene({
   visual,
   environment,
@@ -6421,6 +6476,10 @@ function ExploreScene({
   const envVisual = useMemo(() => resolveExploreEnvironmentVisual(visual, environment), [visual, environment]);
   const forceNight = environment.timeOfDay === "night";
   useEffect(() => { sceneEnv.night = forceNight; }, [forceNight]); // 夜间标记 → 车头灯只在夜里亮
+  useEffect(() => {
+    setWeatherAmbience(environment.weather, environment.weather === "rain");
+    return () => setWeatherAmbience("clear", false);
+  }, [environment.weather]);
   // posRef / headingRef 由父级 ExploreMode 持有并下传(Canvas 外的小地图也要实时读到玩家位置/朝向)
   const collidersRef = useRef<Map<string, Collider[]> | null>(null); // 障碍碰撞网格(Town 填充,Player 读取)
   const cheerRef = useRef(0); // 拾取计数(Player 读 → 欢呼)
@@ -6513,6 +6572,7 @@ function ExploreScene({
       {isNight && <MeteorShower count={tier === "low" ? 5 : 11} />}
       {isNight && tier !== "low" && <NightMotes count={64} posRef={posRef} />}
       {forceNight && lanternCount > 0 && <DistantGlows count={lanternCount} />}
+      {environment.weather === "rain" && <ExploreRain active opacity={envVisual.rainOpacity} tier={tier} />}
 
       {/* 地形:草地/沙滩/水下分区配色,toon 平涂 */}
       <mesh geometry={terrain} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
@@ -6559,6 +6619,12 @@ function ExploreScene({
         <circleGeometry args={[50, 44]} />
         <meshStandardMaterial color={shallowHex} roughness={0.22} metalness={0.3} transparent opacity={0.62} depthWrite={false} />
       </mesh>
+      {environment.weather === "rain" && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.09, 0]}>
+          <circleGeometry args={[WALK_RADIUS * 0.92, 96]} />
+          <meshBasicMaterial color="#dbeafe" transparent opacity={Math.min(0.18, envVisual.rainOpacity * 0.35)} depthWrite={false} toneMapped={false} />
+        </mesh>
+      )}
 
       {/* 玩家(角色模型,小、加载快):自己一个 Suspense → 不被建筑/道具拖住,相机&角色尽快就位 */}
       <Suspense fallback={null}>
