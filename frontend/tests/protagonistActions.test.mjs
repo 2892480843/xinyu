@@ -117,7 +117,7 @@ test("Player selects and routes the current action clip for every playable chara
   assert.match(source, /selectCharacterAction/);
   assert.match(playerBlock, /const characterActionRef = useRef<CharacterActionClip>\("Idle"\)/);
   assert.match(playerBlock, /characterActionRef\.current = selectCharacterAction/);
-  assert.match(playerBlock, /const glbClipActive = \(character === "guardian" && characterActionRef\.current !== "Idle"\) \|\| \(character === "hero" && \(characterActionRef\.current === "WalkLoop" \|\| characterActionRef\.current === "RunLoop"\)\)/);
+  assert.match(playerBlock, /const glbClipActive = \(character === "guardian" && characterActionRef\.current !== "Idle"\) \|\| \(character === "hero" && characterActionRef\.current !== "Idle"\)/);
   assert.match(playerBlock, /<GltfHero[\s\S]*actionRef=\{characterActionRef\}/);
   assert.match(playerBlock, /<GltfGuardian[\s\S]*actionRef=\{characterActionRef\}/);
   assert.match(playerBlock, /<GltfPocoyo[\s\S]*actionRef=\{characterActionRef\}/);

@@ -103,6 +103,46 @@ function axisRange(points, axis) {
   return Math.max(...values) - Math.min(...values);
 }
 
+function findClip(gltf, name) {
+  const clip = (gltf.animations ?? []).find((animation) => animation.name === name);
+  assert.ok(clip, `missing ${name} animation`);
+  return clip;
+}
+
+function findNodeIndex(gltf, name) {
+  const index = gltf.nodes.findIndex((node) => node.name === name);
+  assert.notEqual(index, -1, `missing node ${name}`);
+  return index;
+}
+
+function rotationDeltaForClip(gltf, bin, clip, nodeName) {
+  const nodeIndex = findNodeIndex(gltf, nodeName);
+  const channel = clip.channels.find((candidate) => candidate.target.node === nodeIndex && candidate.target.path === "rotation");
+  assert.ok(channel, `missing ${nodeName} rotation channel in ${clip.name}`);
+  const values = accessorRows(gltf, bin, clip.samplers[channel.sampler].output);
+  return maxRotationDeltaDegrees(values);
+}
+
+function sampleWorldPositions(THREE, gltf, clip, objectNames, sampleCount = 17) {
+  const mixer = new THREE.AnimationMixer(gltf.scene);
+  mixer.clipAction(clip).play();
+  const samples = Object.fromEntries(objectNames.map((name) => [name, []]));
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    mixer.setTime(clip.duration * (i / sampleCount));
+    gltf.scene.updateMatrixWorld(true);
+    for (const objectName of objectNames) {
+      const object = gltf.scene.getObjectByName(objectName);
+      assert.ok(object, `missing ${objectName}`);
+      const pos = new THREE.Vector3();
+      object.getWorldPosition(pos);
+      samples[objectName].push([pos.x, pos.y, pos.z]);
+    }
+  }
+
+  return samples;
+}
+
 async function readRigScript() {
   return readFile(path.resolve("../blender/xyshz_rigged_walk.py"), "utf8");
 }
@@ -148,6 +188,103 @@ test("xyshz rigged GLB exports the playable skeleton and walk clips", async () =
     ),
     "expected skinned mesh attributes JOINTS_0 and WEIGHTS_0",
   );
+});
+
+test("xyshz rigged GLB exports the complete protagonist action library", async () => {
+  const gltf = await readGlbJson(path.resolve("public/models/xyshz_rigged.glb"));
+  const clipNames = new Set((gltf.animations ?? []).map((animation) => animation.name).filter(Boolean));
+
+  for (const clip of ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"]) {
+    assert.ok(clipNames.has(clip), `missing xyshz animation clip ${clip}`);
+  }
+});
+
+test("xyshz expressive clips have visible natural body motion", async () => {
+  const { json: gltf, bin } = await readGlb(path.resolve("public/models/xyshz_rigged.glb"));
+
+  const expectedMotion = {
+    Jump: [
+      ["Hips", 0.45],
+      ["UpperLegL", 12],
+      ["UpperLegR", 12],
+      ["UpperArmL", 8],
+      ["UpperArmR", 8],
+    ],
+    Wave: [
+      ["UpperArmR", 30],
+      ["ForeArmR", 35],
+      ["HandR", 12],
+      ["Chest", 3],
+    ],
+    Flute: [
+      ["UpperArmL", 16],
+      ["UpperArmR", 16],
+      ["ForeArmL", 22],
+      ["ForeArmR", 22],
+      ["Head", 3],
+    ],
+    Sit: [
+      ["Hips", 0.75],
+      ["UpperLegL", 35],
+      ["UpperLegR", 35],
+      ["LowerLegL", 22],
+      ["LowerLegR", 22],
+    ],
+    Cheer: [
+      ["UpperArmL", 35],
+      ["UpperArmR", 35],
+      ["ForeArmL", 18],
+      ["ForeArmR", 18],
+      ["Chest", 4],
+    ],
+  };
+
+  for (const [clipName, checks] of Object.entries(expectedMotion)) {
+    const clip = findClip(gltf, clipName);
+    for (const [nodeName, minimum] of checks) {
+      const maxDelta = nodeName === "Hips"
+        ? (() => {
+            const nodeIndex = findNodeIndex(gltf, nodeName);
+            const channel = clip.channels.find((candidate) => candidate.target.node === nodeIndex && candidate.target.path === "translation");
+            assert.ok(channel, `missing ${nodeName} translation channel in ${clipName}`);
+            return maxTranslationDelta(accessorRows(gltf, bin, clip.samplers[channel.sampler].output));
+          })()
+        : rotationDeltaForClip(gltf, bin, clip, nodeName);
+      assert.ok(
+        maxDelta >= minimum,
+        `${clipName} ${nodeName} motion ${maxDelta.toFixed(2)} should be at least ${minimum}`,
+      );
+    }
+  }
+});
+
+test("xyshz flute and sit clips place limbs like intentional actions", async () => {
+  const { THREE, gltf } = await loadRiggedGltfScene();
+  const flute = findClip(gltf, "Flute");
+  const sit = findClip(gltf, "Sit");
+
+  const fluteSamples = sampleWorldPositions(THREE, gltf, flute, ["HandL", "HandR", "Head"], 9);
+  const lastFluteLeft = fluteSamples.HandL.at(-1);
+  const lastFluteRight = fluteSamples.HandR.at(-1);
+  const lastFluteHead = fluteSamples.Head.at(-1);
+  const handHeightDiff = Math.abs(lastFluteLeft[1] - lastFluteRight[1]);
+  const handSideDiff = Math.abs(lastFluteLeft[2] - lastFluteRight[2]);
+
+  assert.ok(handHeightDiff < 9, `flute hands should meet near the mouth height, got diff=${handHeightDiff.toFixed(2)}`);
+  assert.ok(handSideDiff < 15, `flute hands should stay close together, got side diff=${handSideDiff.toFixed(2)}`);
+  assert.ok(
+    Math.max(lastFluteLeft[1], lastFluteRight[1]) > lastFluteHead[1] - 18,
+    "flute hands should lift toward the head rather than hang at the robe",
+  );
+
+  const sitSamples = sampleWorldPositions(THREE, gltf, sit, ["Hips", "FootL", "FootR"], 9);
+  const startHips = sitSamples.Hips[0];
+  const endHips = sitSamples.Hips.at(-1);
+  const endFootL = sitSamples.FootL.at(-1);
+  const endFootR = sitSamples.FootR.at(-1);
+  assert.ok(startHips[1] - endHips[1] >= 10, `sit hips should lower visibly, got ${(startHips[1] - endHips[1]).toFixed(2)}`);
+  assert.ok(endFootL[0] > endHips[0] + 4, "left foot should settle forward of the hips while sitting");
+  assert.ok(endFootR[0] > endHips[0] + 4, "right foot should settle forward of the hips while sitting");
 });
 
 test("xyshz walk loop keeps deformation conservative enough for the robe mesh", async () => {

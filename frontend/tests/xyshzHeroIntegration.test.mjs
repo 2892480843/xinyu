@@ -38,20 +38,23 @@ test("xyshz GLB is registered as the default playable hero", async () => {
   const source = await readExploreSource();
   const modelsBlock = sourceBlock(source, "const MODELS", "};");
 
-  assert.match(modelsBlock, /heroChar:\s*"\/models\/xyshz_rigged\.glb\?v=5"/);
+  assert.match(modelsBlock, /heroChar:\s*"\/models\/xyshz_rigged\.glb\?v=6"/);
   assert.match(modelsBlock, /guardianChar:\s*"\/models\/xy_char_protagonist\.glb\?v=2"/);
   assert.match(source, /type CharKind = "hero" \| "guardian" \| "pocoyo" \| "avatar"/);
   assert.match(source, /const CHAR_ORDER: CharKind\[\] = \["hero", "guardian", "pocoyo", "avatar"\]/);
   assert.match(source, /if \(v === "hero" \|\| v === "guardian" \|\| v === "pocoyo" \|\| v === "avatar"\) return v;/);
 });
 
-test("xyshz hero connects its rigged GLB walk clip through drei useAnimations", async () => {
+test("xyshz hero connects its complete rigged GLB action library through drei useAnimations", async () => {
   const source = await readExploreSource();
   const heroBlock = sourceBlock(source, "function GltfHero", "function GltfGuardian");
 
   assert.match(heroBlock, /const \{ scene, animations \} = useGLTF\(MODELS\.heroChar\)/);
   assert.match(heroBlock, /useAnimations\(animations, ref\)/);
   assert.match(heroBlock, /actionRef\?: React\.RefObject<CharacterActionClip>/);
+  assert.match(source, /const XYSHZ_ACTION_CLIPS = \["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"\] as const/);
+  assert.match(source, /function isXyshzActionClip\(clip: CharacterActionClip\): clip is \(typeof XYSHZ_ACTION_CLIPS\)\[number\]/);
+  assert.match(heroBlock, /isXyshzActionClip\(requested\) && actions\[requested\] \? requested : "Idle"/);
   assert.match(heroBlock, /actions\[next\]/);
   assert.match(heroBlock, /THREE\.LoopRepeat/);
   assert.match(heroBlock, /THREE\.LoopOnce/);
@@ -66,11 +69,27 @@ test("xyshz hero connects the dedicated RunLoop clip for held movement", async (
   const playerBlock = sourceBlock(source, "function Player", "// 心愿之光收集物");
 
   assert.match(source, /const XYSHZ_RUN_HOLD_SECONDS = 0\.55/);
-  assert.match(heroBlock, /requested === "RunLoop" \? "RunLoop" : requested === "WalkLoop" \? "WalkLoop" : "Idle"/);
+  assert.match(heroBlock, /const looped = next === "Idle" \|\| next === "RunLoop" \|\| next === "WalkLoop"/);
+  assert.match(heroBlock, /nextAction\.clampWhenFinished = !looped/);
   assert.match(heroBlock, /nextAction\.timeScale = next === "RunLoop" \? XYSHZ_RUN_TIMESCALE : next === "WalkLoop" \? XYSHZ_WALK_TIMESCALE : 1/);
   assert.match(playerBlock, /moveHoldT\.current \+= moving \? dt : -dt \* 2/);
   assert.match(playerBlock, /running: character === "hero" && moveHoldT\.current >= XYSHZ_RUN_HOLD_SECONDS/);
-  assert.match(playerBlock, /character === "hero" && \(characterActionRef\.current === "WalkLoop" \|\| characterActionRef\.current === "RunLoop"\)/);
+  assert.match(playerBlock, /character === "hero" && characterActionRef\.current !== "Idle"/);
+});
+
+test("xyshz one-shot clips are driven by existing gameplay timers", async () => {
+  const source = await readExploreSource();
+  const playerBlock = sourceBlock(source, "function Player", "// 心愿之光收集物");
+
+  assert.match(playerBlock, /if \(input\.wave\) \{ waveT\.current = 1\.5; input\.wave = false; \}/);
+  assert.match(playerBlock, /if \(input\.flute\) \{ fluteT\.current = FLUTE_DUR; fluteNote\.current = 0; input\.flute = false; \}/);
+  assert.match(playerBlock, /if \(cc !== prevCheer\.current\) \{ cheerT\.current = 0\.85; prevCheer\.current = cc; \}/);
+  assert.match(playerBlock, /waveT\.current = Math\.max\(0, waveT\.current - dt\)/);
+  assert.match(playerBlock, /cheerT\.current = Math\.max\(0, cheerT\.current - dt\)/);
+  assert.match(playerBlock, /fluteT\.current = Math\.max\(0, fluteT\.current - dt\)/);
+  assert.match(playerBlock, /cheerActive: cheerT\.current > 0/);
+  assert.match(playerBlock, /waveActive: waveT\.current > 0/);
+  assert.match(playerBlock, /fluteActive: fluteT\.current > 0/);
 });
 
 test("xyshz hero corrects the source model's +X front to the player's +Z movement direction", async () => {
@@ -81,20 +100,17 @@ test("xyshz hero corrects the source model's +X front to the player's +Z movemen
   assert.match(heroBlock, /rotation=\{XYSHZ_MODEL_ROTATION\}/);
 });
 
-test("xyshz hero applies only a conservative in-game walk overlay over the GLB clip", async () => {
+test("xyshz hero does not layer manual limb overrides over authored GLB clips", async () => {
   const source = await readExploreSource();
   const heroBlock = sourceBlock(source, "function GltfHero", "function GltfGuardian");
 
-  assert.match(heroBlock, /heroWalkBones/);
-  assert.match(heroBlock, /getObjectByName\("UpperArmL"\)/);
-  assert.match(heroBlock, /getObjectByName\("ForeArmR"\)/);
-  assert.match(heroBlock, /walkBlend/);
-  assert.match(heroBlock, /root\.position\.y/);
-  assert.match(heroBlock, /UpperArmL[\s\S]*rotation\.x/);
-  assert.match(heroBlock, /ForeArmR[\s\S]*rotation\.x/);
+  assert.doesNotMatch(heroBlock, /heroWalkBones/);
+  assert.doesNotMatch(heroBlock, /walkBlend/);
+  assert.doesNotMatch(heroBlock, /getObjectByName\("UpperArmL"\)/);
+  assert.doesNotMatch(heroBlock, /root\.position\.y\s*=/);
   assert.doesNotMatch(
     heroBlock,
-    /bones\.(?:HandL|HandR|UpperLegL|UpperLegR|LowerLegL|LowerLegR|FootL|FootR)\.rotation\.[xyz]\s*\+=/,
+    /(?:UpperArmL|UpperArmR|ForeArmL|ForeArmR|HandL|HandR|UpperLegL|UpperLegR|LowerLegL|LowerLegR|FootL|FootR)[\s\S]*rotation\.[xyz]\s*\+=/,
   );
 });
 
@@ -120,7 +136,7 @@ test("legacy animated guardian keeps its GLB clips separate from xyshz", async (
 
   assert.match(guardianBlock, /const \{ scene, animations \} = useGLTF\(MODELS\.guardianChar\)/);
   assert.match(guardianBlock, /useAnimations\(animations, ref\)/);
-  assert.match(playerBlock, /const glbClipActive = \(character === "guardian" && characterActionRef\.current !== "Idle"\) \|\| \(character === "hero" && \(characterActionRef\.current === "WalkLoop" \|\| characterActionRef\.current === "RunLoop"\)\)/);
+  assert.match(playerBlock, /const glbClipActive = \(character === "guardian" && characterActionRef\.current !== "Idle"\) \|\| \(character === "hero" && characterActionRef\.current !== "Idle"\)/);
   assert.match(playerBlock, /character === "hero" \? \(/);
   assert.match(playerBlock, /<GltfHero[\s\S]*actionRef=\{characterActionRef\}/);
   assert.match(playerBlock, /character === "guardian" \? \(/);

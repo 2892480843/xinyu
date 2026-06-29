@@ -25,20 +25,25 @@ async function importProtagonistAction() {
 test("selectCharacterAction maps movement states to shared character clips", async () => {
   const { selectCharacterAction } = await importProtagonistAction();
 
-  assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0 }), "Idle");
-  assert.equal(selectCharacterAction({ moving: true, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0 }), "WalkLoop");
-  assert.equal(selectCharacterAction({ moving: true, running: true, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0 }), "RunLoop");
-  assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0.7 }), "Sit");
-  assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: true, fluteActive: false, sitAmount: 0 }), "Wave");
-  assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: false, fluteActive: true, sitAmount: 0 }), "Flute");
-  assert.equal(selectCharacterAction({ moving: false, airborne: true, waveActive: false, fluteActive: false, sitAmount: 0 }), "Jump");
+  const base = { moving: false, running: false, airborne: false, cheerActive: false, waveActive: false, fluteActive: false, sitAmount: 0 };
+  assert.equal(selectCharacterAction(base), "Idle");
+  assert.equal(selectCharacterAction({ ...base, moving: true }), "WalkLoop");
+  assert.equal(selectCharacterAction({ ...base, moving: true, running: true }), "RunLoop");
+  assert.equal(selectCharacterAction({ ...base, sitAmount: 0.7 }), "Sit");
+  assert.equal(selectCharacterAction({ ...base, waveActive: true }), "Wave");
+  assert.equal(selectCharacterAction({ ...base, fluteActive: true }), "Flute");
+  assert.equal(selectCharacterAction({ ...base, cheerActive: true }), "Cheer");
+  assert.equal(selectCharacterAction({ ...base, airborne: true }), "Jump");
 });
 
-test("selectCharacterAction keeps physics-critical jump above gesture clips", async () => {
+test("selectCharacterAction keeps expressive and physics-critical priorities stable", async () => {
   const { selectCharacterAction } = await importProtagonistAction();
 
-  assert.equal(selectCharacterAction({ moving: true, airborne: true, waveActive: true, fluteActive: true, sitAmount: 1 }), "Jump");
-  assert.equal(selectCharacterAction({ moving: true, airborne: false, waveActive: true, fluteActive: true, sitAmount: 1 }), "Flute");
-  assert.equal(selectCharacterAction({ moving: true, airborne: false, waveActive: true, fluteActive: false, sitAmount: 1 }), "Wave");
-  assert.equal(selectCharacterAction({ moving: true, running: true, airborne: false, waveActive: false, fluteActive: false, sitAmount: 1 }), "Sit");
+  const busy = { moving: true, running: true, airborne: true, cheerActive: true, waveActive: true, fluteActive: true, sitAmount: 1 };
+  assert.equal(selectCharacterAction(busy), "Jump");
+  assert.equal(selectCharacterAction({ ...busy, airborne: false }), "Cheer");
+  assert.equal(selectCharacterAction({ ...busy, airborne: false, cheerActive: false }), "Flute");
+  assert.equal(selectCharacterAction({ ...busy, airborne: false, cheerActive: false, fluteActive: false }), "Wave");
+  assert.equal(selectCharacterAction({ ...busy, airborne: false, cheerActive: false, fluteActive: false, waveActive: false }), "Sit");
+  assert.equal(selectCharacterAction({ ...busy, airborne: false, cheerActive: false, fluteActive: false, waveActive: false, sitAmount: 0 }), "RunLoop");
 });

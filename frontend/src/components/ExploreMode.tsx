@@ -737,7 +737,7 @@ const MODELS = {
   memoryTree: "/models/xy_item_memory_tree.glb",
   fishingBobber: "/models/xy_item_fishing_bobber.glb",
   shootingStar: "/models/xy_fx_shooting_star.glb",
-  heroChar: "/models/xyshz_rigged.glb?v=5", // 新默认主角 xyshz；v=5 增加专用 RunLoop,长按移动切跑步
+  heroChar: "/models/xyshz_rigged.glb?v=6", // 新默认主角 xyshz；v=6 内置完整自然动作库
   guardianChar: "/models/xy_char_protagonist.glb?v=2", // 旧动画守护者备选；?v=2 缓存破坏:重导出加了 WalkLoop 等骨骼动画
   pocoyo: "/models/xy_char_pocoyo.glb", // Pocoyo 主角(专用 rig 负责修正 FBX 轴向与落脚点)
   // Batch 5 · 村落建筑(三风格混搭)
@@ -1939,26 +1939,23 @@ function GltfAvatar({ avatar, legL, legR, armL, armR }: {
   return <primitive object={obj} scale={0.72} rotation={[0, Math.PI, 0]} />;
 }
 
-// xyshz 新默认主角:Blender 重新绑骨骼后的 GLB；移动时播放自带 WalkLoop，其他动作仍交给 Player 的整组反馈。
+// xyshz 新默认主角:Blender 重新绑骨骼后的 GLB；动作全部优先播放模型内作者动画。
 // GLTFLoader 实测包围盒约 36.9 × 99.9 × 67.2，Y 轴已经竖直；缩放到探索模式角色量级后补足落脚点。
 const XYSHZ_MODEL_SCALE = 0.0145;
 const XYSHZ_FOOT_OFFSET_Y = 49.9846 * XYSHZ_MODEL_SCALE;
 const XYSHZ_MODEL_ROTATION: [number, number, number] = [0, -Math.PI / 2, 0];
 const XYSHZ_WALK_TIMESCALE = 1.55;
-const XYSHZ_WALK_BOB = 0.055;
-const XYSHZ_WALK_ARM_SWING = 0.11;
-const XYSHZ_WALK_FOREARM_SWING = 0.05;
 const XYSHZ_RUN_HOLD_SECONDS = 0.55;
 const XYSHZ_RUN_TIMESCALE = 1.18;
-const XYSHZ_RUN_BOB = 0.075;
-const XYSHZ_RUN_ARM_SWING = 0.16;
-const XYSHZ_RUN_FOREARM_SWING = 0.075;
+const XYSHZ_ACTION_CLIPS = ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"] as const;
+
+function isXyshzActionClip(clip: CharacterActionClip): clip is (typeof XYSHZ_ACTION_CLIPS)[number] {
+  return (XYSHZ_ACTION_CLIPS as readonly CharacterActionClip[]).includes(clip);
+}
 
 function GltfHero({ actionRef }: { actionRef?: React.RefObject<CharacterActionClip> }) {
   const { scene, animations } = useGLTF(MODELS.heroChar);
   const ref = useRef<THREE.Group>(null);
-  const heroWalkBones = useRef<Record<string, THREE.Object3D | null>>({});
-  const walkBlend = useRef(0);
   const obj = useMemo(() => {
     const root = cloneSkeleton(scene);
     root.traverse((o) => {
@@ -1974,54 +1971,23 @@ function GltfHero({ actionRef }: { actionRef?: React.RefObject<CharacterActionCl
   const { actions, mixer } = useAnimations(animations, ref);
   const activeClip = useRef<string>("");
   const activeAction = useRef<THREE.AnimationAction | null>(null);
-  useEffect(() => {
-    heroWalkBones.current = {
-      UpperArmL: obj.getObjectByName("UpperArmL") ?? null,
-      ForeArmL: obj.getObjectByName("ForeArmL") ?? null,
-      UpperArmR: obj.getObjectByName("UpperArmR") ?? null,
-      ForeArmR: obj.getObjectByName("ForeArmR") ?? null,
-    };
-  }, [obj]);
-  useFrame((state, dt) => {
+  useFrame(() => {
     const requested = actionRef?.current ?? "Idle";
-    const next = requested === "RunLoop" ? "RunLoop" : requested === "WalkLoop" ? "WalkLoop" : "Idle";
+    const next = isXyshzActionClip(requested) && actions[requested] ? requested : "Idle";
     if (next !== activeClip.current) {
       activeAction.current?.fadeOut(0.12);
       const nextAction = actions[next];
       if (nextAction) {
         nextAction.reset();
-        nextAction.clampWhenFinished = false;
+        const looped = next === "Idle" || next === "RunLoop" || next === "WalkLoop";
+        nextAction.clampWhenFinished = !looped;
         nextAction.timeScale = next === "RunLoop" ? XYSHZ_RUN_TIMESCALE : next === "WalkLoop" ? XYSHZ_WALK_TIMESCALE : 1;
-        const looped = next === "RunLoop" || next === "WalkLoop";
         nextAction.setLoop(looped ? THREE.LoopRepeat : THREE.LoopOnce, looped ? Infinity : 1);
         nextAction.fadeIn(next === "RunLoop" ? 0.12 : next === "WalkLoop" ? 0.18 : 0.12).play();
       }
       activeAction.current = nextAction ?? null;
       activeClip.current = next;
     }
-
-    const root = ref.current;
-    const targetBlend = next === "RunLoop" || next === "WalkLoop" ? 1 : 0;
-    walkBlend.current += (targetBlend - walkBlend.current) * Math.min(1, dt * 9);
-    const blend = walkBlend.current;
-    if (!root) return;
-
-    const action = activeAction.current;
-    const duration = Math.max(0.001, action?.getClip().duration ?? 1);
-    const time = action?.time ?? state.clock.elapsedTime;
-    const phase = (time / duration) * Math.PI * 2;
-    const swing = Math.sin(phase);
-    const bob = next === "RunLoop" ? XYSHZ_RUN_BOB : XYSHZ_WALK_BOB;
-    const armSwing = next === "RunLoop" ? XYSHZ_RUN_ARM_SWING : XYSHZ_WALK_ARM_SWING;
-    const foreArmSwing = next === "RunLoop" ? XYSHZ_RUN_FOREARM_SWING : XYSHZ_WALK_FOREARM_SWING;
-    root.position.y = Math.abs(Math.sin(phase)) * bob * blend;
-    if (blend <= 0.001) return;
-
-    const bones = heroWalkBones.current;
-    if (bones.UpperArmL) bones.UpperArmL.rotation.x += -swing * armSwing * blend;
-    if (bones.ForeArmL) bones.ForeArmL.rotation.x += swing * foreArmSwing * blend;
-    if (bones.UpperArmR) bones.UpperArmR.rotation.x += swing * armSwing * blend;
-    if (bones.ForeArmR) bones.ForeArmR.rotation.x += -swing * foreArmSwing * blend;
   });
   useEffect(() => () => { mixer.stopAllAction(); }, [mixer]);
   return (
@@ -2529,7 +2495,7 @@ function Player({
       fluteActive: fluteT.current > 0,
       sitAmount: sit.current,
     });
-    const glbClipActive = (character === "guardian" && characterActionRef.current !== "Idle") || (character === "hero" && (characterActionRef.current === "WalkLoop" || characterActionRef.current === "RunLoop"));
+    const glbClipActive = (character === "guardian" && characterActionRef.current !== "Idle") || (character === "hero" && characterActionRef.current !== "Idle");
     const breathe = !airborne.current && gait < 0.12 ? Math.sin(s.clock.elapsedTime * 1.6) * 0.012 : 0; // 待机呼吸起伏
     const bob = airborne.current ? 0 : Math.abs(Math.sin(walkPhase.current)) * 0.088 * gait; // 走路身体起伏(每步一颠,弹性更足)
     const cheerHop = cheerT.current > 0 ? Math.sin((1 - cheerT.current / 0.85) * Math.PI) * 0.18 : 0; // 欢呼小跳
