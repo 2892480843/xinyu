@@ -24,7 +24,7 @@ import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
 import { selectCharacterAction, type CharacterActionClip } from "../lib/protagonistAction";
 import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
-import { EXPLORE_MAP_POIS, type ExplorePoiKind } from "../lib/exploreZones";
+import { EXPLORE_MAP_POIS, exploreZoneAmbience, findExploreZone, type ExplorePoiKind, type ExploreZone } from "../lib/exploreZones";
 import {
   DEFAULT_EXPLORE_ENVIRONMENT,
   EXPLORE_TIME_OPTIONS,
@@ -5496,9 +5496,12 @@ function LocationAudio({ posRef, night }: { posRef: React.RefObject<THREE.Vector
       const r2 = p.x * p.x + p.z * p.z;
       const gy = exGroundY(p.x, p.z);
       const bay = bayMask(p.x, p.z);
-      // 优先级：小范围特殊区 → 大范围地貌
+      const district = findExploreZone(p.x, p.z);
+      const districtZone = exploreZoneAmbience(district, night);
+      // 优先级：注册表区块 → 小范围特殊区 → 大范围地貌
       let zone: LocationZone;
-      if (dist2(p.x, p.z, POND.x, POND.z) < 144) zone = "brook";
+      if (districtZone) zone = districtZone;
+      else if (dist2(p.x, p.z, POND.x, POND.z) < 144) zone = "brook";
       else if (dist2(p.x, p.z, BONFIRE.x, BONFIRE.z) < 64) zone = "campfire";
       else if (r2 > WALK_RADIUS * WALK_RADIUS * 1.1025) zone = "ocean"; // 远海
       else if ((bay > 0.32 && r2 > WALK_RADIUS * WALK_RADIUS * 0.6084) || gy < 0.12) zone = "bay"; // 海湾/海滩
@@ -5523,6 +5526,24 @@ function LocationAudio({ posRef, night }: { posRef: React.RefObject<THREE.Vector
       playSample("conch_zone", { gain: 0.5 }); conchCool.current = 45;
     }
     conchNear.current = piNear;
+  });
+  return null;
+}
+
+function DistrictProximity({ posRef, onNear }: { posRef: React.RefObject<THREE.Vector3>; onNear: (zone: ExploreZone | null) => void }) {
+  const lastKey = useRef<string | null>(null);
+  const tick = useRef(0);
+  useFrame((_, dt) => {
+    tick.current -= dt;
+    if (tick.current > 0) return;
+    tick.current = 0.25;
+    const p = posRef.current;
+    const zone = p ? findExploreZone(p.x, p.z) : null;
+    const key = zone?.key ?? null;
+    if (key !== lastKey.current) {
+      lastKey.current = key;
+      onNear(zone);
+    }
   });
   return null;
 }
@@ -6552,6 +6573,7 @@ function ExploreScene({
   onDiscover,
   onNearInteract,
   onNearLamp,
+  onNearDistrict,
   tier,
 }: {
   visual: SceneVisual;
@@ -6598,6 +6620,7 @@ function ExploreScene({
   onDiscover: (k: string) => void;
   onNearInteract: (v: { kind: string; label: string } | null) => void;
   onNearLamp: (v: { idx: number; on: boolean } | null) => void;
+  onNearDistrict: (zone: ExploreZone | null) => void;
   tier: PerfTier;
 }) {
   const terrain = useMemo(() => buildExploreTerrain(), []);
@@ -6800,6 +6823,7 @@ function ExploreScene({
         <ShrineBell onDiscover={onDiscover} />
         <WishingStones onDiscover={onDiscover} />
         <InteractProximity posRef={posRef} onNear={onNearInteract} />
+        <DistrictProximity posRef={posRef} onNear={onNearDistrict} />
         <StoneLanterns posRef={posRef} grad={toonGrad} onNearLamp={onNearLamp} />
         {imprints.length > 0 ? <MemoryImprints posRef={posRef} imprints={imprints} onPick={(i) => { cheerRef.current += 1; onPickImprint(i); }} /> : <Wishes posRef={posRef} color={visual.accent} onCollect={() => { cheerRef.current += 1; onCollect(); }} total={total} />}
         {treeColors.length > 0 && <MemoryTree colors={treeColors} />}
@@ -7537,6 +7561,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   // ====================== 新玩法:花田 / 天灯 / 垂钓 / 风铃心曲 ======================
   const [flowers, setFlowers] = useState<Flower[]>(() => { try { return JSON.parse(localStorage.getItem("xy_garden") || "[]"); } catch { return []; } });
   const [nearFlower, setNearFlower] = useState<Flower | null>(null);
+  const [nearDistrict, setNearDistrict] = useState<ExploreZone | null>(null);
   const [environment, setEnvironment] = useState<ExploreEnvironment>(() => { try { return loadExploreEnvironment(localStorage); } catch { return DEFAULT_EXPLORE_ENVIRONMENT; } });
   const [lanternOpen, setLanternOpen] = useState(false);
   const [lanternText, setLanternText] = useState("");
@@ -7638,6 +7663,20 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   };
   const ringChime = (i: number) => { chimeNote(CHIME_FREQS[i]); emitCompanionEvent("chime"); if (songDone) return; setSongProgress((p) => (i === SONG[p] ? p + 1 : i === SONG[0] ? 1 : 0)); };
   const fmtWhen = (t: number) => { const d = new Date(t); return `${d.getMonth() + 1}月${d.getDate()}日`; };
+  const districtLine = (zone: ExploreZone): string => {
+    switch (zone.key) {
+      case "home": return "回家坐一会儿，窗边的光会慢慢安静下来。";
+      case "beach": return "海滩把浪声推到脚边，适合拾起一枚贝壳。";
+      case "rice": return "稻田在风里轻轻摆，水面把天空切成细碎的光。";
+      case "mountain": return "山路往上，能从这里登高望岛。";
+      case "forest": return "森林把脚步声收得很轻，也许有小动物看见了你。";
+      case "town": return "小镇的路灯和招牌都在等一个慢慢走过的人。";
+      case "farm": return "农村的小路绕过干草堆，风车把今天翻到下一页。";
+      case "zoo": return "动物园的小伙伴们很安静，靠近一点也没关系。";
+      case "swamp": return "沼泽回声从芦苇里冒出来，雨天会更亮一点。";
+      case "scenic": return "风景区的观景台正对着全岛，日出和夕阳最适合停留。";
+    }
+  };
   const activeTime = EXPLORE_TIME_OPTIONS.find((item) => item.value === environment.timeOfDay) ?? EXPLORE_TIME_OPTIONS[1];
   const activeWeather = EXPLORE_WEATHER_OPTIONS.find((item) => item.value === environment.weather) ?? EXPLORE_WEATHER_OPTIONS[0];
   const isExploreNight = environment.timeOfDay === "night";
@@ -7873,7 +7912,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         frameloop={forestDrive ? "never" : "always"}
       >
         <Suspense fallback={<ExploreLoading />}>
-          <ExploreScene visual={visual} environment={environment} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} tier={tier} />
+          <ExploreScene visual={visual} environment={environment} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} onNearDistrict={setNearDistrict} tier={tier} />
         </Suspense>
       </Canvas>
 
@@ -8271,6 +8310,14 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           <div className="panel-glass-2 rounded-card px-7 py-5 text-center max-w-[16rem]">
             <p className="font-display text-[19px] tracking-wider text-white/90">心曲已成 🎐</p>
             <p className="text-caption text-white/65 mt-2 leading-relaxed">岛屿的摇篮曲被你唤齐了，<br />满岛萤火轻轻升起。</p>
+          </div>
+        </div>
+      )}
+
+      {nearDistrict && (
+        <div className="pointer-events-none absolute inset-x-0 top-[11rem] z-20 flex justify-center px-4">
+          <div className="panel-glass-1 max-w-[92vw] rounded-full px-3.5 py-1 text-caption text-white/72">
+            {nearDistrict.icon} {nearDistrict.label} · {districtLine(nearDistrict)}
           </div>
         </div>
       )}

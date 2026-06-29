@@ -102,3 +102,16 @@ test("explore scene renders C1 district groups", async () => {
   assert.match(source, /MODELS\.critterCat/);
   assert.match(source, /MODELS\.critterOwl/);
 });
+
+test("explore districts drive proximity prompts and location ambience", async () => {
+  const source = await readExploreSource();
+  const audioBlock = sourceBlock(source, "function LocationAudio", "const MAP_VIEW");
+
+  assert.match(source, /findExploreZone/);
+  assert.match(source, /exploreZoneAmbience/);
+  assert.match(source, /function DistrictProximity/);
+  assert.match(source, /nearDistrict/);
+  assert.match(source, /回家坐一会儿|稻田在风里轻轻摆|沼泽回声|登高望岛/);
+  assert.match(audioBlock, /findExploreZone\(p\.x,\s*p\.z\)/);
+  assert.match(audioBlock, /exploreZoneAmbience/);
+});
