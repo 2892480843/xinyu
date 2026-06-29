@@ -127,7 +127,7 @@ export function loadExploreEnvironment(storage: Storage | null | undefined): Exp
       weather: isExploreWeather(weather) ? weather : DEFAULT_EXPLORE_ENVIRONMENT.weather,
     };
   }
-  if (typeof localStorage !== "undefined" && localStorage.getItem("xy_night") === "1") {
+  if (storage.getItem("xy_night") === "1") {
     return { timeOfDay: "night", weather: "clear" };
   }
   return DEFAULT_EXPLORE_ENVIRONMENT;

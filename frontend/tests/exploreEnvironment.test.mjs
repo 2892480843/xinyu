@@ -26,7 +26,7 @@ test("explore environment persists new keys and migrates legacy xy_night", async
 
   assert.match(source, /EXPLORE_TIME_STORAGE_KEY = "xy_explore_time"/);
   assert.match(source, /EXPLORE_WEATHER_STORAGE_KEY = "xy_explore_weather"/);
-  assert.match(source, /localStorage\.getItem\("xy_night"\) === "1"/);
+  assert.match(source, /storage\.getItem\("xy_night"\) === "1"/);
   assert.match(source, /timeOfDay: "night"/);
   assert.match(source, /weather: "clear"/);
 });
