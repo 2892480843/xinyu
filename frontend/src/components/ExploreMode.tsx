@@ -26,6 +26,7 @@ import { selectCharacterAction, type CharacterActionClip } from "../lib/protagon
 import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
 import { EXPLORE_MAP_POIS, type ExplorePoiKind } from "../lib/exploreZones";
 import {
+  DEFAULT_EXPLORE_ENVIRONMENT,
   EXPLORE_TIME_OPTIONS,
   EXPLORE_WEATHER_OPTIONS,
   loadExploreEnvironment,
@@ -6452,17 +6453,9 @@ function ExploreScene({
     const ctx = c.getContext("2d");
     if (ctx) {
       const grd = ctx.createLinearGradient(0, 0, 0, H);
-      if (forceNight) {
-        // 夜空:顶端深邃夜蓝 → 中段紫 → 地平线暖紫,多停靠点过渡更润
-        grd.addColorStop(0, "#05071a");
-        grd.addColorStop(0.4, "#181643");
-        grd.addColorStop(0.72, "#312a5a");
-        grd.addColorStop(1, "#4a3b60");
-      } else {
-        grd.addColorStop(0, envVisual.skyTop);
-        grd.addColorStop(0.5, envVisual.skyMid);
-        grd.addColorStop(1, envVisual.skyBottom);
-      }
+      grd.addColorStop(0, envVisual.skyTop);
+      grd.addColorStop(0.5, envVisual.skyMid);
+      grd.addColorStop(1, envVisual.skyBottom);
       ctx.fillStyle = grd;
       ctx.fillRect(0, 0, W, H);
       // 抖动:打散 8-bit 量化造成的色带(banding 根因),夜空尤其明显。确定性噪声(自带 LCG),不在渲染期用 Math.random。
@@ -7343,7 +7336,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   // ====================== 新玩法:花田 / 天灯 / 垂钓 / 风铃心曲 ======================
   const [flowers, setFlowers] = useState<Flower[]>(() => { try { return JSON.parse(localStorage.getItem("xy_garden") || "[]"); } catch { return []; } });
   const [nearFlower, setNearFlower] = useState<Flower | null>(null);
-  const [environment, setEnvironment] = useState<ExploreEnvironment>(() => { try { return loadExploreEnvironment(localStorage); } catch { return { timeOfDay: "noon", weather: "clear" }; } });
+  const [environment, setEnvironment] = useState<ExploreEnvironment>(() => { try { return loadExploreEnvironment(localStorage); } catch { return DEFAULT_EXPLORE_ENVIRONMENT; } });
   const [lanternOpen, setLanternOpen] = useState(false);
   const [lanternText, setLanternText] = useState("");
   const [lanternCount, setLanternCount] = useState<number>(() => { try { return parseInt(localStorage.getItem("xy_lanterns") || "0", 10) || 0; } catch { return 0; } });

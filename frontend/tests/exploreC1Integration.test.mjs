@@ -31,11 +31,26 @@ test("explore map is driven by the C1 zone registry", async () => {
 test("explore mode exposes time-of-day and rain controls", async () => {
   const source = await readExploreSource();
   const menuBlock = sourceBlock(source, "xy-explore-menu", "换装面板");
+  const sceneSignature = sourceBlock(source, "function ExploreScene({", "}) {");
+  const sceneBlock = sourceBlock(source, "function ExploreScene({", "function ExploreMode");
+  const skyTextureBlock = sourceBlock(source, "const skyTex = useMemo", "useEffect(() => () => skyTex.dispose()");
 
+  assert.match(source, /DEFAULT_EXPLORE_ENVIRONMENT/);
   assert.match(source, /loadExploreEnvironment/);
   assert.match(source, /saveExploreEnvironment/);
   assert.match(source, /EXPLORE_TIME_OPTIONS/);
   assert.match(source, /EXPLORE_WEATHER_OPTIONS/);
+  assert.match(source, /environment=\{environment\}/);
+  assert.match(sceneSignature, /environment,/);
+  assert.match(sceneSignature, /environment: ExploreEnvironment;/);
+  assert.match(sceneBlock, /resolveExploreEnvironmentVisual\(visual, environment\)/);
+  assert.match(source, /saveExploreEnvironment\(localStorage, environment\)/);
+  assert.doesNotMatch(source, /localStorage\.setItem\("xy_night"/);
+  assert.match(skyTextureBlock, /envVisual\.skyTop/);
+  assert.match(skyTextureBlock, /envVisual\.skyMid/);
+  assert.match(skyTextureBlock, /envVisual\.skyBottom/);
+  assert.doesNotMatch(skyTextureBlock, /grd\.addColorStop\(0,\s*"#[0-9a-fA-F]{6}"/);
+  assert.doesNotMatch(skyTextureBlock, /if\s*\(\s*forceNight\s*\)/);
   assert.match(menuBlock, /时辰/);
   assert.match(menuBlock, /天气/);
   assert.match(menuBlock, /日出/);
