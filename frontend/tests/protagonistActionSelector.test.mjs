@@ -27,6 +27,7 @@ test("selectCharacterAction maps movement states to shared character clips", asy
 
   assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0 }), "Idle");
   assert.equal(selectCharacterAction({ moving: true, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0 }), "WalkLoop");
+  assert.equal(selectCharacterAction({ moving: true, running: true, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0 }), "RunLoop");
   assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: false, fluteActive: false, sitAmount: 0.7 }), "Sit");
   assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: true, fluteActive: false, sitAmount: 0 }), "Wave");
   assert.equal(selectCharacterAction({ moving: false, airborne: false, waveActive: false, fluteActive: true, sitAmount: 0 }), "Flute");
@@ -39,4 +40,5 @@ test("selectCharacterAction keeps physics-critical jump above gesture clips", as
   assert.equal(selectCharacterAction({ moving: true, airborne: true, waveActive: true, fluteActive: true, sitAmount: 1 }), "Jump");
   assert.equal(selectCharacterAction({ moving: true, airborne: false, waveActive: true, fluteActive: true, sitAmount: 1 }), "Flute");
   assert.equal(selectCharacterAction({ moving: true, airborne: false, waveActive: true, fluteActive: false, sitAmount: 1 }), "Wave");
+  assert.equal(selectCharacterAction({ moving: true, running: true, airborne: false, waveActive: false, fluteActive: false, sitAmount: 1 }), "Sit");
 });

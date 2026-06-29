@@ -1,7 +1,8 @@
-export type CharacterActionClip = "Idle" | "WalkLoop" | "Jump" | "Wave" | "Flute" | "Sit";
+export type CharacterActionClip = "Idle" | "WalkLoop" | "RunLoop" | "Jump" | "Wave" | "Flute" | "Sit";
 
 interface CharacterActionState {
   moving: boolean;
+  running?: boolean;
   airborne: boolean;
   waveActive: boolean;
   fluteActive: boolean;
@@ -13,6 +14,7 @@ export function selectCharacterAction(state: CharacterActionState): CharacterAct
   if (state.fluteActive) return "Flute";
   if (state.waveActive) return "Wave";
   if (state.sitAmount > 0.55) return "Sit";
+  if (state.moving && state.running) return "RunLoop";
   if (state.moving) return "WalkLoop";
   return "Idle";
 }

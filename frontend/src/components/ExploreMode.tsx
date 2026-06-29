@@ -5,8 +5,11 @@ import { Outlines, Html, useAnimations, useGLTF, Stars, Billboard, useTexture } 
 import { EffectComposer } from "@react-three/postprocessing";
 import { Effect, EffectAttribute } from "postprocessing";
 import * as THREE from "three";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import type { SceneVisual } from "../lib/sceneMap";
 import type { SceneMotionMood } from "../lib/sceneMotion";
+import { ARTIFACT_3D_REGISTRY } from "../lib/artifact3d";
+import { IMPRINT_3D_REGISTRY, imprintShapeForEmotion } from "../lib/imprint3d";
 import { requestCompanionChat, fetchTtsVoices, type TtsVoice } from "../lib/api";
 import { hash2, islandHeight, valueNoise, smoothstep01, ISLAND_RADIUS, ISLAND_SIZE } from "../lib/islandTerrain";
 import { makeRng } from "../lib/deterministic";
@@ -299,6 +302,25 @@ function buildRingRoadGeometry(pts: { x: number; z: number; y: number; yaw: numb
   return g;
 }
 
+const TERRAIN_GRASS_LOW = new THREE.Color("#5aa873");
+const TERRAIN_GRASS_MID = new THREE.Color("#6fb37e");
+const TERRAIN_GRASS_HIGH = new THREE.Color("#8cbf83");
+
+function terrainGrassColor(wx: number, wz: number, h: number, target: THREE.Color): THREE.Color {
+  if (h < 1.0) target.copy(TERRAIN_GRASS_LOW);
+  else if (h < 4.5) target.copy(TERRAIN_GRASS_MID);
+  else target.copy(TERRAIN_GRASS_HIGH);
+
+  const py = -wz;
+  const patch = 0.88 + valueNoise(wx * 0.05 + 7, py * 0.05 + 7) * 0.24;
+  const fine = 0.97 + valueNoise(wx * 0.4, py * 0.4) * 0.06;
+  return target.multiplyScalar(patch * fine);
+}
+
+function landmarkGrassColor(wx: number, wz: number, target: THREE.Color): THREE.Color {
+  return terrainGrassColor(wx, wz, exGroundY(wx, wz), target);
+}
+
 // 建好的地形:按高度分区配色(草地 / 沙滩 / 水下),顶点色 + toon → 海岸自然过渡。
 function buildExploreTerrain(): THREE.BufferGeometry {
   const S = ISLAND_SIZE * EXS;
@@ -306,9 +328,6 @@ function buildExploreTerrain(): THREE.BufferGeometry {
   const geo = new THREE.PlaneGeometry(S, S, SEG, SEG);
   const pos = geo.attributes.position;
   const colors: number[] = [];
-  const cGrass = new THREE.Color("#5aa873");
-  const cGrass2 = new THREE.Color("#6fb37e");
-  const cHill = new THREE.Color("#8cbf83"); // 高处向阳坡(更亮)
   const cSand = new THREE.Color("#dccaa0");
   const cUnder = new THREE.Color("#357884");
   const tmp = new THREE.Color();
@@ -316,7 +335,10 @@ function buildExploreTerrain(): THREE.BufferGeometry {
     const px = pos.getX(i);
     const py = pos.getY(i);
     // 近环岛路处把地形顶点压向「平路地面」(weight 越高越平),让路面稳稳铺在平整地基上、不穿山不悬空
-    const { y: h, roadW } = groundYWithRoad(px, -py); // 与角色/车贴地同一套函数(含路平地)
+    const { y: terrainY, roadW } = groundYWithRoad(px, -py); // 与角色/车贴地同一套函数(含路平地)
+    const onPad = onLandmarkPad(px, -py);
+    const landmarkY = onPad ? landmarkGroundLift(px, -py) : -Infinity;
+    const h = Math.max(terrainY, landmarkY);
     pos.setZ(i, h);
     void roadW; // 配色仍按高度走;路面上自有一层柏油 mesh 覆盖,无需据 roadW 改色
     const rNorm = Math.hypot(px, py) / (ISLAND_RADIUS * EXS);
@@ -327,25 +349,10 @@ function buildExploreTerrain(): THREE.BufferGeometry {
     const bayWiden = Math.exp(-(dBay * dBay) / (0.62 * 0.62)) * 0.15; // 海湾中心沙带内移
     const beachEdge = 0.71 - bayWiden + (valueNoise(px * 0.04, py * 0.04) - 0.5) * 0.08; // 起伏的沙岸线(不死板)
     const isBeach = rNorm > beachEdge && h < 2.2; // 外圈低地 = 沙滩带
-    let grassish = false;
     if (h < -0.02) tmp.copy(cUnder);
     else if (isBeach || h < 0.12) tmp.copy(cSand);
-    else if (h < 1.0) {
-      tmp.copy(cGrass);
-      grassish = true;
-    } else if (h < 4.5) {
-      tmp.copy(cGrass2);
-      grassish = true;
-    } else {
-      tmp.copy(cHill);
-      grassish = true;
-    }
-    if (grassish) {
-      // 低频噪声给草地/坡地加明暗斑块,打散平涂的死板;再叠一点高频做草色细颗粒
-      const patch = 0.88 + valueNoise(px * 0.05 + 7, py * 0.05 + 7) * 0.24;
-      const fine = 0.97 + valueNoise(px * 0.4, py * 0.4) * 0.06;
-      tmp.multiplyScalar(patch * fine);
-    }
+    else if (landmarkY > terrainY) landmarkGrassColor(px, -py, tmp);
+    else terrainGrassColor(px, -py, h, tmp);
     colors.push(tmp.r, tmp.g, tmp.b);
   }
   geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
@@ -410,6 +417,9 @@ interface CompanionActionSignal {
 const CHATTER_MODE_KEY = "xinyu.companionChatter.v1"; // 「主动陪聊」开关持久化
 
 const WALK_RADIUS = ISLAND_RADIUS * EXS * 0.74; // 可走范围(留出海岸,随大岛自动放大)
+const FENCE_RADIUS = WALK_RADIUS + 0.6; // 护栏所在半径,岸边入口与玩家边界共用
+const NEAR_SHORE_WALK_MARGIN = 2.8; // 允许走到护栏外一点点,够进入沙滩/浅滩,但不会远离岛屿
+const BEACH_FENCE_GATE_HALF_WIDTH = 0.34; // 海湾护栏留口半角,视觉上就是沙滩入口
 // 中心村落 / 岛上的固定设施与地标(坐标须与 Town/Village 的 GltfProp 摆放一致)。
 // 散落树木与民居都避开它们 → 杜绝「树穿过凉亭/神社/灯塔、房子叠在水井上」之类的穿模。
 const ISLE_PROPS: { x: number; z: number; r: number }[] = [
@@ -445,11 +455,30 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _move = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
+const _camLookTarget = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
+const dist2 = (ax: number, az: number, bx: number, bz: number): number => {
+  const dx = ax - bx;
+  const dz = az - bz;
+  return dx * dx + dz * dz;
+};
 
 // ── 玩家碰撞:把树/房子/地标当成圆柱障碍,玩家撞不进去(不穿模) ──
 // 圆形碰撞体 + 空间网格:逐帧只检查玩家所在格子的 3×3 邻域,千余棵树也不掉帧。
 type Collider = { x: number; z: number; r: number };
+type ExploreRevealDelay = {
+  town: number;
+  village: number;
+  coastline: number;
+  interactions: number;
+  companion: number;
+  car: number;
+  lanterns: number;
+  townblock: number;
+  rhododendron: number;
+  manor: number;
+  bath: number;
+};
 const COL_CELL = 8; // 网格边长,须 ≥ 最大(障碍半径 + 车/人半径);车体多点采样 r≈1.3、最大障碍 r≈4.5 → 8 足够覆盖
 const colKey = (gx: number, gz: number): string => gx + "|" + gz;
 function buildColliderGrid(list: Collider[]): Map<string, Collider[]> {
@@ -491,6 +520,23 @@ function resolveCollisions(grid: Map<string, Collider[]> | null, pos: THREE.Vect
   }
 }
 const PLAYER_COL_R = 0.45; // 玩家碰撞半径
+
+function beachAngleDelta(wx: number, wz: number): number {
+  let d = Math.atan2(wz, wx) - BAY_ANGLE;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function isBeachFenceGap(wx: number, wz: number): boolean {
+  const d = beachAngleDelta(wx, wz);
+  return bayMask(wx, wz) > 0.72 && Math.abs(d) < BEACH_FENCE_GATE_HALF_WIDTH;
+}
+
+function walkableRadius(wx: number, wz: number): number {
+  const bay = bayMask(wx, wz);
+  return FENCE_RADIUS + NEAR_SHORE_WALK_MARGIN * bay;
+}
 
 // 汽车摆放:直接停在环路起点 (0,118) 的路面上,朝向沿路切线(指向下一个控制点 (70,98))。
 // 一上车就在柏油路上,踩油门即沿环线兜风,无需先开过草地/穿村。视觉与碰撞共用同一坐标。
@@ -545,10 +591,24 @@ const BATH = { x: 5.4, z: 51.7, rot: 0.4, scale: 15, base: 0.03, clear: 12 }; //
 const BLOCK = { x: -10.8, z: -50.9, rot: 2.2, scale: 0.28, base: 0.65, clear: 8 }; // 建筑街区(漂浮岛式,岩石根埋台下)
 // 第三座大地标:西侧山庄(复用 villa 精模放大;origin 在底 → base=0;toon 卡通材质,与村落统一）
 const MANOR = { x: -54, z: 6, rot: 1.15, scale: 4.0, base: 0, clear: 13 };
+const BATH_FRONT_OPENING: PadColliderOpening = {
+  dirX: -Math.sin(BATH.rot),
+  dirZ: -Math.cos(BATH.rot),
+  halfAngle: 1.15,
+  innerClear: 4.8,
+}; // 浴场正面有台阶/门廊:地坪碰撞留出一条可走缺口,但中心主体仍挡住
 
 // 用一圈互叠的圆形碰撞体铺满整块地坪 → 玩家/车从外面绕,贴边也蹭不进(杜绝穿模)。
 // 每个子碰撞半径 < COL_CELL(8) 才能被空间网格命中;中心 1 个 + 外环 N 个(外沿略超坪沿,封住边角)。
-function fillPadColliders(cx: number, cz: number, padR: number): Collider[] {
+type PadColliderOpening = { dirX: number; dirZ: number; halfAngle: number; innerClear: number };
+function isPadColliderInOpening(cx: number, cz: number, c: Collider, opening: PadColliderOpening): boolean {
+  const dx = c.x - cx;
+  const dz = c.z - cz;
+  const d = Math.hypot(dx, dz);
+  if (d < opening.innerClear) return false;
+  return (dx / d) * opening.dirX + (dz / d) * opening.dirZ > Math.cos(opening.halfAngle);
+}
+function fillPadColliders(cx: number, cz: number, padR: number, openings: PadColliderOpening[] = []): Collider[] {
   const out: Collider[] = [];
   const rr = Math.min(5.5, padR * 0.6);
   out.push({ x: cx, z: cz, r: rr });
@@ -556,7 +616,9 @@ function fillPadColliders(cx: number, cz: number, padR: number): Collider[] {
   const n = Math.max(6, Math.ceil((2 * Math.PI * ringR) / (rr * 1.3)));
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
-    out.push({ x: cx + Math.cos(a) * ringR, z: cz + Math.sin(a) * ringR, r: rr });
+    const c = { x: cx + Math.cos(a) * ringR, z: cz + Math.sin(a) * ringR, r: rr };
+    if (openings.some((opening) => isPadColliderInOpening(cx, cz, c, opening))) continue;
+    out.push(c);
   }
   return out;
 }
@@ -641,6 +703,7 @@ const MODELS = {
   imprint: "/models/xy_item_imprint.glb",
   driftbottle: "/models/xy_item_driftbottle.glb",
   riverlamp: "/models/xy_item_riverlamp.glb",
+  paperboat: ARTIFACT_3D_REGISTRY.paper_boat.url!,
   companion: "/models/xy_pet_spirit_lighthouse.glb",
   stonelantern: "/models/xy_item_stonelantern.glb",
   bonfire: "/models/xy_item_bonfire.glb",
@@ -648,8 +711,21 @@ const MODELS = {
   kite: "/models/xy_item_kite.glb",
   shell: "/models/xy_item_shell.glb",
   nightflower: "/models/xy_item_nightflower.glb",
+  candle: ARTIFACT_3D_REGISTRY.candle.url!,
+  feather: ARTIFACT_3D_REGISTRY.feather.url!,
+  leafnote: ARTIFACT_3D_REGISTRY.leaf_note.url!,
+  starwish: ARTIFACT_3D_REGISTRY.star_wish.url!,
+  sail: ARTIFACT_3D_REGISTRY.sail.url!,
+  silentshell: ARTIFACT_3D_REGISTRY.silent_shell.url!,
+  glyphstone: ARTIFACT_3D_REGISTRY.glyph_stone.url!,
+  bloom: ARTIFACT_3D_REGISTRY.bloom.url!,
   avatar: "/models/xy_char_avatar.glb",
-  heroChar: "/models/xy_char_protagonist.glb?v=2", // ?v=2 缓存破坏:主角重导出加了 WalkLoop 等骨骼动画,旧 URL 在用户端被 SW/HTTP 缓存喂旧版(无动画)→ 走路没了;换新 URL 强制取新模型(重导出再改动画时递增此号)
+  villagerBase: "/models/xy_char_villager_base.glb",
+  memoryTree: "/models/xy_item_memory_tree.glb",
+  fishingBobber: "/models/xy_item_fishing_bobber.glb",
+  shootingStar: "/models/xy_fx_shooting_star.glb",
+  heroChar: "/models/xyshz_rigged.glb?v=5", // 新默认主角 xyshz；v=5 增加专用 RunLoop,长按移动切跑步
+  guardianChar: "/models/xy_char_protagonist.glb?v=2", // 旧动画守护者备选；?v=2 缓存破坏:重导出加了 WalkLoop 等骨骼动画
   pocoyo: "/models/xy_char_pocoyo.glb", // Pocoyo 主角(专用 rig 负责修正 FBX 轴向与落脚点)
   // Batch 5 · 村落建筑(三风格混搭)
   houseCottage: "/models/xy_house_cottage.glb",
@@ -723,6 +799,7 @@ const MODELS = {
   natFlowers: "/models/xy_nat_flowers.glb",
   natRock: "/models/xy_nat_rock_a.glb",
   natMushroom: "/models/xy_nat_mushroom.glb",
+  natCropSprout: "/models/xy_nat_crop_sprout.glb",
   // 小镇道具(替换程序化点缀)
   townParasol: "/models/xy_town_parasol.glb",
   townTowel: "/models/xy_town_towel.glb",
@@ -739,9 +816,8 @@ const MODELS = {
   townblock: "/models/688215b008dc48e8a47295ef1211afb6.glb", // 建筑街区(原生约 35×38×42,底在原点下 17.5)
   skyLantern: "/models/kmd.glb", // 天灯(放飞升空)
 } as const;
-// 重模型(写实地标/车/天灯,压缩后仍 1~3.5M)不参与首屏预载:各自在独立 Suspense
-// 边界内按需加载,既不阻塞首屏(地形/近百小物件先可见可走),也不与小模型抢首屏带宽。
-// 其余近百个小模型(几十 KB)照常预载,进入场景即秒到。
+// 重模型(写实地标/车/天灯)不参与首屏预载:各自在独立 Suspense 边界内按需加载。
+// 桌面端预载近百个小模型,移动端跳过顶层预载,避免导入探索 chunk 时触发一波请求/解析尖峰。
 const HEAVY_DEFER = new Set<string>([
   MODELS.bathhouse,
   MODELS.rhododendron,
@@ -750,35 +826,41 @@ const HEAVY_DEFER = new Set<string>([
   MODELS.skyLantern,
   MODELS.companion, // 灯塔精灵 4.4M：移出首屏关键路径，世界先可走、精灵随后淡入（见下方独立 Suspense）
 ]);
+const shouldPreloadLightModels = !isCoarsePointerDevice();
 Object.values(MODELS).forEach((u) => {
-  if (!HEAVY_DEFER.has(u)) useGLTF.preload(u);
+  if (shouldPreloadLightModels && !HEAVY_DEFER.has(u)) useGLTF.preload(u);
 });
 
-// 首页空闲(或 hover「上岛走走」)时由 Home 调用(import 本模块即已 preload 近百个非重小模型 = 进岛门所需)。
-// 这里在首页打开后,按优先级「顺序、串行」把进岛要用的重模型提前拉好并解析入缓存 →
-// 进岛时它们已就位,不再逐个 pop-in 顿帧(解决「进岛仍卡」)。
-// 为什么这次安全(避开之前 rIC-burst 预取重地标「与进岛抢资源 → 卡」的回退):
-//   ① 串行 await fetch:一次只下一个,先入浏览器缓存,不与首页/彼此抢带宽(生产友好);
-//   ② 下完再交 drei 解析(从缓存秒读)+ 200ms 间隔 → 解析摊到多帧,首页不卡;
-//   ③ 精灵最高优先立即预热;写实大地标按「小→大」串行,28M 浴场最后;
-//   ④ 重模型都非进岛关键路径(各自 Suspense),没预热完也只是回退到「进岛后再流式」=现状,
-//      且小模型预载完全不动 → 不会拖慢/挂起世界 reveal,无回退风险。
+// 首页空闲(或桌面 hover「上岛走走」)时由 Home 调用(import 本模块即已 preload 近百个非重小模型 = 进岛门所需)。
+// 触摸设备跳过重模型后台预热:移动端最容易在点按、横屏、Canvas 挂载时与 GLB 解析撞车。
+// 桌面再按「小→大」错峰交给 drei preload,避免手动 fetch 和 useGLTF 同时请求同一个重模型。
 // 这个工具导出与默认组件同文件是有意的(依赖本模块的 MODELS 表),HMR fast-refresh 的告警在此豁免。
 let _heavyWarmStarted = false;
 let _exploreActive = false;            // 用户已进岛 → 立刻停后台预热,把 CPU/带宽全让给进岛自身的加载
 let _warmAbort: AbortController | null = null;
 
-// ExploreMode 进/出岛时调用:进岛即停后台重模型预热——否则它的 fetch/解析会与进岛时的场景挂载
-// (52000 草 + 地形几何 + 模型解析)抢资源,反而让进岛更卡(这是「首页预取」最大的反作用,必须掐断)。
+// ExploreMode 进/出岛时调用:进岛即停后台重模型预热——否则解析会与进岛时的场景挂载
+// (草丛 + 地形几何 + 模型解析)抢资源,反而让进岛更卡。
 function setExploreActive(active: boolean): void {
   _exploreActive = active;
   if (active) _warmAbort?.abort();
+}
+
+function isCoarsePointerDevice(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return Boolean(
+    window.matchMedia?.("(pointer: coarse)").matches ||
+    navigator.maxTouchPoints > 0 ||
+    /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(ua),
+  );
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function prefetchExploreAssets(): void {
   if (_heavyWarmStarted) return; // 幂等:首页 idle 与 hover/点按可能各调一次
   _heavyWarmStarted = true;
+  if (isCoarsePointerDevice()) return;
   useGLTF.preload(MODELS.companion); // 精灵进岛即在 → 最高优先,立即预热
   // 写实/较重大件按「小→大」串行预热(skyLantern 2.9M → 浴场 28M 最后)
   const order = [MODELS.skyLantern, MODELS.townblock, MODELS.qiche, MODELS.rhododendron, MODELS.bathhouse];
@@ -790,10 +872,8 @@ export function prefetchExploreAssets(): void {
     for (const url of order) {
       if (_exploreActive || sig.aborted) return; // 已进岛 → 停止,让进岛优先(其余重模型进岛后各自 Suspense 流式)
       try {
-        await fetch(url, { signal: sig }).then((r) => r.arrayBuffer()); // 串行下入浏览器缓存(可 await/可中止,不抢带宽)
-        if (_exploreActive) return;
-        useGLTF.preload(url);                            // 交 drei 解析入缓存(从浏览器缓存读)
-        await new Promise((res) => setTimeout(res, 200)); // 给解析/主线程喘息,再起下一个
+        useGLTF.preload(url);                            // 交 drei 拉取并解析入缓存
+        await new Promise((res) => setTimeout(res, 900)); // 给解析/主线程喘息,再起下一个
       } catch {
         /* abort 或单个失败:不影响后续与进岛(进岛仍可各自 Suspense 流式) */
       }
@@ -1056,8 +1136,8 @@ function normalizeCompanionAnimation(value: string | undefined): CompanionAnimat
 }
 
 // 轻飘的 glb 道具(风筝等):上下浮 + 轻摆。
-function FloatSway({ url, grad, position, scale, amp = 0.4, speed = 1.0, tint }: {
-  url: string; grad?: THREE.Texture; position: [number, number, number]; scale?: number; amp?: number; speed?: number; tint?: string;
+function FloatSway({ url, grad, position, scale, amp = 0.4, speed = 1.0, tint, baseRotation = [0, 0, 0] }: {
+  url: string; grad?: THREE.Texture; position: [number, number, number]; scale?: number; amp?: number; speed?: number; tint?: string; baseRotation?: [number, number, number];
 }) {
   const { scene } = useGLTF(url);
   const obj = useMemo(() => toonifyScene(scene, grad, tint), [scene, grad, tint]);
@@ -1067,10 +1147,11 @@ function FloatSway({ url, grad, position, scale, amp = 0.4, speed = 1.0, tint }:
     const g = ref.current; if (!g) return;
     const t = s.clock.elapsedTime;
     g.position.y = baseY + Math.sin(t * speed) * amp;
-    g.rotation.z = Math.sin(t * speed * 0.8) * 0.22;
-    g.rotation.y = Math.sin(t * speed * 0.5) * 0.18;
+    g.rotation.x = baseRotation[0];
+    g.rotation.y = baseRotation[1] + Math.sin(t * speed * 0.5) * 0.18;
+    g.rotation.z = baseRotation[2] + Math.sin(t * speed * 0.8) * 0.22;
   });
-  return <group ref={ref} position={position}><primitive object={obj} scale={scale} /></group>;
+  return <group ref={ref} position={position} rotation={baseRotation}><primitive object={obj} scale={scale} /></group>;
 }
 
 // 写实精模:克隆但保留原始 PBR 材质(只关阴影),不做 toon 平涂
@@ -1083,7 +1164,20 @@ function rawClone(src: THREE.Object3D): THREE.Object3D {
   return root;
 }
 
-function toonifyScene(src: THREE.Object3D, grad?: THREE.Texture, tint?: string): THREE.Object3D {
+type ToonTint = string | {
+  default?: string;
+  materials?: Record<string, string>;
+  emissiveIntensity?: number;
+};
+
+function tintForMaterial(tint: ToonTint | undefined, materialName: string): string | undefined {
+  if (!tint) return undefined;
+  if (typeof tint === "string") return tint;
+  const normalized = materialName.toLowerCase();
+  return tint.materials?.[materialName] ?? tint.materials?.[normalized] ?? tint.default;
+}
+
+function toonifyScene(src: THREE.Object3D, grad?: THREE.Texture, tint?: ToonTint): THREE.Object3D {
   const root = src.clone(true);
   const cache = new Map<THREE.Material, THREE.Material>();
   const conv = (m: THREE.Material): THREE.Material => {
@@ -1091,11 +1185,14 @@ function toonifyScene(src: THREE.Object3D, grad?: THREE.Texture, tint?: string):
     if (hit) return hit;
     const std = m as THREE.MeshStandardMaterial;
     const base = std.color ? std.color.clone() : new THREE.Color("#ffffff");
+    const name = m.name || "";
     let out: THREE.Material;
-    if (/emissive/i.test(m.name || "")) {
+    if (/emissive/i.test(name)) {
       const lit = std.emissive && (std.emissive.r || std.emissive.g || std.emissive.b);
-      const col = tint ? new THREE.Color(tint) : lit ? std.emissive.clone() : base;
-      out = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 2.2, toneMapped: false, transparent: std.transparent, opacity: std.opacity ?? 1 });
+      const tintColor = tintForMaterial(tint, name);
+      const col = tintColor ? new THREE.Color(tintColor) : lit ? std.emissive.clone() : base;
+      const emissiveIntensity = typeof tint === "string" ? 2.2 : tint?.emissiveIntensity ?? 2.2;
+      out = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity, toneMapped: false, transparent: std.transparent, opacity: std.opacity ?? 1 });
     } else {
       out = new THREE.MeshToonMaterial({ color: base, gradientMap: grad ?? null });
     }
@@ -1167,17 +1264,48 @@ function GltfProp({
   position: [number, number, number];
   rotation?: [number, number, number];
   scale?: number | [number, number, number];
-  tint?: string;
-  spin?: { node: string; speed: number }; // 让某个子节点绕自身 Z 轴自转(如风车 Blades)
+  tint?: ToonTint;
+  spin?: { node: string; speed: number; axis?: "x" | "y" | "z" }; // 让某个子节点绕自身局部轴自转(如风车 Blades)
   raw?: boolean; // 保留 glb 原始写实材质(不 toon 化)——给写实精模用(汽车/植物/建筑)
 }) {
   const { scene } = useGLTF(url);
   const obj = useMemo(() => (raw ? rawClone(scene) : toonifyScene(scene, grad, tint)), [scene, grad, tint, raw]);
   const spinNode = useMemo(() => (spin ? obj.getObjectByName(spin.node) : undefined), [obj, spin]);
   useFrame((_, delta) => {
-    if (spinNode && spin) spinNode.rotateZ(delta * spin.speed);
+    if (!spinNode || !spin) return;
+    const amount = delta * spin.speed;
+    if (spin.axis === "x") spinNode.rotateX(amount);
+    else if (spin.axis === "y") spinNode.rotateY(amount);
+    else spinNode.rotateZ(amount);
   });
   return <primitive object={obj} position={position} rotation={rotation} scale={scale} />;
+}
+
+type RitualArtifactKey = keyof typeof ARTIFACT_3D_REGISTRY;
+type RitualArtifactPlacement = {
+  key: RitualArtifactKey;
+  x: number;
+  z: number;
+  rot?: number;
+  scale?: number;
+};
+
+function RitualArtifactProp({ item, grad }: { item: RitualArtifactPlacement; grad: THREE.Texture }) {
+  const entry = ARTIFACT_3D_REGISTRY[item.key];
+  if (entry.kind !== "glb" || !entry.url) return null;
+
+  const y = Math.max(exGroundY(item.x, item.z), 0) + (entry.yOffset ?? 0);
+  const scale = item.scale ?? entry.scale;
+
+  return (
+    <GltfProp
+      url={entry.url}
+      grad={grad}
+      position={[item.x, y, item.z]}
+      rotation={[0, item.rot ?? 0, 0]}
+      scale={scale}
+    />
+  );
 }
 
 // 可开的汽车:读模块级 carState,逐帧更新位置/朝向;toon 材质(传 grad,不再 raw)
@@ -1399,7 +1527,6 @@ function TireDust() {
 // 地坪外缘另铺一圈「草坡裙边」:从 padTop(padR 处)向外、向下接到自然地形 →
 // 消除地坪侧壁外露的竖直墙与「走过去陷下去/踩空/侧壁穿模」。玩家在裙边范围内贴地高度垫到 padTop。
 const LANDMARK_SKIRT = 14; // 裙边外扩宽度(padR 之外再铺这么宽的缓坡草地,够接到周围地形)
-const LANDMARK_SEG = 48; // 裙边环形分段(够圆滑又不掉帧)
 function landmarkPadTop(cx: number, cz: number, padR: number): number {
   let m = exGroundY(cx, cz);
   for (let a = 0; a < 10; a++) {
@@ -1408,47 +1535,17 @@ function landmarkPadTop(cx: number, cz: number, padR: number): number {
   }
   return m + 0.05;
 }
-// 裙边几何:内圈顶(padTop) → 外圈接到自然地形高度的缓坡环。外沿略低于 padTop,
-// 既盖住地坪侧壁、又给玩家一条从地面慢慢走到坪顶的平顺坡道(坡度平缓,不颠不踩空)。
-function buildPadSkirt(cx: number, cz: number, padR: number, padTop: number): THREE.BufferGeometry {
-  const seg = LANDMARK_SEG;
-  const rows = 2; // 内圈(padR) + 外圈(padR+SKIRT)
-  const pos = new Float32Array(rows * seg * 3);
-  const nor = new Float32Array(rows * seg * 3);
-  const idx = new Uint32Array((rows - 1) * seg * 6);
-  for (let r = 0; r < rows; r++) {
-    const rr = padR + (r / (rows - 1)) * LANDMARK_SKIRT;
-    for (let s = 0; s < seg; s++) {
-      const ang = (s / seg) * Math.PI * 2;
-      const wx = cx + Math.cos(ang) * rr;
-      const wz = cz + Math.sin(ang) * rr;
-      // 内圈 = 坪顶;外圈 = 该处自然地形(再封顶到 padTop),保证与外面地形严丝合缝不悬空
-      const y = r === 0 ? padTop : Math.min(padTop, exGroundY(wx, wz));
-      const o = (r * seg + s) * 3;
-      pos[o] = wx; pos[o + 1] = y; pos[o + 2] = wz;
-    }
-  }
-  // 法线朝上(平铺缓坡,后期描边 + toon 平涂即可,不必精确按坡向)
-  for (let i = 0; i < nor.length; i++) nor[i] = i % 3 === 1 ? 1 : 0;
-  for (let s = 0; s < seg; s++) {
-    const s2 = (s + 1) % seg;
-    const o = s * 6;
-    idx[o] = s; idx[o + 1] = seg + s; idx[o + 2] = s2;
-    idx[o + 3] = s2; idx[o + 4] = seg + s; idx[o + 5] = seg + s2;
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  g.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
-  g.setIndex(new THREE.BufferAttribute(idx, 1));
-  return g;
-}
-// 三座大地标的(中心 / 地坪半径 / 坪顶高度)——挂载后供 landmarkGroundLift 读,贴地与裙边共用同一份。
-const LANDMARKS: { x: number; z: number; padR: number; padTop: number }[] = [];
+// 三座大地标的(中心 / 地坪半径 / 坪顶高度)。保持模块级静态数据,让地形、草丛、贴地与渲染共用同一份高度。
+const LANDMARK_PADS = [
+  { x: BLOCK.x, z: BLOCK.z, padR: 7.5, padTop: landmarkPadTop(BLOCK.x, BLOCK.z, 7.5) },
+  { x: MANOR.x, z: MANOR.z, padR: 9, padTop: landmarkPadTop(MANOR.x, MANOR.z, 9) },
+  { x: BATH.x, z: BATH.z, padR: 10, padTop: landmarkPadTop(BATH.x, BATH.z, 10) },
+] as const;
 // 玩家/车贴地用:在任一地标地坪(+裙边)范围内,把地表高度抬到 padTop → 走上去稳稳落地,不陷下去。
 // 越靠中心权重越高(到 padR 外缘 SKIRT 距离内线性过渡到 0),与裙边 mesh 的可见坡度一致。
 function landmarkGroundLift(wx: number, wz: number): number {
   let lift = 0;
-  for (const p of LANDMARKS) {
+  for (const p of LANDMARK_PADS) {
     const dx = wx - p.x, dz = wz - p.z;
     const d = Math.sqrt(dx * dx + dz * dz);
     const edge = p.padR + LANDMARK_SKIRT;
@@ -1462,24 +1559,25 @@ function landmarkGroundLift(wx: number, wz: number): number {
   return lift;
 }
 // 散落物(树/石/灌木)避让:落在任一地标地坪或裙边缓坡上的点都拒收 →
-// 杜绝「树长在裙边草坡上却按原地形贴地 → 沉进坡里/穿模」。LANDMARKS 在挂载后才有值,
-// 散落 useMemo 先跑、地标后挂载时本函数返回 false(用 padR 静态兜底),后者渲染期裙边会盖在上面,无穿模。
+// 杜绝「树长在裙边草坡上却按原地形贴地 → 沉进坡里/穿模」。LANDMARK_PADS 是模块级静态数据,
+// 散落 useMemo 和地标渲染共用同一组地坪范围,不依赖挂载顺序。
 function onLandmarkPad(wx: number, wz: number): boolean {
-  for (const p of LANDMARKS) {
+  for (const p of LANDMARK_PADS) {
     if (Math.hypot(wx - p.x, wz - p.z) < p.padR + LANDMARK_SKIRT) return true;
   }
-  // 静态兜底(三座地标坐标固定):首次散落时 LANDMARKS 尚未登记,用常量半径避免漏避让
-  if (Math.hypot(wx - BATH.x, wz - BATH.z) < 10 + LANDMARK_SKIRT) return true;
-  if (Math.hypot(wx - BLOCK.x, wz - BLOCK.z) < 7.5 + LANDMARK_SKIRT) return true;
-  if (Math.hypot(wx - MANOR.x, wz - MANOR.z) < 9 + LANDMARK_SKIRT) return true;
   return false;
 }
 // 延迟挂载:进岛后过 ms 毫秒才渲染 children。给写实重地标(浴场 28M/街区/杜鹃/山庄)用 →
 // 它们的 GltfProp 深 clone(大几何同步开销)从「进岛首帧」挪到「世界已显示、可走之后」,
 // 错开几秒逐个到位 → 进岛瞬间只渲地形+小物件(轻),不再被重地标 clone 卡出长空白。
 function DelayedMount({ ms, children }: { ms: number; children: React.ReactNode }) {
-  const [show, setShow] = useState(false);
+  const [show, setShow] = useState(ms <= 0);
   useEffect(() => {
+    if (ms <= 0) {
+      setShow(true);
+      return;
+    }
+    setShow(false);
     const t = window.setTimeout(() => setShow(true), ms);
     return () => window.clearTimeout(t);
   }, [ms]);
@@ -1491,9 +1589,9 @@ function DelayedMount({ ms, children }: { ms: number; children: React.ReactNode 
 //      且保住 Sobel 手绘风;
 //   ② 仍重度卡(FPS<28):再关掉最贵的 Sobel 全屏后期 + dpr 进一步降到 0.85,优先保流畅。
 // useFrame 只读 dt,仅在跨档时触发一次 setDpr/setState,符合「useFrame 不每帧 setState」红线。
-function PerfWatch({ onDegrade }: { onDegrade: () => void }) {
+function PerfWatch({ tier, onDegrade }: { tier: PerfTier; onDegrade: () => void }) {
   const setDpr = useThree((s) => s.setDpr);
-  const stage = useRef(0); // 0=满画质 1=降dpr 2=降dpr+关Sobel
+  const stage = useRef(tier === "low" ? 1 : 0); // 0=满画质 1=降dpr 2=低dpr+关Sobel/继续降
   const acc = useRef({ t: 0, n: 0, mild: 0, hard: 0 });
   useFrame((_, dt) => {
     if (stage.current >= 2) return;
@@ -1505,7 +1603,11 @@ function PerfWatch({ onDegrade }: { onDegrade: () => void }) {
       a.mild = fps < 46 ? a.mild + 1 : 0;
       a.hard = fps < 28 ? a.hard + 1 : 0;
       if (stage.current < 1 && a.mild >= 2) { stage.current = 1; setDpr(1); }   // 连续 2s 轻度卡 → 降 dpr
-      if (a.hard >= 2) { stage.current = 2; setDpr(0.85); onDegrade(); }        // 连续 2s 重度卡 → 再关 Sobel
+      if (a.hard >= 2) {
+        stage.current = 2;
+        setDpr(tier === "low" ? 0.75 : 0.85);
+        onDegrade();
+      } // 连续 2s 重度卡 → 再关 Sobel/低档继续降像素
       a.t = 0;
       a.n = 0;
     }
@@ -1513,35 +1615,16 @@ function PerfWatch({ onDegrade }: { onDegrade: () => void }) {
   return null;
 }
 
-function LandmarkOnPad({ cfg, url, padR, padColor, grad, raw = true }: {
+function LandmarkOnPad({ cfg, url, padR, grad, raw = true }: {
   cfg: { x: number; z: number; rot: number; scale: number; base: number };
   url: string;
   padR: number;
-  padColor: string;
   grad: THREE.Texture;
   raw?: boolean; // 默认保留写实材质(浴场/街区);raw={false} 走 toon 卡通化(山庄复用村屋精模)
 }) {
   const padTop = useMemo(() => landmarkPadTop(cfg.x, cfg.z, padR), [cfg, padR]);
-  // 裙边材质用与周围草地接近的草绿,让它自然融入地形(不是突兀的水泥裙)
-  const skirtMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#6fb37e", gradientMap: grad }), [grad]);
-  const skirtGeo = useMemo(() => buildPadSkirt(cfg.x, cfg.z, padR, padTop), [cfg, padR, padTop]);
-  useEffect(() => () => { skirtMat.dispose(); skirtGeo.dispose(); }, [skirtMat, skirtGeo]);
-  // 挂载期把本地标登记进 LANDMARKS,供 landmarkGroundLift 贴地读取(确定性,仅一次)
-  useEffect(() => {
-    const rec = { x: cfg.x, z: cfg.z, padR, padTop };
-    LANDMARKS.push(rec);
-    return () => { const i = LANDMARKS.indexOf(rec); if (i >= 0) LANDMARKS.splice(i, 1); };
-  }, [cfg, padR, padTop]);
   return (
     <group>
-      {/* 地坪(顶面 = padTop,往下 10 单位埋住地形起伏) */}
-      <mesh position={[cfg.x, padTop - 5, cfg.z]} receiveShadow>
-        <cylinderGeometry args={[padR, padR * 1.06, 10, 40]} />
-        <meshToonMaterial color={padColor} gradientMap={grad} />
-      </mesh>
-      {/* 裙边缓坡:把地坪侧壁外露填成草坡,消除踩空/穿模(见 buildPadSkirt) */}
-      <mesh geometry={skirtGeo} material={skirtMat} receiveShadow />
-      {/* 建筑(底贴地坪顶) */}
       <GltfProp url={url} raw={raw} grad={grad} position={[cfg.x, padTop + cfg.base * cfg.scale, cfg.z]} rotation={[0, cfg.rot, 0]} scale={cfg.scale} />
     </group>
   );
@@ -1729,6 +1812,51 @@ function AvatarPreview({ avatar }: { avatar: Avatar }) {
   );
 }
 
+type VillagerMaterialName = "Skin" | "Hair" | "Shirt" | "Pants" | "Hat" | "Eye" | "Blush";
+
+function GltfNpcCharacter({ avatar }: { avatar: Avatar }) {
+  const { scene } = useGLTF(MODELS.villagerBase);
+  const grad = useMemo(() => makeToonGradient(), []);
+  const mats = useMemo(
+    () => ({
+      Skin: new THREE.MeshToonMaterial({ gradientMap: grad }),
+      Hair: new THREE.MeshToonMaterial({ gradientMap: grad }),
+      Shirt: new THREE.MeshToonMaterial({ gradientMap: grad }),
+      Pants: new THREE.MeshToonMaterial({ gradientMap: grad }),
+      Hat: new THREE.MeshToonMaterial({ color: "#e0c074", gradientMap: grad }),
+      Eye: new THREE.MeshToonMaterial({ color: "#222732", gradientMap: grad }),
+      Blush: new THREE.MeshBasicMaterial({ color: "#ff9fb0", transparent: true, opacity: 0.62 }),
+    }),
+    [grad],
+  );
+  const obj = useMemo(() => {
+    const c = scene.clone(true);
+    const convert = (src: THREE.Material): THREE.Material => {
+      const mapped = (mats as Record<VillagerMaterialName, THREE.Material>)[src.name as VillagerMaterialName];
+      return mapped ?? src.clone();
+    };
+    c.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(convert) : convert(mesh.material as THREE.Material);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+    });
+    return c;
+  }, [scene, mats]);
+  useLayoutEffect(() => {
+    mats.Skin.color.set(avatar.skin);
+    mats.Hair.color.set(avatar.hair);
+    mats.Shirt.color.set(avatar.shirt);
+    mats.Pants.color.set(avatar.pants);
+    const hat = obj.getObjectByName("Hat");
+    if (hat) hat.visible = avatar.hat;
+  }, [avatar, mats, obj]);
+  useEffect(() => () => { grad.dispose(); Object.values(mats).forEach((x) => x.dispose()); }, [grad, mats]);
+  return <primitive object={obj} scale={1.0} />;
+}
+
 // glb 主角:载入 Q版 base mesh,按材质槽名(Skin/Hair/Shirt/Pants)套 toon 并随「捏人」实时改色。
 // 含独立四肢节点(LegL/LegR/ArmL/ArmR,枢轴在髋/肩),通过 ref 暴露给 Player 做走路/跳跃摆动。
 function GltfAvatar({ avatar, legL, legR, armL, armR }: {
@@ -1782,9 +1910,106 @@ function GltfAvatar({ avatar, legL, legR, armL, armR }: {
   return <primitive object={obj} scale={0.72} rotation={[0, Math.PI, 0]} />;
 }
 
-// glb 主角「记忆的守护者」:载入精修角色,保留其自带配色 + 海浪贴图(有 map 的材质保图) + Emissive_* 发光。
+// xyshz 新默认主角:Blender 重新绑骨骼后的 GLB；移动时播放自带 WalkLoop，其他动作仍交给 Player 的整组反馈。
+// GLTFLoader 实测包围盒约 36.9 × 99.9 × 67.2，Y 轴已经竖直；缩放到探索模式角色量级后补足落脚点。
+const XYSHZ_MODEL_SCALE = 0.0145;
+const XYSHZ_FOOT_OFFSET_Y = 49.9846 * XYSHZ_MODEL_SCALE;
+const XYSHZ_MODEL_ROTATION: [number, number, number] = [0, -Math.PI / 2, 0];
+const XYSHZ_WALK_TIMESCALE = 1.55;
+const XYSHZ_WALK_BOB = 0.055;
+const XYSHZ_WALK_ARM_SWING = 0.11;
+const XYSHZ_WALK_FOREARM_SWING = 0.05;
+const XYSHZ_RUN_HOLD_SECONDS = 0.55;
+const XYSHZ_RUN_TIMESCALE = 1.18;
+const XYSHZ_RUN_BOB = 0.075;
+const XYSHZ_RUN_ARM_SWING = 0.16;
+const XYSHZ_RUN_FOREARM_SWING = 0.075;
+
+function GltfHero({ actionRef }: { actionRef?: React.RefObject<CharacterActionClip> }) {
+  const { scene, animations } = useGLTF(MODELS.heroChar);
+  const ref = useRef<THREE.Group>(null);
+  const heroWalkBones = useRef<Record<string, THREE.Object3D | null>>({});
+  const walkBlend = useRef(0);
+  const obj = useMemo(() => {
+    const root = cloneSkeleton(scene);
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.castShadow = false;
+        m.receiveShadow = false;
+        m.frustumCulled = false;
+      }
+    });
+    return root;
+  }, [scene]);
+  const { actions, mixer } = useAnimations(animations, ref);
+  const activeClip = useRef<string>("");
+  const activeAction = useRef<THREE.AnimationAction | null>(null);
+  useEffect(() => {
+    heroWalkBones.current = {
+      UpperArmL: obj.getObjectByName("UpperArmL") ?? null,
+      ForeArmL: obj.getObjectByName("ForeArmL") ?? null,
+      UpperArmR: obj.getObjectByName("UpperArmR") ?? null,
+      ForeArmR: obj.getObjectByName("ForeArmR") ?? null,
+    };
+  }, [obj]);
+  useFrame((state, dt) => {
+    const requested = actionRef?.current ?? "Idle";
+    const next = requested === "RunLoop" ? "RunLoop" : requested === "WalkLoop" ? "WalkLoop" : "Idle";
+    if (next !== activeClip.current) {
+      activeAction.current?.fadeOut(0.12);
+      const nextAction = actions[next];
+      if (nextAction) {
+        nextAction.reset();
+        nextAction.clampWhenFinished = false;
+        nextAction.timeScale = next === "RunLoop" ? XYSHZ_RUN_TIMESCALE : next === "WalkLoop" ? XYSHZ_WALK_TIMESCALE : 1;
+        const looped = next === "RunLoop" || next === "WalkLoop";
+        nextAction.setLoop(looped ? THREE.LoopRepeat : THREE.LoopOnce, looped ? Infinity : 1);
+        nextAction.fadeIn(next === "RunLoop" ? 0.12 : next === "WalkLoop" ? 0.18 : 0.12).play();
+      }
+      activeAction.current = nextAction ?? null;
+      activeClip.current = next;
+    }
+
+    const root = ref.current;
+    const targetBlend = next === "RunLoop" || next === "WalkLoop" ? 1 : 0;
+    walkBlend.current += (targetBlend - walkBlend.current) * Math.min(1, dt * 9);
+    const blend = walkBlend.current;
+    if (!root) return;
+
+    const action = activeAction.current;
+    const duration = Math.max(0.001, action?.getClip().duration ?? 1);
+    const time = action?.time ?? state.clock.elapsedTime;
+    const phase = (time / duration) * Math.PI * 2;
+    const swing = Math.sin(phase);
+    const bob = next === "RunLoop" ? XYSHZ_RUN_BOB : XYSHZ_WALK_BOB;
+    const armSwing = next === "RunLoop" ? XYSHZ_RUN_ARM_SWING : XYSHZ_WALK_ARM_SWING;
+    const foreArmSwing = next === "RunLoop" ? XYSHZ_RUN_FOREARM_SWING : XYSHZ_WALK_FOREARM_SWING;
+    root.position.y = Math.abs(Math.sin(phase)) * bob * blend;
+    if (blend <= 0.001) return;
+
+    const bones = heroWalkBones.current;
+    if (bones.UpperArmL) bones.UpperArmL.rotation.x += -swing * armSwing * blend;
+    if (bones.ForeArmL) bones.ForeArmL.rotation.x += swing * foreArmSwing * blend;
+    if (bones.UpperArmR) bones.UpperArmR.rotation.x += swing * armSwing * blend;
+    if (bones.ForeArmR) bones.ForeArmR.rotation.x += -swing * foreArmSwing * blend;
+  });
+  useEffect(() => () => { mixer.stopAllAction(); }, [mixer]);
+  return (
+    <group ref={ref}>
+      <primitive
+        object={obj}
+        scale={XYSHZ_MODEL_SCALE}
+        rotation={XYSHZ_MODEL_ROTATION}
+        position={[0, XYSHZ_FOOT_OFFSET_Y, 0]}
+      />
+    </group>
+  );
+}
+
+// 旧 glb 主角「记忆的守护者」:载入精修角色,保留其自带配色 + 海浪贴图(有 map 的材质保图) + Emissive_* 发光。
 // 暴露 LegL/LegR/ArmL/ArmR + Cape 节点给 Player 做待机兜底;运动/手势优先播放 GLB 内 NLA 动作。
-function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, cape, faces, actionRef }: {
+function GltfGuardian({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, cape, faces, actionRef }: {
   legL?: React.RefObject<THREE.Object3D | null>;
   legR?: React.RefObject<THREE.Object3D | null>;
   armL?: React.RefObject<THREE.Object3D | null>;
@@ -1797,7 +2022,7 @@ function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, ca
   faces?: React.RefObject<Record<string, THREE.Object3D> | null>;
   actionRef?: React.RefObject<CharacterActionClip>;
 }) {
-  const { scene, animations } = useGLTF(MODELS.heroChar);
+  const { scene, animations } = useGLTF(MODELS.guardianChar);
   const ref = useRef<THREE.Group>(null);
   const grad = useMemo(() => makeToonGradient(), []);
   // 卡通描边:法线外扩的背面黑壳(inverted hull),让角色轮廓清晰、从背景里跳出来
@@ -1890,9 +2115,9 @@ function GltfHero({ legL, legR, armL, armR, shinL, shinR, foreArmL, foreArmR, ca
 }
 
 // 可切换主角的种类
-type CharKind = "hero" | "pocoyo" | "avatar";
-const CHAR_ORDER: CharKind[] = ["hero", "pocoyo", "avatar"];
-const CHAR_LABEL: Record<CharKind, string> = { hero: "记忆的守护者", pocoyo: "Pocoyo", avatar: "用捏的人" };
+type CharKind = "hero" | "guardian" | "pocoyo" | "avatar";
+const CHAR_ORDER: CharKind[] = ["hero", "guardian", "pocoyo", "avatar"];
+const CHAR_LABEL: Record<CharKind, string> = { hero: "心屿守护者", guardian: "记忆的守护者", pocoyo: "Pocoyo", avatar: "用捏的人" };
 
 // Pocoyo 的 FBX 转 GLB 后仍保留「头在 -Z、脚在 +Z」的卧倒轴向;Three.js 里 Y 才是站立方向。
 // 下面数值来自 Blender/Three 包围盒实测:Z 长 1.0114,旋正后脚底 minY=-0.3367。
@@ -2022,7 +2247,7 @@ function Player({
   const prevCheer = useRef(0); // 上帧拾取计数(变化 → 欢呼)
   const cheerT = useRef(0); // 欢呼剩余时长
   const facesRef = useRef<Record<string, THREE.Object3D> | null>(null); // 4 套表情节点(GltfHero 填充)
-  const characterActionRef = useRef<CharacterActionClip>("Idle"); // 当前角色动作:守护者播 GLB clip,其余角色走程序动作
+  const characterActionRef = useRef<CharacterActionClip>("Idle"); // 当前角色动作:旧守护者播完整 GLB clip，新主角移动时播 WalkLoop/RunLoop 骨骼 clip
   const idleT = useRef(0); // 连续待机时长(→ 久站坐下 + 平静表情)
   const curiousT = useRef(0); // 好奇表情剩余时长(靠近 NPC 触发)
   const prevNear = useRef(-1); // 上帧最近 NPC(检测靠近边沿)
@@ -2032,6 +2257,7 @@ function Player({
   const carPrompt = useRef<"enter" | "exit" | null>(null); // 上/下车提示状态(变化时回调 UI)
   const facing = useRef(0);
   const walkPhase = useRef(0);
+  const moveHoldT = useRef(0);
   const vel = useRef({ x: 0, z: 0 }); // 当前水平速度(用于加速/减速平滑)
   const vy = useRef(0); // 垂直速度(跳跃)
   const airborne = useRef(false); // 是否腾空
@@ -2047,6 +2273,8 @@ function Player({
   const noteDZ = useRef<number[]>([]);
   const noteSpin = useRef<number[]>([]); // 音符旋摆量
   const noteCursor = useRef(0);          // 下一个可用音符槽
+  const camLook = useRef(new THREE.Vector3(0, 1.5, 0)); // 平滑注视点,减少地形/输入抖动带来的晕眩
+  const camLookReady = useRef(false);
   const fluteGrad = useMemo(() => makeToonGradient(), []);
   const fluteMats = useMemo(() => ({
     body: new THREE.MeshToonMaterial({ color: "#e6cd9c", gradientMap: fluteGrad }), // 竹身
@@ -2075,7 +2303,8 @@ function Player({
     // ── 开车:E 在车旁上车 / 车上下车 ──
     // 阈值留出余量:车碰撞把人推到 ~2.85 处,判定取 4.2 避免在边界抖动时按 E 落空。
     const CAR_BOARD_DIST = 4.2;
-    const carDist = Math.hypot(pos.x - carState.x, pos.z - carState.z);
+    const carDist2 = dist2(pos.x, pos.z, carState.x, carState.z);
+    const carBoardDist2 = CAR_BOARD_DIST * CAR_BOARD_DIST;
     if (input.action) {
       input.action = false;
       if (carState.driving) {
@@ -2083,11 +2312,11 @@ function Player({
         pos.x = carState.x + Math.cos(carState.heading) * 2.6; // 下车站到车侧
         pos.z = carState.z - Math.sin(carState.heading) * 2.6;
         playSfx("tap"); stopEngine(); // 下车:停引擎
-      } else if (carDist < CAR_BOARD_DIST) {
+      } else if (carDist2 < carBoardDist2) {
         onCarEnter?.(); // 走近车按 E → 弹「选地图」菜单(当前岛 / 林间土路);不直接开走
       }
     }
-    const prompt = carState.driving ? "exit" : carDist < CAR_BOARD_DIST ? "enter" : null;
+    const prompt = carState.driving ? "exit" : carDist2 < carBoardDist2 ? "enter" : null;
     if (prompt !== carPrompt.current) { carPrompt.current = prompt; onCar?.(prompt); }
     if (carState.driving) {
       g.visible = false; // 坐进车里,藏起小人
@@ -2120,7 +2349,15 @@ function Player({
       const cb = 13.5 + sf * 4, cu = 7.2 + sf * 1.2; // 相机跟在车后上方
       _camTarget.set(carState.x - Math.sin(carState.heading) * cb, _cgy + cu, carState.z - Math.cos(carState.heading) * cb);
       camera.position.lerp(_camTarget, Math.min(1, dt * 3.2)); // 镜头跟车更跟手(原 2.6 偏滞后)
-      camera.lookAt(carState.x, _cgy + 1.3, carState.z);
+      _camLookTarget.set(carState.x, _cgy + 1.3, carState.z);
+      if (!camLookReady.current) {
+        camLook.current.copy(_camLookTarget);
+        camLookReady.current = true;
+      } else {
+        camLook.current.lerp(_camLookTarget, Math.min(1, dt * 6));
+      }
+      camera.lookAt(camLook.current);
+      moveHoldT.current = 0;
       return; // 跳过走路逻辑
     }
     g.visible = true;
@@ -2131,6 +2368,10 @@ function Player({
     _right.crossVectors(_fwd, _up).normalize();
     _move.set(0, 0, 0).addScaledVector(_fwd, -input.y).addScaledVector(_right, input.x);
     const moving = _move.lengthSq() > 0.0001;
+    moveHoldT.current += moving ? dt : -dt * 2;
+    moveHoldT.current = Math.max(0, Math.min(XYSHZ_RUN_HOLD_SECONDS + 0.6, moveHoldT.current));
+    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + 0.35, moveHoldT.current) : 0;
+    const moveSpeed = PLAYER_SPEED * (1 + runBlend * 0.28);
 
     if (moving) {
       _move.normalize();
@@ -2146,8 +2387,8 @@ function Player({
     }
 
     // 加速/减速平滑(有重量感):速度向目标缓动,而非瞬时
-    const tvx = moving ? _move.x * PLAYER_SPEED : 0;
-    const tvz = moving ? _move.z * PLAYER_SPEED : 0;
+    const tvx = moving ? _move.x * moveSpeed : 0;
+    const tvz = moving ? _move.z * moveSpeed : 0;
     // 加减速更柔(降低「灵敏度」):base 调大 → 起步/收步更有重量感,不再一推就窜、一松就停。
     const accel = 1 - Math.pow(0.02, dt); // 帧率无关;时间常数 ~0.14s → ~0.26s
     vel.current.x += (tvx - vel.current.x) * accel;
@@ -2168,10 +2409,11 @@ function Player({
     }
     const speedMag = Math.hypot(vel.current.x, vel.current.z);
 
-    // 限制在岛上:海湾一侧允许多走出去一点(踏进浅滩),其余按 WALK_RADIUS
-    const r = Math.hypot(pos.x, pos.z);
-    const maxR = WALK_RADIUS * (1 + 0.16 * bayMask(pos.x, pos.z));
-    if (r > maxR) {
+    // 限制在岛上:常规岸线到护栏附近为止;海湾入口允许多走一点,能踏上沙滩/浅滩。
+    const maxR = walkableRadius(pos.x, pos.z);
+    const r2 = pos.x * pos.x + pos.z * pos.z;
+    if (r2 > maxR * maxR) {
+      const r = Math.sqrt(r2);
       pos.x *= maxR / r;
       pos.z *= maxR / r;
       vel.current.x *= 0.3;
@@ -2251,12 +2493,13 @@ function Player({
     sq.current = Math.max(0, sq.current - dt * 3.5); // 压扁回弹衰减
     characterActionRef.current = selectCharacterAction({
       moving: gait > 0.12,
+      running: character === "hero" && moveHoldT.current >= XYSHZ_RUN_HOLD_SECONDS,
       airborne: airborne.current,
       waveActive: waveT.current > 0,
       fluteActive: fluteT.current > 0,
       sitAmount: sit.current,
     });
-    const glbClipActive = character === "hero" && characterActionRef.current !== "Idle";
+    const glbClipActive = (character === "guardian" && characterActionRef.current !== "Idle") || (character === "hero" && (characterActionRef.current === "WalkLoop" || characterActionRef.current === "RunLoop"));
     const breathe = !airborne.current && gait < 0.12 ? Math.sin(s.clock.elapsedTime * 1.6) * 0.012 : 0; // 待机呼吸起伏
     const bob = airborne.current ? 0 : Math.abs(Math.sin(walkPhase.current)) * 0.088 * gait; // 走路身体起伏(每步一颠,弹性更足)
     const cheerHop = cheerT.current > 0 ? Math.sin((1 - cheerT.current / 0.85) * Math.PI) * 0.18 : 0; // 欢呼小跳
@@ -2367,7 +2610,7 @@ function Player({
     }
 
     // 笛子道具:吹奏时显形,随气息/指颤轻摆(rotation.x 由动画驱动,见下)。
-    const fluteOn = fluteT.current > 0 && !(character === "hero" && characterActionRef.current === "Flute");
+    const fluteOn = fluteT.current > 0 && !(character === "guardian" && characterActionRef.current === "Flute");
     if (fluteRef.current) {
       fluteRef.current.visible = fluteOn;
       if (fluteOn) fluteRef.current.rotation.x = 0.14 + Math.sin(tw * 11) * 0.03 + Math.sin(tw * 1.7) * 0.02; // 指颤(快) + 气息(慢)
@@ -2449,10 +2692,17 @@ function Player({
     // 注视点:平时看角色;放飞天灯后按 watch 缓动插值到天灯所在的高空(略抬,把上方烟花也带进画面)
     if (watch > 0) {
       const ly = lanternCam.gy + 1.3 + lanternRise(lanternCam.t) + 6;
-      camera.lookAt(pos.x + (lanternCam.x - pos.x) * watch, pos.y + 1.5 + (ly - (pos.y + 1.5)) * watch, pos.z + (lanternCam.z - pos.z) * watch);
+      _camLookTarget.set(pos.x + (lanternCam.x - pos.x) * watch, pos.y + 1.5 + (ly - (pos.y + 1.5)) * watch, pos.z + (lanternCam.z - pos.z) * watch);
     } else {
-      camera.lookAt(pos.x, pos.y + 1.5, pos.z);
+      _camLookTarget.set(pos.x, pos.y + 1.5, pos.z);
     }
+    if (!camLookReady.current) {
+      camLook.current.copy(_camLookTarget);
+      camLookReady.current = true;
+    } else {
+      camLook.current.lerp(_camLookTarget, Math.min(1, dt * 6));
+    }
+    camera.lookAt(camLook.current);
     // 🛠️ DEBUG 鸟瞰:离线截图脚本设 window.__XYCAM={px,py,pz,tx,ty,tz} 时,相机改用该机位(查穿模用)。
     // 生产环境无此全局 → 整段跳过,零影响。覆盖在常规运镜之后,直接定死机位。
     const _dbgCam = (window as unknown as { __XYCAM?: { px: number; py: number; pz: number; tx: number; ty: number; tz: number } }).__XYCAM;
@@ -2479,7 +2729,9 @@ function Player({
     <>
       <group ref={group}>
         {character === "hero" ? (
-          <GltfHero legL={legL} legR={legR} armL={armL} armR={armR} shinL={shinL} shinR={shinR} foreArmL={foreArmL} foreArmR={foreArmR} cape={cape} faces={facesRef} actionRef={characterActionRef} />
+          <GltfHero actionRef={characterActionRef} />
+        ) : character === "guardian" ? (
+          <GltfGuardian legL={legL} legR={legR} armL={armL} armR={armR} shinL={shinL} shinR={shinR} foreArmL={foreArmL} foreArmR={foreArmR} cape={cape} faces={facesRef} actionRef={characterActionRef} />
         ) : character === "pocoyo" ? (
           <GltfPocoyo actionRef={characterActionRef} />
         ) : (
@@ -2557,19 +2809,20 @@ function Wishes({
   useFrame((state) => {
     const pos = posRef.current;
     if (!pos) return;
-    spots.forEach((s, i) => {
-      if (taken.current[i]) return;
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[i];
+      if (taken.current[i]) continue;
       const g = refs.current[i];
       if (g) {
         g.position.y = s.gy + 0.55 + Math.sin(state.clock.elapsedTime * 2 + i) * 0.08;
         g.rotation.y += 0.02;
       }
-      if (Math.hypot(pos.x - s.x, pos.z - s.z) < 0.6) {
+      if (dist2(pos.x, pos.z, s.x, s.z) < 0.36) {
         taken.current[i] = true;
         if (g) g.visible = false;
         onCollect();
       }
-    });
+    }
   });
 
   return (
@@ -2599,6 +2852,60 @@ interface Imprint {
   words: string;
   line: string;
 }
+
+function GltfMemoryImprint({ imprint }: { imprint: Imprint }) {
+  const entry = IMPRINT_3D_REGISTRY[imprintShapeForEmotion(imprint.emotion)];
+  const { scene } = useGLTF(entry.url);
+  const grad = useMemo(() => makeToonGradient(), []);
+  const obj = useMemo(() => {
+    const root = scene.clone(true);
+    const tint = new THREE.Color(imprint.color);
+    const cache = new Map<THREE.Material, THREE.Material>();
+    const convert = (src: THREE.Material): THREE.Material => {
+      const hit = cache.get(src);
+      if (hit) return hit;
+      const material = /emissive/i.test(src.name || "")
+        ? new THREE.MeshStandardMaterial({ color: tint, emissive: tint, emissiveIntensity: 1.8, toneMapped: false })
+        : new THREE.MeshToonMaterial({ color: tint, gradientMap: grad });
+      cache.set(src, material);
+      return material;
+    };
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(convert) : convert(mesh.material as THREE.Material);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+    });
+    return root;
+  }, [scene, grad, imprint.color]);
+  useEffect(() => {
+    return () => {
+      grad.dispose();
+      const seen = new Set<THREE.Material>();
+      obj.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material as THREE.Material];
+        materials.forEach((material) => {
+          if (!seen.has(material)) {
+            seen.add(material);
+            material.dispose();
+          }
+        });
+      });
+    };
+  }, [grad, obj]);
+  return <primitive object={obj} scale={entry.scale} position={[0, entry.yOffset, 0]} />;
+}
+
+function GltfMemoryTree({ grad }: { grad: THREE.Texture }) {
+  const { scene } = useGLTF(MODELS.memoryTree);
+  const obj = useMemo(() => toonifyScene(scene, grad), [scene, grad]);
+  return <primitive object={obj} scale={1.0} />;
+}
+
 function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<THREE.Vector3>; imprints: Imprint[]; onPick: (i: number) => void }) {
   const refs = useRef<(THREE.Group | null)[]>([]);
   const taken = useRef<boolean[]>(imprints.map(() => false));
@@ -2612,44 +2919,29 @@ function MemoryImprints({ posRef, imprints, onPick }: { posRef: React.RefObject<
       }),
     [imprints],
   );
-  const mats = useMemo(() => imprints.map((im) => new THREE.MeshStandardMaterial({ color: im.color, emissive: im.color, emissiveIntensity: 1.4, toneMapped: false })), [imprints]);
-  useEffect(() => () => mats.forEach((m) => m.dispose()), [mats]);
-  // 印记按情绪取不同形状(呼应需求文档的「光点/贝壳/星/花/雨滴」)
-  const geos = useMemo(
-    () => ({
-      star: new THREE.OctahedronGeometry(0.26, 0), // 星/光点
-      shell: new THREE.ConeGeometry(0.24, 0.34, 7), // 贝壳
-      flower: new THREE.IcosahedronGeometry(0.24, 0), // 花苞
-      spark: new THREE.TetrahedronGeometry(0.3, 0), // 火花(尖)
-      drop: new THREE.SphereGeometry(0.2, 12, 12), // 雨滴/水珠
-    }),
-    [],
-  );
-  useEffect(() => () => Object.values(geos).forEach((g) => g.dispose()), [geos]);
-  const shapeOf = (e: string): "star" | "shell" | "flower" | "spark" | "drop" =>
-    e === "happy" ? "star" : e === "calm" ? "shell" : e === "lonely" ? "flower" : e === "angry" ? "spark" : "drop";
   useFrame((state) => {
     const pos = posRef.current;
     if (!pos) return;
-    spots.forEach((s, i) => {
-      if (taken.current[i]) return;
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[i];
+      if (taken.current[i]) continue;
       const g = refs.current[i];
       if (g) {
         g.position.y = s.gy + 0.7 + Math.sin(state.clock.elapsedTime * 1.6 + i) * 0.12;
         g.rotation.y += 0.015;
       }
-      if (Math.hypot(pos.x - s.x, pos.z - s.z) < 2.6) {
+      if (dist2(pos.x, pos.z, s.x, s.z) < 6.76) {
         taken.current[i] = true;
         if (g) g.visible = false;
         onPick(i);
       }
-    });
+    }
   });
   return (
     <>
       {spots.map((s, i) => (
         <group key={i} ref={(el) => { refs.current[i] = el; }} position={[s.x, s.gy + 0.7, s.z]}>
-          <mesh geometry={geos[shapeOf(imprints[i].emotion)]} material={mats[i]} />
+          <GltfMemoryImprint imprint={imprints[i]} />
           {/* 用叠加辉光 sprite 代替逐印记 pointLight:同样发光,但 sprite 不计入实时光照——
               ① 省掉「N 枚印记 = N 个动态点光源」的每帧光照开销;
               ② 关键:拾起时原本会让场景点光源数 -1 → three.js 把光源数烘进 shader,数量一变就重新编译全场所有材质
@@ -2669,9 +2961,8 @@ function MemoryTree({ colors }: { colors: string[] }) {
   const orbRefs = useRef<(THREE.Mesh | null)[]>([]);
   const baseY = exGroundY(0, 0);
   const grad = useMemo(() => makeToonGradient(), []);
-  const trunkMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#6a533c", gradientMap: grad }), [grad]);
   const orbMats = useMemo(() => colors.map((c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 1.5, toneMapped: false })), [colors]);
-  useEffect(() => () => { grad.dispose(); trunkMat.dispose(); orbMats.forEach((m) => m.dispose()); }, [grad, trunkMat, orbMats]);
+  useEffect(() => () => { grad.dispose(); orbMats.forEach((m) => m.dispose()); }, [grad, orbMats]);
   const orbs = useMemo(
     () =>
       colors.map((_, i) => {
@@ -2690,10 +2981,7 @@ function MemoryTree({ colors }: { colors: string[] }) {
   });
   return (
     <group ref={groupRef} position={[0, baseY, 0]}>
-      <mesh material={trunkMat} position={[0, 1.55, 0]}>
-        <cylinderGeometry args={[0.18, 0.34, 3.1, 7]} />
-        <Outlines thickness={0.02} color="#1a2230" />
-      </mesh>
+      <GltfMemoryTree grad={grad} />
       <pointLight position={[0, 3.8, 0]} color="#fff0c8" intensity={2.6} distance={8} decay={1.5} />
       {orbs.map((o, i) => (
         <mesh key={i} ref={(el) => { orbRefs.current[i] = el; }} material={orbMats[i]} position={[o.x, o.y, o.z]}>
@@ -2706,7 +2994,19 @@ function MemoryTree({ colors }: { colors: string[] }) {
 
 // 程序生成的小镇:房子 + 店招/雨棚 + 路 + 护栏 + 树/灌木 + 路牌/灯/售货机/邮筒/长椅/木箱。
 // toon 平涂,墨线由后期统一勾。
-function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Texture; accent: string; collidersRef?: React.RefObject<Map<string, Collider[]> | null>; isNight?: boolean }) {
+function Town({
+  toonGrad,
+  accent,
+  collidersRef,
+  isNight,
+  revealDelay,
+}: {
+  toonGrad: THREE.Texture;
+  accent: string;
+  collidersRef?: React.RefObject<Map<string, Collider[]> | null>;
+  isNight?: boolean;
+  revealDelay: ExploreRevealDelay;
+}) {
   const wall = useMemo(() => new THREE.MeshToonMaterial({ color: "#ece6d6", gradientMap: toonGrad }), [toonGrad]);
   const wall2 = useMemo(() => new THREE.MeshToonMaterial({ color: "#d6ccb4", gradientMap: toonGrad }), [toonGrad]);
   const wall3 = useMemo(() => new THREE.MeshToonMaterial({ color: "#c9b89a", gradientMap: toonGrad }), [toonGrad]);
@@ -2727,7 +3027,6 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   const petal2 = useMemo(() => new THREE.MeshToonMaterial({ color: "#f3d27a", gradientMap: toonGrad }), [toonGrad]);
   const rock = useMemo(() => new THREE.MeshToonMaterial({ color: "#7c8794", gradientMap: toonGrad }), [toonGrad]);
   const pond = useMemo(() => new THREE.MeshToonMaterial({ color: "#5fb6c4", gradientMap: toonGrad, transparent: true, opacity: 0.88 }), [toonGrad]);
-  const crop = useMemo(() => new THREE.MeshToonMaterial({ color: "#7fa84a", gradientMap: toonGrad }), [toonGrad]);
   const hay = useMemo(() => new THREE.MeshToonMaterial({ color: "#d8b86a", gradientMap: toonGrad }), [toonGrad]);
   const shell = useMemo(() => new THREE.MeshToonMaterial({ color: "#f0e0cf", gradientMap: toonGrad }), [toonGrad]);
   const glow = useMemo(() => new THREE.MeshStandardMaterial({ color: "#ffe6a0", emissive: "#ffe6a0", emissiveIntensity: 2, toneMapped: false }), []);
@@ -2737,8 +3036,8 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   // polygonOffset:把路面深度往相机方向微偏,和压平后的地形再有零点几毫米的高度并列时,路面稳赢深度测试 → 杜绝接缝处 z-fighting 闪烁
   const roadMat = useMemo(() => new THREE.MeshToonMaterial({ map: roadTex, gradientMap: toonGrad, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }), [roadTex, toonGrad]);
   useEffect(
-    () => () => [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, crop, hay, glow, roadMat, roadTex].forEach((m) => m.dispose()),
-    [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, crop, hay, glow, roadMat, roadTex],
+    () => () => [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, hay, glow, roadMat, roadTex].forEach((m) => m.dispose()),
+    [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, hay, glow, roadMat, roadTex],
   );
   // 浅滩礁石(岛外一圈水里)
   // 浅滩礁石(大岛外一圈水里)
@@ -2861,11 +3160,14 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   // 护栏:大岛缘一整圈
   const fence = useMemo(() => {
     const out: { x: number; z: number; rot: number }[] = [];
-    const fr = WALK_RADIUS + 0.6;
+    const fr = FENCE_RADIUS;
     const n = Math.round((2 * Math.PI * fr) / 1.6);
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2;
-      out.push({ x: Math.cos(a) * fr, z: Math.sin(a) * fr, rot: a });
+      const x = Math.cos(a) * fr;
+      const z = Math.sin(a) * fr;
+      if (isBeachFenceGap(x, z)) continue;
+      out.push({ x, z, rot: a });
     }
     return out;
   }, []);
@@ -3044,8 +3346,8 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
     // 汽车不入碰撞网格(可上车驾驶,会移动;走近即可按 E 上车)
     // 杜鹃花:小灌木碰撞
     for (const rh of RHODOS) list.push({ x: rh.x, z: rh.z, r: 0.55 + rh.s * 0.15 });
-    // 浴场 / 街区 / 山庄:沿地坪铺满互叠碰撞圈(贴边也不穿模);padR 与各自 LandmarkOnPad 一致
-    for (const c of fillPadColliders(BATH.x, BATH.z, 10)) list.push(c);
+    // 浴场 / 街区 / 山庄:沿地坪铺满互叠碰撞圈(贴边也不穿模);浴场正面台阶留出可走入口
+    for (const c of fillPadColliders(BATH.x, BATH.z, 10, [BATH_FRONT_OPENING])) list.push(c);
     for (const c of fillPadColliders(BLOCK.x, BLOCK.z, 7.5)) list.push(c);
     for (const c of fillPadColliders(MANOR.x, MANOR.z, 9)) list.push(c);
     // 近海可达地形(车/人会撞到):梯田 / 海蚀洞 / 崖 + 5 根风铃柱(坐标须与 Coastline/WindChimes 一致)
@@ -3109,7 +3411,6 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   const gRoofPeak = useMemo(() => new THREE.ConeGeometry(0.72, 1, 4), []); // 四坡尖顶(小屋感)
   const gDoor = useMemo(() => new THREE.BoxGeometry(0.5, 1.0, 0.06), []);
   const gWindow = useMemo(() => new THREE.BoxGeometry(0.46, 0.46, 0.05), []);
-  const gCrop = useMemo(() => new THREE.BoxGeometry(0.16, 0.55, 0.16), []);
   const gHay = useMemo(() => new THREE.CylinderGeometry(0.5, 0.5, 0.7, 8), []);
   const gShell = useMemo(() => new THREE.ConeGeometry(0.14, 0.1, 7), []); // 沙滩贝壳/卵石
   const gPine = useMemo(() => new THREE.ConeGeometry(0.5, 0.95, 7), []); // 针叶树冠(分层堆叠)
@@ -3125,8 +3426,8 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   // 环岛跑道带状几何(沿 ringRoad 生成连续 ribbon,raise=0.08 稳稳压在压平后的地基上,period=6m 一段中线虚线)
   const roadRibbonGeo = useMemo(() => buildRingRoadGeometry(ringRoad, ROAD_HALF_W, ROAD_SURFACE_RAISE, 6), [ringRoad]);
   useEffect(
-    () => () => [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, gPole, gCrossA, gCrossB, gWire, roadRibbonGeo].forEach((g) => g.dispose()),
-    [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gCrop, gHay, gPine, gMushStem, gMushCap, gLily, gPole, gCrossA, gCrossB, gWire, roadRibbonGeo],
+    () => () => [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gHay, gPine, gMushStem, gMushCap, gLily, gPole, gCrossA, gCrossB, gWire, roadRibbonGeo].forEach((g) => g.dispose()),
+    [gTrunk, gLeaf, gBush, gFlower, gRock, gBuoy, gFencePost, gFenceRail, gPathTile, gDash, gUnitBox, gRoofPeak, gDoor, gWindow, gHay, gPine, gMushStem, gMushCap, gLily, gPole, gCrossA, gCrossB, gWire, roadRibbonGeo],
   );
 
   // 实例化布点(由散布数组换算到世界矩阵)
@@ -3147,6 +3448,7 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   const { scene: flowerScene } = useGLTF(MODELS.natFlowers);
   const { scene: rockScene } = useGLTF(MODELS.natRock);
   const { scene: mushScene } = useGLTF(MODELS.natMushroom);
+  const { scene: cropSproutScene } = useGLTF(MODELS.natCropSprout);
   const { scene: buoyScene } = useGLTF(MODELS.townBuoy);
   const { scene: hayScene } = useGLTF(MODELS.townHaystack);
   const pineG = useMemo(() => glbInstanceGeo(pineScene, toonGrad, 0.55), [pineScene, toonGrad]);
@@ -3155,6 +3457,7 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
   const flowerG = useMemo(() => glbInstanceGeo(flowerScene, toonGrad, 0.5), [flowerScene, toonGrad]);
   const rockG = useMemo(() => glbInstanceGeo(rockScene, toonGrad, 0.5), [rockScene, toonGrad]);
   const mushG = useMemo(() => glbInstanceGeo(mushScene, toonGrad, 0.9), [mushScene, toonGrad]);
+  const cropSproutG = useMemo(() => glbInstanceGeo(cropSproutScene, toonGrad, 0.95), [cropSproutScene, toonGrad]);
   const buoyG = useMemo(() => glbInstanceGeo(buoyScene, toonGrad, 0.9), [buoyScene, toonGrad]);
   const hayG = useMemo(() => glbInstanceGeo(hayScene, toonGrad, 0.9), [hayScene, toonGrad]);
 
@@ -3242,7 +3545,8 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
           const wx = f.x + lx * c - lz * s;
           const wz = f.z + lx * s + lz * c;
           if (onLandmarkPad(wx, wz)) continue; // 作物不长在地标地坪/裙边上(否则沉进/穿出被抬升的台坡)
-          out.push({ p: [wx, exGroundY(wx, wz) + 0.27, wz], r: [0, f.rot, 0] });
+          if (Math.hypot(wx - POND.x, wz - POND.z) < POND_CROP_CLEARANCE) continue; // 第二块农田贴近池塘,留出水面和岸边空间
+          out.push({ p: [wx, exGroundY(wx, wz), wz], r: [0, f.rot, 0] });
         }
       }
     }
@@ -3260,6 +3564,20 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
     }
     return out;
   }, [farms]);
+  const ritualArtifacts = useMemo<RitualArtifactPlacement[]>(
+    () => [
+      { key: "paper_boat", x: WALK_RADIUS * 0.3 - 1.2, z: WALK_RADIUS * 0.3 + 3.8, rot: 0.7, scale: 0.95 },
+      { key: "candle", x: -WALK_RADIUS * 0.92 + 4.2, z: -WALK_RADIUS * 0.3 + 2.8, rot: -0.4, scale: 0.9 },
+      { key: "feather", x: -2.6, z: 5.2, rot: 1.2, scale: 0.9 },
+      { key: "leaf_note", x: WALK_RADIUS * 0.3 - 5.6, z: WALK_RADIUS * 0.3 - 1.5, rot: -0.6, scale: 0.9 },
+      { key: "star_wish", x: -18.5, z: -18.0, rot: 0.9, scale: 0.8 },
+      { key: "sail", x: WALK_RADIUS + 4.8, z: -5.5, rot: -0.35, scale: 0.3 },
+      { key: "silent_shell", x: Math.cos(0.42) * WALK_RADIUS * 0.94, z: Math.sin(0.42) * WALK_RADIUS * 0.94, rot: 1.5, scale: 0.85 },
+      { key: "glyph_stone", x: WALK_RADIUS * 0.3 + 7.8, z: WALK_RADIUS * 0.3 + 2.6, rot: Math.PI + 0.2, scale: 0.68 },
+      { key: "bloom", x: 18.5, z: -18.0, rot: -0.2, scale: 0.9 },
+    ],
+    [],
+  );
 
   return (
     <group>
@@ -3330,8 +3648,8 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
       {/* 小花(glb 花丛) */}
       {flowerG && <InstancedField geo={flowerG.geometry} material={flowerG.material} items={flowerItems} />}
 
-      {/* 农田作物(程序化保留) + 干草垛(glb) */}
-      <InstancedField geo={gCrop} material={crop} items={cropItems} />
+      {/* 农田作物(glb) + 干草垛(glb) */}
+      {cropSproutG && <InstancedField geo={cropSproutG.geometry} material={cropSproutG.material} items={cropItems} />}
       {hayG && <InstancedField geo={hayG.geometry} material={hayG.material} items={hayItems} />}
 
       {/* 中央广场(铺石) */}
@@ -3368,26 +3686,28 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
       <InstancedField geo={gShell} material={shell} items={shellItems} />
 
       {/* 风车(glb,岛屿地标;叶片 Blades 节点缓缓自转) */}
-      <GltfProp url={MODELS.windmill} grad={toonGrad} position={[-WALK_RADIUS * 0.35, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45), WALK_RADIUS * 0.45]} scale={0.78} spin={{ node: "Blades", speed: -0.9 }} />
+      <GltfProp url={MODELS.windmill} grad={toonGrad} position={[-WALK_RADIUS * 0.35, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45), WALK_RADIUS * 0.45]} scale={0.78} spin={{ node: "Blades", speed: -0.9, axis: "y" }} />
 
       {/* 汽车(glb,村里停一辆;toon 卡通 + 可上车驾驶)——3.4M 重模型,独立 Suspense 边界:
           首屏地形/小物件先可见可走,车随后异步浮现,不再整场景卡在加载界面 */}
-      <Suspense fallback={null}>
-        <DrivableCar grad={toonGrad} />
-      </Suspense>
+      <DelayedMount ms={revealDelay.car}>
+        <Suspense fallback={null}>
+          <DrivableCar grad={toonGrad} />
+        </Suspense>
+      </DelayedMount>
       <TireDust />
 
       {/* 写实重地标:延迟挂载 + 独立 Suspense,错开几秒在「世界已可走」后逐个到位,深 clone 不卡进岛首帧。
           延迟「轻→重」错峰:街区 → 杜鹃 → 山庄 → 浴场(28M 最重,最后)。 */}
       {/* 建筑街区(写实地标,村南) */}
-      <DelayedMount ms={2000}>
+      <DelayedMount ms={revealDelay.townblock}>
         <Suspense fallback={null}>
-          <LandmarkOnPad cfg={BLOCK} url={MODELS.townblock} padR={7.5} padColor="#b6a98f" grad={toonGrad} />
+          <LandmarkOnPad cfg={BLOCK} url={MODELS.townblock} padR={7.5} grad={toonGrad} />
         </Suspense>
       </DelayedMount>
 
       {/* 杜鹃花(写实灌木,花丛点缀) */}
-      <DelayedMount ms={2800}>
+      <DelayedMount ms={revealDelay.rhododendron}>
         <Suspense fallback={null}>
           {RHODOS.map((r, i) => (
             <GltfProp key={`rh${i}`} url={MODELS.rhododendron} raw position={[r.x, exGroundY(r.x, r.z) + 1.0 * r.s, r.z]} rotation={[0, hash2(r.x + 2.3, 3.1) * 6.28, 0]} scale={r.s} />
@@ -3396,16 +3716,16 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
       </DelayedMount>
 
       {/* 山庄(复用 villa 精模放大为西侧第三座大地标;toon 卡通材质,带地坪+碰撞,不穿模) */}
-      <DelayedMount ms={3600}>
+      <DelayedMount ms={revealDelay.manor}>
         <Suspense fallback={null}>
-          <LandmarkOnPad cfg={MANOR} url={MODELS.houseVilla} padR={9} padColor="#bcc6a4" grad={toonGrad} raw={false} />
+          <LandmarkOnPad cfg={MANOR} url={MODELS.houseVilla} padR={9} grad={toonGrad} raw={false} />
         </Suspense>
       </DelayedMount>
 
       {/* 罗马浴场建筑群(写实地标,村北;28M 最重 → 最后挂载) */}
-      <DelayedMount ms={4400}>
+      <DelayedMount ms={revealDelay.bath}>
         <Suspense fallback={null}>
-          <LandmarkOnPad cfg={BATH} url={MODELS.bathhouse} padR={10} padColor="#cabfa6" grad={toonGrad} />
+          <LandmarkOnPad cfg={BATH} url={MODELS.bathhouse} padR={10} grad={toonGrad} />
         </Suspense>
       </DelayedMount>
 
@@ -3451,6 +3771,9 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
 
       {/* 石灯笼已抽成可点亮 / 熄灭的 <StoneLanterns/>(渲染于 ExploreScene,需 posRef 做就近探测) */}
       {/* 仪式艺术品散布岛上(对应岛屿仪式 ARTIFACTS) */}
+      {ritualArtifacts.map((item) => (
+        <RitualArtifactProp key={item.key} item={item} grad={toonGrad} />
+      ))}
       {/* 篝火(村口空地) */}
       <group position={[-6, exGroundY(-6, -3), -3]}>
         <GltfProp url={MODELS.bonfire} grad={toonGrad} position={[0, 0, 0]} scale={1.0} />
@@ -3469,7 +3792,7 @@ function Town({ toonGrad, accent, collidersRef, isNight }: { toonGrad: THREE.Tex
         <GltfProp key={`nf${i}`} url={MODELS.nightflower} grad={toonGrad} position={[fx, exGroundY(fx, fz), fz]} scale={1.2} />
       ))}
       {/* 风筝(风车上空,随风轻摆) */}
-      <FloatSway url={MODELS.kite} grad={toonGrad} position={[-WALK_RADIUS * 0.35 + 6, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45) + 7, WALK_RADIUS * 0.45 - 3]} scale={1.4} amp={0.5} speed={0.9} />
+      <FloatSway url={MODELS.kite} grad={toonGrad} position={[-WALK_RADIUS * 0.35 + 6, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45) + 7, WALK_RADIUS * 0.45 - 3]} baseRotation={[0, Math.PI, 0]} scale={1.4} amp={0.5} speed={0.9} />
     </group>
   );
 }
@@ -3718,8 +4041,17 @@ function BabyTurtle({ posRef, onFind }: { posRef: React.RefObject<THREE.Vector3>
   );
 }
 
+const JELLYFISH_TINT: ToonTint = {
+  default: "#5fd8ff",
+  materials: {
+    emissive_bell: "#5fd8ff",
+    emissive_tent: "#b795ff",
+  },
+  emissiveIntensity: 1.45,
+};
+
 // 🪼 彩蛋「夜光水母」:浅滩里随情绪发光、轻轻一鼓一缩漂浮的水母群(纯氛围)。
-function Jellyfish({ accent }: { accent: string }) {
+function Jellyfish() {
   const b = getBeach();
   const grad = useMemo(() => makeToonGradient(), []);
   useEffect(() => () => grad.dispose(), [grad]);
@@ -3742,7 +4074,7 @@ function Jellyfish({ accent }: { accent: string }) {
     <>
       {b.jelly.map((j, i) => (
         <group key={i} ref={(el) => { refs.current[i] = el; }} position={[j.x, b.waterY + 0.55, j.z]}>
-          <GltfProp url={MODELS.beachJelly} grad={grad} tint={accent} position={[0, 0, 0]} scale={0.78} />
+          <GltfProp url={MODELS.beachJelly} grad={grad} tint={JELLYFISH_TINT} position={[0, 0, 0]} scale={0.78} />
         </group>
       ))}
     </>
@@ -3757,7 +4089,7 @@ function BeachConch({ posRef, onNear }: { posRef: React.RefObject<THREE.Vector3>
   const near = useRef(false);
   useFrame(() => {
     const pp = posRef.current; if (!pp) return;
-    const n = Math.hypot(pp.x - b.conch.x, pp.z - b.conch.z) < 4.4;
+    const n = dist2(pp.x, pp.z, b.conch.x, b.conch.z) < 19.36;
     if (n !== near.current) { near.current = n; onNear(n); }
   });
   return <GltfProp url={MODELS.beachConch} grad={grad} position={[b.conch.x, b.conch.y, b.conch.z]} rotation={[0, b.conch.rot, 0]} scale={0.8} />;
@@ -3777,7 +4109,7 @@ function BeachTreasure({ posRef, onFind, note }: { posRef: React.RefObject<THREE
   useEffect(() => () => { grad.dispose(); gradFp.dispose(); }, [grad, gradFp]);
   useFrame((_, dt) => {
     const pp = posRef.current;
-    if (pp && !foundRef.current && Math.hypot(pp.x - b.treasure.x, pp.z - b.treasure.z) < 4.0) {
+    if (pp && !foundRef.current && dist2(pp.x, pp.z, b.treasure.x, b.treasure.z) < 16) {
       foundRef.current = true; setFound(true); onFind();
     }
     if (foundRef.current && openT.current < 1) openT.current = Math.min(1, openT.current + dt * 1.1);
@@ -3955,7 +4287,7 @@ function MushroomRing({ posRef, night, onDiscover }: EggP & { night: boolean }) 
   const [seen, setSeen] = useState(false); const seenRef = useRef(false);
   useFrame((s) => {
     const t = s.clock.elapsedTime; const pp = posRef.current;
-    const inside = night && pp ? Math.hypot(pp.x - c.x, pp.z - c.z) < 3.4 : false;
+    const inside = night && pp ? dist2(pp.x, pp.z, c.x, c.z) < 11.56 : false;
     active.current += ((inside ? 1 : 0) - active.current) * 0.05;
     if (inside && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("mushroom"); playSfx("bloom"); }
     const m = fref.current; if (m) {
@@ -3986,7 +4318,7 @@ function MoonReflection({ posRef, night, onDiscover }: EggP & { night: boolean }
     const target = night ? 0.5 + Math.sin(t * 0.8) * 0.08 : 0;
     mat.opacity += (target - mat.opacity) * 0.05;
     if (disc.current) disc.current.scale.setScalar(1 + Math.sin(t * 0.5) * 0.03);
-    if (night && pp && Math.hypot(pp.x - c.x, pp.z - c.z) < 6 && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("moon"); }
+    if (night && pp && dist2(pp.x, pp.z, c.x, c.z) < 36 && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("moon"); }
   });
   return (
     <group position={[c.x, py, c.z]}>
@@ -3997,17 +4329,30 @@ function MoonReflection({ posRef, night, onDiscover }: EggP & { night: boolean }
 }
 
 // 🌠 流星许愿:夜里走到观星点,流星会一次次划过夜空 + 一句话。
+function GltfShootingStar() {
+  const { scene } = useGLTF(MODELS.shootingStar);
+  const obj = useMemo(() => {
+    const root = scene.clone(true);
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+    });
+    return root;
+  }, [scene]);
+  return <primitive object={obj} scale={8.0} rotation={[0, 0, -0.18]} />;
+}
+
 function StarWish({ posRef, night, onDiscover }: EggP & { night: boolean }) {
   const c = EGG.star;
-  const star = useRef<THREE.Mesh>(null);
-  const geo = useMemo(() => new THREE.SphereGeometry(0.55, 8, 6), []);
-  const mat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#fff6e0", transparent: true, opacity: 0, toneMapped: false }), []);
-  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  const star = useRef<THREE.Group>(null);
   const shoot = useRef(3); const DUR = 1.6;
   const [seen, setSeen] = useState(false); const seenRef = useRef(false);
   useFrame((_s, dt) => {
     const pp = posRef.current;
-    const isNear = night && pp ? Math.hypot(pp.x - c.x, pp.z - c.z) < 18 : false;
+    const isNear = night && pp ? dist2(pp.x, pp.z, c.x, c.z) < 324 : false;
     if (isNear && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("star"); }
     if (isNear) { shoot.current -= dt; if (shoot.current <= -DUR) shoot.current = 4 + Math.random() * 3; }
     const active = isNear && shoot.current <= 0 && shoot.current > -DUR;
@@ -4015,12 +4360,14 @@ function StarWish({ posRef, night, onDiscover }: EggP & { night: boolean }) {
     const sg = star.current; if (sg) {
       sg.visible = active;
       sg.position.set(-70 + k * 140, 78 - k * 34, -46 + k * 26);
-      mat.opacity = active ? Math.sin(k * Math.PI) : 0;
+      sg.scale.setScalar(active ? 0.55 + Math.sin(k * Math.PI) * 0.45 : 0.1);
     }
   });
   return (
     <group>
-      <mesh ref={star} geometry={geo} material={mat} visible={false} />
+      <group ref={star} visible={false}>
+        <GltfShootingStar />
+      </group>
       {seen && night && <group position={[c.x, 0, c.z]}><BeachCard y={2.4} label="🌠 对着流星许个愿" line="一颗流星划过 —— 你来不及说出口的那个愿望，它都听见了。" /></group>}
     </group>
   );
@@ -4044,9 +4391,10 @@ function FishSchool({ posRef, accent, onDiscover }: EggP & { accent: string }) {
   const seeds = useMemo(() => Array.from({ length: 9 }, (_, i) => ({ a: hash2(i + 1, 2.1) * 6.28, r: 1 + hash2(i + 1, 3.3) * 2.2, ph: hash2(i + 1, 4.4) * 6.28 })), []);
   useFrame((s, dt) => {
     const t = s.clock.elapsedTime; const pp = posRef.current; const wy = getBeach().waterY;
-    const d = pp ? Math.hypot(pp.x - home.x, pp.z - home.z) : 99;
-    if (d < 6 && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("fish"); }
-    scatter.current = THREE.MathUtils.damp(scatter.current, d < 5 ? 1 : 0, d < 5 ? 5 : 1.5, dt);
+    const d2 = pp ? dist2(pp.x, pp.z, home.x, home.z) : Infinity;
+    const close = d2 < 25;
+    if (d2 < 36 && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("fish"); }
+    scatter.current = THREE.MathUtils.damp(scatter.current, close ? 1 : 0, close ? 5 : 1.5, dt);
     const cx = home.x + (valueNoise(t * 0.08, 1.3) - 0.5) * 4; // 鱼群中心缓慢游弋(不再原地打转)
     const cz = home.z + (valueNoise(2.7, t * 0.08) - 0.5) * 4;
     seeds.forEach((sd, i) => {
@@ -4079,7 +4427,7 @@ function SunsetBench({ posRef, onDiscover }: EggP) {
   const gy = useMemo(() => Math.max(exGroundY(home.x, home.z), 0), [home]);
   const faceSea = Math.atan2(Math.cos(BAY_ANGLE), Math.sin(BAY_ANGLE));
   const [seen, setSeen] = useState(false); const seenRef = useRef(false);
-  useFrame(() => { const pp = posRef.current; if (pp && Math.hypot(pp.x - home.x, pp.z - home.z) < 4 && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("sunset"); } });
+  useFrame(() => { const pp = posRef.current; if (pp && dist2(pp.x, pp.z, home.x, home.z) < 16 && !seenRef.current) { seenRef.current = true; setSeen(true); onDiscover("sunset"); } });
   return (
     <group position={[home.x, gy, home.z]} rotation={[0, faceSea, 0]}>
       <GltfProp url={MODELS.townBench} grad={grad} position={[0, 0, 0]} scale={1.1} />
@@ -4178,7 +4526,11 @@ function InteractProximity({ posRef, onNear }: { posRef: React.RefObject<THREE.V
   useFrame(() => {
     const pp = posRef.current; if (!pp) return;
     let best: { kind: string; label: string } | null = null; let bd = 1e9;
-    for (const it of INTERACTS) { const d = Math.hypot(pp.x - it.x, pp.z - it.z); if (d < it.r && d < bd) { bd = d; best = { kind: it.kind, label: it.label }; } }
+    for (const it of INTERACTS) {
+      const d = dist2(pp.x, pp.z, it.x, it.z);
+      const rr = it.r * it.r;
+      if (d < rr && d < bd) { bd = d; best = { kind: it.kind, label: it.label }; }
+    }
     const k = best?.kind ?? null;
     if (k !== cur.current) { cur.current = k; onNear(best); }
   });
@@ -4250,7 +4602,7 @@ function Npcs({
     const pp = posRef.current;
     const act = activeRef.current;
     let nearest = -1;
-    let nd = TALK_RANGE;
+    let nd = TALK_RANGE * TALK_RANGE;
     for (let i = 0; i < npcs.length; i++) {
       const g = refs.current[i];
       const n = npcs[i];
@@ -4282,7 +4634,7 @@ function Npcs({
       while (d < -Math.PI) d += Math.PI * 2;
       g.rotation.y += d * (talking ? 0.2 : 0.12);
       if (pp) {
-        const dist = Math.hypot(pp.x - wx, pp.z - wz);
+        const dist = dist2(pp.x, pp.z, wx, wz);
         if (dist < nd) {
           nd = dist;
           nearest = i;
@@ -4313,7 +4665,7 @@ function Npcs({
           position={[n.x, Math.max(exGroundY(n.x, n.z), 0), n.z]}
           scale={0.92 + hash2(i + 210, 6.6) * 0.16}
         >
-          <CharacterModel avatar={n.avatar} />
+          <GltfNpcCharacter avatar={n.avatar} />
           {active === i &&
             (() => {
               const gifted = giftedIds.includes(i);
@@ -4381,7 +4733,7 @@ function SecretWhale({ posRef, onFound, night }: { posRef: React.RefObject<THREE
 
   useFrame((s) => {
     const pp = posRef.current;
-    if (pp && !foundRef.current && Math.hypot(pp.x - lookX, pp.z - lookZ) < 7.5) {
+    if (pp && !foundRef.current && dist2(pp.x, pp.z, lookX, lookZ) < 56.25) {
       foundRef.current = true;
       setFound(true);
       onFound();
@@ -4484,7 +4836,7 @@ function DriftBottles({ posRef, onFind, notes }: { posRef: React.RefObject<THREE
       const g = refs.current[i];
       if (!g) continue;
       const sp = spots[i];
-      if (pp && !foundRef.current[i] && Math.hypot(pp.x - sp.x, pp.z - sp.z) < 4.2) {
+      if (pp && !foundRef.current[i] && dist2(pp.x, pp.z, sp.x, sp.z) < 17.64) {
         foundRef.current[i] = true;
         setFound((f) => f.map((v, k) => (k === i ? true : v)));
         onFind(i);
@@ -4550,9 +4902,11 @@ function GroundGrass({ count, animate, grad }: { count: number; animate: boolean
       // 避开环岛柏油路:否则 5.2 万根草叶里靠路的那些会直接穿透路面、把路"切碎"。
       // 环路在半径 ~113..143,只对靠外圈(r>105)的草做路带判定,省掉绝大多数草的 O(N) 距离计算。
       if (r > 105 && distToRoadCenter(x, z) < ROAD_HALF_W + 1.0) continue;
-      // 近路(r>105)的草改用平路地面高度,与压平后的地形/路面同一套高度 → 草不再悬空穿透路面;
-      // 内圈草远离环路,groundYWithRoad === exGroundY,保持 O(1) 取值不增开销。
-      const h = r > 105 ? groundYWithRoad(x, z).y : exGroundY(x, z);
+      // 近路草改用平路地面高度;地标草改用抬升后的草坪面高度。
+      // 否则草叶仍按原始地形生成,会被地标草坪顶面盖住,看起来像一块没有草尖的平涂色面。
+      const terrainY = r > 105 ? groundYWithRoad(x, z).y : exGroundY(x, z);
+      const landmarkY = landmarkGroundLift(x, z);
+      const h = Math.max(terrainY, landmarkY);
       if (h < 0.2) continue; // 避开沙滩 / 水
       out.push({ x, z, y: h, s: 0.7 + hash2(tries, 3.1) * 0.7, rot: hash2(tries, 7.7) * 6.28 });
     }
@@ -5057,23 +5411,34 @@ function SkyLanterns({ launchRef, posRef }: { launchRef: React.RefObject<number>
 }
 
 // 🎣 拾海垂钓:回报玩家是否在海湾岸边(可垂钓);抛竿时在玩家径向外侧水面显示浮标
+function GltfFishingBobber() {
+  const { scene } = useGLTF(MODELS.fishingBobber);
+  const grad = useMemo(() => makeToonGradient(), []);
+  const obj = useMemo(() => toonifyScene(scene, grad), [scene, grad]);
+  useEffect(() => () => { grad.dispose(); }, [grad]);
+  return <primitive object={obj} scale={1.0} />;
+}
+
 function FishingSpot({ posRef, onAtWater, casting }: { posRef: React.RefObject<THREE.Vector3>; onAtWater: (b: boolean) => void; casting: boolean }) {
   const was = useRef(false); const bob = useRef<THREE.Group>(null);
   useFrame((s) => {
     const p = posRef.current; if (!p) return;
-    const r = Math.hypot(p.x, p.z);
-    const at = r > WALK_RADIUS * 0.78 && bayMask(p.x, p.z) > 0.32;
+    const r2 = p.x * p.x + p.z * p.z;
+    const shore = WALK_RADIUS * 0.78;
+    const at = r2 > shore * shore && bayMask(p.x, p.z) > 0.32;
     if (at !== was.current) { was.current = at; onAtWater(at); }
     const b = bob.current; if (b) {
       b.visible = casting;
-      const ux = p.x / (r || 1), uz = p.z / (r || 1);
-      b.position.set(p.x + ux * 4.5, 0.15 + Math.sin(s.clock.elapsedTime * 3) * 0.07, p.z + uz * 4.5);
+      if (casting) {
+        const r = Math.sqrt(r2) || 1;
+        const ux = p.x / r, uz = p.z / r;
+        b.position.set(p.x + ux * 4.5, 0.15 + Math.sin(s.clock.elapsedTime * 3) * 0.07, p.z + uz * 4.5);
+      }
     }
   });
   return (
     <group ref={bob} visible={false}>
-      <mesh><sphereGeometry args={[0.2, 10, 7]} /><meshToonMaterial color="#ff7a6b" /></mesh>
-      <mesh position={[0, 0.2, 0]}><cylinderGeometry args={[0.03, 0.03, 0.22, 5]} /><meshToonMaterial color="#fbfbfb" /></mesh>
+      <GltfFishingBobber />
     </group>
   );
 }
@@ -5082,6 +5447,7 @@ function FishingSpot({ posRef, onAtWater, casting }: { posRef: React.RefObject<T
 // 区域判定用 exGroundY(高度) + bayMask(海湾) + 离心半径；地标用固定坐标+半径边沿触发。
 // 位置底噪与情绪底噪并行（lib/locationAmbience.ts 独立运行）；地标音走 envGain 独立常响。
 const POND = { x: WALK_RADIUS * 0.3, z: WALK_RADIUS * 0.3 }; // 池塘中心(~53,53)
+const POND_CROP_CLEARANCE = 8.5;
 const BONFIRE = { x: -6, z: -3 }; // 篝火
 const LIGHTHOUSE = { x: -WALK_RADIUS * 0.92, z: -WALK_RADIUS * 0.3 }; // 灯塔(~-163,-53)
 const PIER = { x: WALK_RADIUS - 1.5, z: 0 }; // 码头(~176,0)
@@ -5100,34 +5466,32 @@ function LocationAudio({ posRef, night }: { posRef: React.RefObject<THREE.Vector
     zoneT.current -= dt;
     if (zoneT.current <= 0) {
       zoneT.current = 0.3;
-      const r = Math.hypot(p.x, p.z);
+      const r2 = p.x * p.x + p.z * p.z;
       const gy = exGroundY(p.x, p.z);
       const bay = bayMask(p.x, p.z);
       // 优先级：小范围特殊区 → 大范围地貌
       let zone: LocationZone;
-      if (Math.hypot(p.x - POND.x, p.z - POND.z) < 12) zone = "brook";
-      else if (Math.hypot(p.x - BONFIRE.x, p.z - BONFIRE.z) < 8) zone = "campfire";
-      else if (r > WALK_RADIUS * 1.05) zone = "ocean"; // 远海
-      else if ((bay > 0.32 && r > WALK_RADIUS * 0.78) || gy < 0.12) zone = "bay"; // 海湾/海滩
+      if (dist2(p.x, p.z, POND.x, POND.z) < 144) zone = "brook";
+      else if (dist2(p.x, p.z, BONFIRE.x, BONFIRE.z) < 64) zone = "campfire";
+      else if (r2 > WALK_RADIUS * WALK_RADIUS * 1.1025) zone = "ocean"; // 远海
+      else if ((bay > 0.32 && r2 > WALK_RADIUS * WALK_RADIUS * 0.6084) || gy < 0.12) zone = "bay"; // 海湾/海滩
       else if (gy > 4.5) zone = "mountain"; // 山地
-      else if (r > WALK_RADIUS * 0.45 && r <= WALK_RADIUS * 0.78) zone = "forest"; // 岛中外圈森林
+      else if (r2 > WALK_RADIUS * WALK_RADIUS * 0.2025 && r2 <= WALK_RADIUS * WALK_RADIUS * 0.6084) zone = "forest"; // 岛中外圈森林
       else zone = night ? "meadow_night" : "meadow_day"; // 草地/村落
       if (zone !== curZone.current) { curZone.current = zone; setLocationZone(zone, true); }
     }
 
     // —— 地标点状音：灯塔雾笛（进 12 半径，60s 冷却）——
-    const dLh = Math.hypot(p.x - LIGHTHOUSE.x, p.z - LIGHTHOUSE.z);
     foghornCool.current -= dt;
-    const lhNear = dLh < 12;
+    const lhNear = dist2(p.x, p.z, LIGHTHOUSE.x, LIGHTHOUSE.z) < 144;
     if (lhNear && !foghornNear.current && foghornCool.current <= 0) {
       playSample("foghorn_zone", { gain: 0.5 }); foghornCool.current = 60;
     }
     foghornNear.current = lhNear;
 
     // —— 地标点状音：码头海螺（进 10 半径，45s 冷却）——
-    const dPi = Math.hypot(p.x - PIER.x, p.z - PIER.z);
     conchCool.current -= dt;
-    const piNear = dPi < 10;
+    const piNear = dist2(p.x, p.z, PIER.x, PIER.z) < 100;
     if (piNear && !conchNear.current && conchCool.current <= 0) {
       playSample("conch_zone", { gain: 0.5 }); conchCool.current = 45;
     }
@@ -5442,7 +5806,7 @@ function Minimap({ posRef, headingRef, night }: { posRef: React.RefObject<THREE.
         type="button"
         onClick={openMap}
         aria-label="打开全岛地图"
-        className="panel-glass-2 absolute z-10 rounded-2xl p-1.5 active:scale-95 transition-transform"
+        className="xy-explore-minimap panel-glass-2 absolute z-10 rounded-2xl p-1.5 active:scale-95 transition-transform"
         style={{ position: "absolute", left: "calc(1.2rem + env(safe-area-inset-left))", top: "calc(4.5rem + env(safe-area-inset-top))" }}
       >
         <svg viewBox={`0 0 ${MAP_VIEW} ${MAP_VIEW}`} width={116} height={116} className="block rounded-xl">
@@ -5539,7 +5903,7 @@ function WindChimes({ posRef, onRing, grad, nextChime = -1 }: { posRef: React.Re
   useFrame(() => {
     const p = posRef.current; if (!p) return;
     let cur = -1;
-    for (let i = 0; i < spots.length; i++) { if (Math.hypot(p.x - spots[i].x, p.z - spots[i].z) < 3.6) { cur = i; break; } }
+    for (let i = 0; i < spots.length; i++) { if (dist2(p.x, p.z, spots[i].x, spots[i].z) < 12.96) { cur = i; break; } }
     if (cur !== inside.current) { inside.current = cur; if (cur >= 0) onRing(cur); }
   });
   return (
@@ -5556,9 +5920,10 @@ function Fireflies({ count = 46 }: { count?: number }) {
   const geo = useMemo(() => new THREE.SphereGeometry(0.09, 6, 5), []);
   const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: "#fff4b0", emissive: new THREE.Color("#ffe98a"), emissiveIntensity: 3, toneMapped: false }), []);
   const seeds = useMemo(() => Array.from({ length: count }, (_, i) => ({ a: hash2(i, 1.1) * 6.28, r: 6 + hash2(i, 2.2) * WALK_RADIUS * 0.42, h: 2 + hash2(i, 3.3) * 5, ph: hash2(i, 4.4) * 6.28 })), [count]);
+  const mm = useMemo(() => new THREE.Matrix4(), []);
   useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
   useFrame((s) => {
-    const m = ref.current; if (!m) return; const mm = new THREE.Matrix4(); const t = s.clock.elapsedTime;
+    const m = ref.current; if (!m) return; const t = s.clock.elapsedTime;
     for (let i = 0; i < count; i++) { const sd = seeds[i]; const x = Math.cos(sd.a + Math.sin(t * 0.2 + sd.ph) * 0.12) * sd.r; const z = Math.sin(sd.a + Math.cos(t * 0.2 + sd.ph) * 0.12) * sd.r; const y = exGroundY(x, z) + sd.h + Math.sin(t * 0.8 + sd.ph) * 0.5; mm.makeTranslation(x, y, z); m.setMatrixAt(i, mm); }
     m.instanceMatrix.needsUpdate = true;
   });
@@ -6060,6 +6425,20 @@ function ExploreScene({
   useEffect(() => () => sketch.dispose(), [sketch]);
   // 帧率持续偏低时自动降级:关掉 Sobel 手绘后期 + 降 dpr(由 PerfWatch 触发,见下方)
   const [degraded, setDegraded] = useState(false);
+  const lowTier = tier === "low";
+  const revealDelay = {
+    town: lowTier ? 5200 : 250,
+    village: lowTier ? 7600 : 250,
+    coastline: lowTier ? 9600 : 250,
+    interactions: lowTier ? 11200 : 0,
+    companion: lowTier ? 14000 : 0,
+    car: lowTier ? 9000 : 0,
+    lanterns: lowTier ? 15000 : 0,
+    townblock: lowTier ? 14000 : 2000,
+    rhododendron: lowTier ? 16500 : 2800,
+    manor: lowTier ? 19000 : 3600,
+    bath: lowTier ? 22000 : 4400,
+  };
   // 渐变天空作 scene.background(放进 3D,否则 EffectComposer 会把空域清成黑)
   const skyTex = useMemo(() => {
     const W = 64, H = 512; // 提分辨率:低分辨率渐变拉伸到全天空会出明显色带(banding)
@@ -6143,7 +6522,7 @@ function ExploreScene({
         <meshToonMaterial vertexColors gradientMap={toonGrad} />
       </mesh>
       {/* 脚边随风草丛 */}
-      <GroundGrass count={52000} animate grad={toonGrad} />
+      <GroundGrass count={lowTier ? 12000 : 52000} animate={!lowTier} grad={toonGrad} />
       {/* 山顶薄雪 */}
       <InstancedField geo={gSnow} material={snowMat} items={snowItems} />
       {/* 近岸浪花:贴水线一圈柔白(陆地处被沙挡住,只在水边显形) */}
@@ -6151,15 +6530,21 @@ function ExploreScene({
         <ringGeometry args={[WALK_RADIUS * 1.0, WALK_RADIUS * 1.1, 96]} />
         <meshBasicMaterial color="#e6f6f8" transparent opacity={0.3} depthWrite={false} toneMapped={false} />
       </mesh>
-      {/* 程序小镇 / 村落 / 海岸:模型量最大(~百个模型的几何烘焙 + clone,是进岛首帧最重的同步开销)。
-          DelayedMount 延迟 ~250ms 挂载 → 进岛首帧只渲地形/水/光(秒现),这堆建筑/道具一个 blink 后补上,
-          几乎无感却把长空白彻底消除。内层 Suspense 仍兜住模型加载。 */}
-      <DelayedMount ms={250}>
+      {/* 程序小镇 / 村落 / 海岸:模型量最大。移动端分段错峰挂载,首段只保留地形/水/玩家与输入响应。 */}
+      <DelayedMount ms={revealDelay.town}>
         <Suspense fallback={null}>
           {/* 程序小镇 */}
-          <Town toonGrad={toonGrad} accent={visual.accent} collidersRef={collidersRef} isNight={isNight} />
+          <Town toonGrad={toonGrad} accent={visual.accent} collidersRef={collidersRef} isNight={isNight} revealDelay={revealDelay} />
+        </Suspense>
+      </DelayedMount>
+      <DelayedMount ms={revealDelay.village}>
+        <Suspense fallback={null}>
           {/* 海岛村落建筑 + 岛上设施(Batch 5/7) */}
           <Village toonGrad={toonGrad} />
+        </Suspense>
+      </DelayedMount>
+      <DelayedMount ms={revealDelay.coastline}>
+        <Suspense fallback={null}>
           {/* 近海地形 + 海滩物 + 发光海水(Batch 6) */}
           <Coastline toonGrad={toonGrad} accent={visual.accent} />
         </Suspense>
@@ -6183,54 +6568,60 @@ function ExploreScene({
         <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
       </Suspense>
       {/* 灯塔精灵 4.4M 重模型：独立 Suspense，不阻塞「可上岛」，世界就绪后随即淡入 */}
-      <Suspense fallback={null}>
-        <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} collidersRef={collidersRef} />
-      </Suspense>
+      <DelayedMount ms={revealDelay.companion}>
+        <Suspense fallback={null}>
+          <Companion posRef={posRef} action={companionAction} emotion={emotion} singing={companionSinging} sleeping={companionSleeping} chatter={companionChatter} onInteract={onCompanionInteract} collidersRef={collidersRef} />
+        </Suspense>
+      </DelayedMount>
       {/* 其余道具 / 彩蛋 / NPC / 互动(大多用模型):统一包进 Suspense → 加载时不挂起整场，
           世界(地形/海/光 + 已就位的建筑)先可见可走，这些随后陆续淡入，不再整屏空白等加载。 */}
-      <Suspense fallback={null}>
-      <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={(id) => { nearRef.current = id; onNear(id); }} />
-      <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
-      <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
-      {/* 🏖️ 心屿湾彩蛋:寄居蟹 / 归海小海龟 / 夜光水母 / 听海海螺 / 退潮的宝藏 */}
-      <BeachCrab posRef={posRef} onFind={onCrab} />
-      <BabyTurtle posRef={posRef} onFind={onTurtle} />
-      <Jellyfish accent={visual.accent} />
-      <BeachConch posRef={posRef} onNear={onConchNear} />
-      <BeachTreasure posRef={posRef} onFind={onTreasure} note={treasureNote} />
-      {/* 🏝️ 岛屿奇遇 · 小动物:林间狐狸 / 岛上橘猫 / 灯塔猫头鹰(夜) */}
-      <ForestFox posRef={posRef} onDiscover={onDiscover} />
-      <IslandCat posRef={posRef} onDiscover={onDiscover} />
-      <LighthouseOwl posRef={posRef} onDiscover={onDiscover} night={isNight} />
-      {/* 🌠 夜晚魔法:精灵蘑菇圈 / 池中月 / 流星许愿(夜间) */}
-      <MushroomRing posRef={posRef} onDiscover={onDiscover} night={isNight} />
-      <MoonReflection posRef={posRef} onDiscover={onDiscover} night={isNight} />
-      <StarWish posRef={posRef} onDiscover={onDiscover} night={isNight} />
-      {/* 🌊 海与水秘密:发光鱼群 / 看海长椅 / 寄给未来的瓶中信 */}
-      <FishSchool posRef={posRef} accent={visual.accent} onDiscover={onDiscover} />
-      <SunsetBench posRef={posRef} onDiscover={onDiscover} />
-      <FutureBottle />
-      {/* ⛩️ 可互动仪式:祈愿铃 / 许愿石(+ 邮筒/瓶中信走 InteractProximity 出按钮) */}
-      <ShrineBell onDiscover={onDiscover} />
-      <WishingStones onDiscover={onDiscover} />
-      <InteractProximity posRef={posRef} onNear={onNearInteract} />
-      <StoneLanterns posRef={posRef} grad={toonGrad} onNearLamp={onNearLamp} />
-      {imprints.length > 0 ? <MemoryImprints posRef={posRef} imprints={imprints} onPick={(i) => { cheerRef.current += 1; onPickImprint(i); }} /> : <Wishes posRef={posRef} color={visual.accent} onCollect={() => { cheerRef.current += 1; onCollect(); }} total={total} />}
-      {treeColors.length > 0 && <MemoryTree colors={treeColors} />}
+      <DelayedMount ms={revealDelay.interactions}>
+        <Suspense fallback={null}>
+        <Npcs animate posRef={posRef} mood={visual.motion} emotion={emotion} giftedIds={giftedIds} onNear={(id) => { nearRef.current = id; onNear(id); }} />
+        <SecretWhale posRef={posRef} onFound={onWhale} night={visual.time === "night" || visual.stars} />
+        <DriftBottles posRef={posRef} onFind={onBottle} notes={bottleNotes} />
+        {/* 🏖️ 心屿湾彩蛋:寄居蟹 / 归海小海龟 / 夜光水母 / 听海海螺 / 退潮的宝藏 */}
+        <BeachCrab posRef={posRef} onFind={onCrab} />
+        <BabyTurtle posRef={posRef} onFind={onTurtle} />
+        <Jellyfish />
+        <BeachConch posRef={posRef} onNear={onConchNear} />
+        <BeachTreasure posRef={posRef} onFind={onTreasure} note={treasureNote} />
+        {/* 🏝️ 岛屿奇遇 · 小动物:林间狐狸 / 岛上橘猫 / 灯塔猫头鹰(夜) */}
+        <ForestFox posRef={posRef} onDiscover={onDiscover} />
+        <IslandCat posRef={posRef} onDiscover={onDiscover} />
+        <LighthouseOwl posRef={posRef} onDiscover={onDiscover} night={isNight} />
+        {/* 🌠 夜晚魔法:精灵蘑菇圈 / 池中月 / 流星许愿(夜间) */}
+        <MushroomRing posRef={posRef} onDiscover={onDiscover} night={isNight} />
+        <MoonReflection posRef={posRef} onDiscover={onDiscover} night={isNight} />
+        <StarWish posRef={posRef} onDiscover={onDiscover} night={isNight} />
+        {/* 🌊 海与水秘密:发光鱼群 / 看海长椅 / 寄给未来的瓶中信 */}
+        <FishSchool posRef={posRef} accent={visual.accent} onDiscover={onDiscover} />
+        <SunsetBench posRef={posRef} onDiscover={onDiscover} />
+        <FutureBottle />
+        {/* ⛩️ 可互动仪式:祈愿铃 / 许愿石(+ 邮筒/瓶中信走 InteractProximity 出按钮) */}
+        <ShrineBell onDiscover={onDiscover} />
+        <WishingStones onDiscover={onDiscover} />
+        <InteractProximity posRef={posRef} onNear={onNearInteract} />
+        <StoneLanterns posRef={posRef} grad={toonGrad} onNearLamp={onNearLamp} />
+        {imprints.length > 0 ? <MemoryImprints posRef={posRef} imprints={imprints} onPick={(i) => { cheerRef.current += 1; onPickImprint(i); }} /> : <Wishes posRef={posRef} color={visual.accent} onCollect={() => { cheerRef.current += 1; onCollect(); }} total={total} />}
+        {treeColors.length > 0 && <MemoryTree colors={treeColors} />}
 
-      {/* 🌸 心情花田 · 🏮 暮色天灯 · 🎣 拾海垂钓 · 🎐 风铃心曲 */}
-      <MoodGarden inputRef={inputRef} posRef={posRef} accent={visual.accent} flowers={flowers} onPlant={onPlantFlower} onNear={onNearFlower} />
-      {/* 天灯 2.7M 重模型:独立 Suspense,首屏不等它(夜晚放飞时早已就绪) */}
-      <Suspense fallback={null}><SkyLanterns launchRef={lanternLaunch} posRef={posRef} /></Suspense>
-      <Fireworks launchRef={lanternLaunch} posRef={posRef} active={isNight} tier={tier} />
-      <FishingSpot posRef={posRef} onAtWater={onAtWater} casting={fishingCasting} />
-      <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
-      <LocationAudio posRef={posRef} night={visual.time === "night" || visual.stars} />
-      {songDone && <Fireflies />}
-      </Suspense>
+        {/* 🌸 心情花田 · 🏮 暮色天灯 · 🎣 拾海垂钓 · 🎐 风铃心曲 */}
+        <MoodGarden inputRef={inputRef} posRef={posRef} accent={visual.accent} flowers={flowers} onPlant={onPlantFlower} onNear={onNearFlower} />
+        {/* 天灯 2.7M 重模型:独立 Suspense,首屏不等它(夜晚放飞时早已就绪) */}
+        <DelayedMount ms={revealDelay.lanterns}>
+          <Suspense fallback={null}><SkyLanterns launchRef={lanternLaunch} posRef={posRef} /></Suspense>
+        </DelayedMount>
+        <Fireworks launchRef={lanternLaunch} posRef={posRef} active={isNight} tier={tier} />
+        <FishingSpot posRef={posRef} onAtWater={onAtWater} casting={fishingCasting} />
+        <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
+        <LocationAudio posRef={posRef} night={visual.time === "night" || visual.stars} />
+        {songDone && <Fireflies count={tier === "low" ? 24 : 46} />}
+        </Suspense>
+      </DelayedMount>
 
-      {/* 帧率自适应:非 low 档才监测;持续 <30fps 触发 degraded → 关 Sobel + 降 dpr,机器忙时自动保流畅 */}
-      {tier !== "low" && <PerfWatch onDegrade={() => setDegraded(true)} />}
+      {/* 帧率自适应:高档掉帧会关 Sobel;低档继续掉帧则再降 dpr,机器忙时自动保流畅 */}
+      <PerfWatch tier={tier} onDegrade={() => setDegraded(true)} />
 
       {/* 手绘后期:墨线 + 色阶 + 纸纹。low 档(移动端/弱设备)跳过 Sobel 后期，
           直接用 toon 材质的卡通感——Sobel 是本场景最大开销。?perf=high 仍可解锁。
@@ -6247,7 +6638,7 @@ function ExploreScene({
 // 触屏摇杆(左下)。pointer 拖动写入 inputRef；松开归零。
 function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
   const base = useRef<HTMLDivElement>(null);
-  const [knob, setKnob] = useState({ x: 0, y: 0 });
+  const knobRef = useRef<HTMLDivElement>(null);
   const active = useRef(false);
 
   const update = (clientX: number, clientY: number) => {
@@ -6263,7 +6654,9 @@ function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
       dx /= len;
       dy /= len;
     }
-    setKnob({ x: dx, y: dy });
+    if (knobRef.current) {
+      knobRef.current.style.transform = `translate(-50%,-50%) translate(${dx * 36}px, ${dy * 36}px)`;
+    }
     if (inputRef.current) {
       inputRef.current.x = dx;
       inputRef.current.y = dy;
@@ -6271,7 +6664,9 @@ function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
   };
   const end = () => {
     active.current = false;
-    setKnob({ x: 0, y: 0 });
+    if (knobRef.current) {
+      knobRef.current.style.transform = "translate(-50%,-50%) translate(0px, 0px)";
+    }
     if (inputRef.current) {
       inputRef.current.x = 0;
       inputRef.current.y = 0;
@@ -6281,7 +6676,7 @@ function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
   return (
     <div
       ref={base}
-      className="absolute h-28 w-28 rounded-full border border-white/25 bg-white/10 backdrop-blur-md touch-none select-none"
+      className="xy-explore-joystick absolute h-28 w-28 rounded-full border border-white/25 bg-white/10 backdrop-blur-md touch-none select-none"
       style={{ left: "calc(1.4rem + env(safe-area-inset-left))", bottom: "calc(1.6rem + env(safe-area-inset-bottom))" }}
       onPointerDown={(e) => {
         active.current = true;
@@ -6295,8 +6690,9 @@ function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
       onPointerCancel={end}
     >
       <div
+        ref={knobRef}
         className="pointer-events-none absolute left-1/2 top-1/2 h-12 w-12 rounded-full bg-white/70"
-        style={{ transform: `translate(-50%,-50%) translate(${knob.x * 36}px, ${knob.y * 36}px)` }}
+        style={{ transform: "translate(-50%,-50%) translate(0px, 0px)" }}
       />
     </div>
   );
@@ -6665,10 +7061,10 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [carPrompt, setCarPrompt] = useState<"enter" | "exit" | null>(null); // 车交互提示(由 Player 回报)
   const [giftedIds, setGiftedIds] = useState<number[]>([]); // 已送过心愿的 NPC
   const [avatar, setAvatar] = useState<Avatar>(loadAvatar); // 你捏的人物外观(本地保存)
-  const [character, setCharacter] = useState<CharKind>(() => { // 可切换主角:记忆的守护者 / Pocoyo / 捏的人(迁移旧 xy_use_hero)
+  const [character, setCharacter] = useState<CharKind>(() => { // 可切换主角:心屿守护者 / 记忆的守护者 / Pocoyo / 捏的人(迁移旧 xy_use_hero)
     try {
       const v = localStorage.getItem("xy_char");
-      if (v === "hero" || v === "pocoyo" || v === "avatar") return v;
+      if (v === "hero" || v === "guardian" || v === "pocoyo" || v === "avatar") return v;
       return localStorage.getItem("xy_use_hero") === "0" ? "avatar" : "hero";
     } catch { return "hero"; }
   });
@@ -6961,16 +7357,18 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   useEffect(() => { try { localStorage.setItem("xy_garden", JSON.stringify(flowers.slice(-120))); } catch { /* ignore */ } }, [flowers]);
   useEffect(() => { try { localStorage.setItem("xy_night", night ? "1" : "0"); } catch { /* ignore */ } }, [night]);
   useEffect(() => { try { localStorage.setItem("xy_lanterns", String(lanternCount)); } catch { /* ignore */ } }, [lanternCount]);
-  // 天灯曲目 + 天灯模型(kmd.glb 2.9M)后台预热(idle,避开上岛首帧资源争抢):
-  // 使首次放飞即可奏真实音乐、且天灯模型已在缓存——避免「首次放飞才加载解析 kmd.glb」的卡顿尖峰。
+  // 天灯曲目后台预热；kmd.glb 仅非 low 档提前拉取，移动端把模型解析留到更晚的场景延迟里。
   useEffect(() => {
     const w = window as Window & { requestIdleCallback?: (cb: () => void) => number; cancelIdleCallback?: (id: number) => void };
     let idle = 0; let to: ReturnType<typeof setTimeout> | undefined;
-    const warm = () => { prewarmLanternCues(); useGLTF.preload(MODELS.skyLantern); };
+    const warm = () => {
+      prewarmLanternCues();
+      if (tier !== "low") useGLTF.preload(MODELS.skyLantern);
+    };
     if (w.requestIdleCallback) idle = w.requestIdleCallback(warm);
     else to = setTimeout(warm, 4000);
     return () => { if (idle && w.cancelIdleCallback) w.cancelIdleCallback(idle); if (to) clearTimeout(to); };
-  }, []);
+  }, [tier]);
   useEffect(() => { try { localStorage.setItem("xy_song", songDone ? "1" : "0"); } catch { /* ignore */ } }, [songDone]);
   useEffect(() => { try { localStorage.setItem("xy_catch", String(catchCount)); } catch { /* ignore */ } }, [catchCount]);
   // 垂钓:抛竿 → 鱼讯(随机 1.6~3.8s) → 未及时收线则溜走;离开水边自动取消
@@ -7249,14 +7647,14 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   );
 
   return (
-    <div className="fixed inset-0 z-[70] overflow-hidden" style={{ background: sky }}>
+    <div className="xy-explore-mode fixed inset-0 z-[70] overflow-hidden" style={{ background: sky }}>
       <Canvas
         // antialias 跟随性能分档（对齐 Island3D）：低端/软渲染/移动端关掉 MSAA 省开销，
         // 反正这档已走 toon 材质、跳过 Sobel 手绘后期，画面观感损失极小。
         gl={{ antialias: tier === "high", alpha: false, powerPreference: "high-performance" }}
-        // dpr 上限收一档(高端 1.75→1.4):Retina 上每帧像素 −36%,写实模型逐帧渲染 + Sobel 全屏后期都更轻,
-        // 移动时掉帧明显改善(画面更顺),清晰度肉眼几乎无损。弱设备仍 1.25 不变。
-        dpr={tier === "low" ? [1, 1.25] : [1, 1.4]}
+        // dpr 上限收一档(高端 1.75→1.4):Retina 上每帧像素 −36%,写实模型逐帧渲染 + Sobel 全屏后期都更轻。
+        // low 档再降到 0.85~1，移动端优先保触控响应和稳定帧率。
+        dpr={tier === "low" ? [0.85, 1] : [1, 1.4]}
         camera={{ position: [0, 150, 290], fov: 55, near: 0.1, far: 3400 }}
         // 林间土路(DriveScene)是覆盖在上方的独立 Canvas,且与本场景共用 inputRef——
         // 不冻结的话踩油门(W)会让被遮住的小人在底下「走路」,蹭出脚步声(还白白渲染全遮挡场景)。
@@ -7315,7 +7713,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
 
       {/* 任务 HUD：主进度突出，次要发现（心愿/鲸落/漂流瓶）收成一行淡出，避免堆叠多行。
           顶部居中整列用 flex-col + gap 排布——风铃提示作为次级 pill 自动叠在主面板下方，绝不重叠。 */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-2 px-3" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
+      <div className="xy-explore-hud pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-2 px-3" style={{ paddingTop: "calc(1.2rem + env(safe-area-inset-top))" }}>
         {/* 主目标收成一颗 slim 胶囊：去掉教学副标题（计数已自明），次要发现压成图标+数字缀在后面，整体更轻、更像游戏 HUD */}
         <div className="panel-glass-2 flex min-w-0 max-w-[92vw] items-center gap-2 rounded-full px-4 py-1.5">
           <span className="shrink-0 whitespace-nowrap font-display text-[15px] tracking-wide text-white/90">
@@ -7370,7 +7768,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       <Minimap posRef={posRef} headingRef={headingRef} night={night || visual.time === "night" || !!visual.stars} />
 
       {/* 左上极简菜单：低频功能（捏人/昼夜/天灯/种花/回到岸上）收进 ☰，平时只留一个圆按钮 */}
-      <div className="absolute z-20" style={{ left: "calc(1.2rem + env(safe-area-inset-left))", top: "calc(1.2rem + env(safe-area-inset-top))" }}>
+      <div className="xy-explore-menu absolute z-20" style={{ left: "calc(1.2rem + env(safe-area-inset-left))", top: "calc(1.2rem + env(safe-area-inset-top))" }}>
         <button
           type="button"
           onClick={() => { setMenuOpen((v) => !v); playSfx("tap"); }}
@@ -7440,7 +7838,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
                 {CHAR_LABEL[character]} ⇄
               </button>
             </div>
-            {character === "hero" && (
+            {character === "guardian" && (
               <div className="flex items-center justify-between mt-1 mb-1">
                 <span className="text-caption text-white/55">表情</span>
                 <div className="flex gap-1">
@@ -7467,7 +7865,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
 
       {/* 操作提示 */}
       <p
-        className="absolute text-caption text-white/45"
+        className="xy-explore-control-hint absolute text-caption text-white/45"
         style={{ right: "calc(1.6rem + env(safe-area-inset-right))", bottom: "calc(2rem + env(safe-area-inset-bottom))" }}
       >
         {carPrompt === "exit"
@@ -7479,20 +7877,11 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
             : "WASD / 方向键 移动 · 空格跳跃 · F 招手 · Q 吹笛"}
       </p>
 
-      {/* 右下动作按钮组(触屏):精灵 + 吹笛 + 招手 + 跳跃，统一 44 圆;开车时隐藏,改显加速踏板。
+      {/* 右下动作按钮组(触屏):吹笛 + 招手 + 跳跃，统一 44 圆;开车时隐藏,改显加速踏板。
           精灵面板打开时一并隐藏——面板右贴边、窄屏近乎满宽,这组按钮会压在面板下半部(消息气泡+秘密标签)上;
-          且吹笛/招手/跳跃是世界动作,看面板时用不到,✦ 也与面板的「×」收起重复。 */}
+          且吹笛/招手/跳跃是世界动作,看面板时用不到。精灵入口保留顶部唯一按钮,避免同屏出现两个入口。 */}
       {carPrompt !== "exit" && !companionOpen && (
-      <div className="absolute z-10 flex flex-col items-center gap-2.5" style={{ right: "calc(1.4rem + env(safe-area-inset-right))", bottom: "calc(5rem + env(safe-area-inset-bottom))" }}>
-        <button
-          onClick={() => { setCompanionOpen((o) => !o); playSfx("tap"); }}
-          className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 select-none active:scale-90 transition-transform"
-          aria-label={companionOpen ? "收起专属精灵" : "打开专属精灵"}
-          aria-pressed={companionOpen}
-          title="专属精灵"
-        >
-          <span className="text-[18px] leading-none text-[#ffe2a0]">✦</span>
-        </button>
+      <div className="xy-explore-action-pad absolute z-10 flex flex-col items-center gap-2.5" style={{ right: "calc(1.4rem + env(safe-area-inset-right))", bottom: "calc(5rem + env(safe-area-inset-bottom))" }}>
         <button
           onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.flute = true; }}
           className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
@@ -7526,7 +7915,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           onPointerUp={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.boost = false; }}
           onPointerLeave={() => { if (inputRef.current) inputRef.current.boost = false; }}
           onPointerCancel={() => { if (inputRef.current) inputRef.current.boost = false; }}
-          className="absolute z-10 flex h-16 w-16 items-center justify-center rounded-full panel-glass-2 text-white/90 select-none active:scale-90 transition-transform"
+          className="xy-explore-boost absolute z-10 flex h-16 w-16 items-center justify-center rounded-full panel-glass-2 text-white/90 select-none active:scale-90 transition-transform"
           style={{ right: "calc(1.6rem + env(safe-area-inset-right))", bottom: "calc(6rem + env(safe-area-inset-bottom))", touchAction: "none" }}
           aria-label="加速"
         >

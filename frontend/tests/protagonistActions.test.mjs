@@ -99,10 +99,10 @@ function sourceBlock(source, startNeedle, endNeedle) {
   return source.slice(start, end);
 }
 
-test("GltfHero connects protagonist GLB clips through drei useAnimations", async () => {
-  const block = sourceBlock(await readExploreSource(), "function GltfHero", "// 可切换主角的种类");
+test("GltfGuardian connects protagonist GLB clips through drei useAnimations", async () => {
+  const block = sourceBlock(await readExploreSource(), "function GltfGuardian", "// 可切换主角的种类");
 
-  assert.match(block, /const \{ scene, animations \} = useGLTF\(MODELS\.heroChar\)/);
+  assert.match(block, /const \{ scene, animations \} = useGLTF\(MODELS\.guardianChar\)/);
   assert.match(block, /useAnimations\(animations, ref\)/);
   assert.match(block, /actionRef\?: React\.RefObject<CharacterActionClip>/);
   assert.match(block, /actions\[next\]/);
@@ -117,8 +117,9 @@ test("Player selects and routes the current action clip for every playable chara
   assert.match(source, /selectCharacterAction/);
   assert.match(playerBlock, /const characterActionRef = useRef<CharacterActionClip>\("Idle"\)/);
   assert.match(playerBlock, /characterActionRef\.current = selectCharacterAction/);
-  assert.match(playerBlock, /const glbClipActive = character === "hero" && characterActionRef\.current !== "Idle"/);
+  assert.match(playerBlock, /const glbClipActive = \(character === "guardian" && characterActionRef\.current !== "Idle"\) \|\| \(character === "hero" && \(characterActionRef\.current === "WalkLoop" \|\| characterActionRef\.current === "RunLoop"\)\)/);
   assert.match(playerBlock, /<GltfHero[\s\S]*actionRef=\{characterActionRef\}/);
+  assert.match(playerBlock, /<GltfGuardian[\s\S]*actionRef=\{characterActionRef\}/);
   assert.match(playerBlock, /<GltfPocoyo[\s\S]*actionRef=\{characterActionRef\}/);
   assert.match(playerBlock, /<GltfAvatar[\s\S]*legL=\{legL\}[\s\S]*legR=\{legR\}[\s\S]*armL=\{armL\}[\s\S]*armR=\{armR\}/);
 });
