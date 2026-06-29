@@ -6837,7 +6837,7 @@ function ExploreScene({
         <Fireworks launchRef={lanternLaunch} posRef={posRef} active={isNight} tier={tier} />
         <FishingSpot posRef={posRef} onAtWater={onAtWater} casting={fishingCasting} />
         <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
-        <LocationAudio posRef={posRef} night={visual.time === "night" || visual.stars} />
+        <LocationAudio posRef={posRef} night={isNight} />
         {songDone && <Fireflies count={tier === "low" ? 24 : 46} />}
         </Suspense>
       </DelayedMount>

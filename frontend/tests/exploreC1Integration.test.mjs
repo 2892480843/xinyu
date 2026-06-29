@@ -118,6 +118,8 @@ test("explore districts drive proximity prompts and location ambience", async ()
   assert.match(source, /登高望岛/);
   assert.match(audioBlock, /findExploreZone\(p\.x,\s*p\.z\)/);
   assert.match(audioBlock, /exploreZoneAmbience/);
+  assert.match(source, /<LocationAudio posRef=\{posRef\} night=\{isNight\} \/>/);
+  assert.doesNotMatch(source, /<LocationAudio posRef=\{posRef\} night=\{visual\.time === "night"/);
   assert.match(proximityBlock, /tick\.current = 0\.25/);
   assert.match(proximityBlock, /key !== lastKey\.current/);
   assert.match(proximityBlock, /onNear\(zone\)/);
