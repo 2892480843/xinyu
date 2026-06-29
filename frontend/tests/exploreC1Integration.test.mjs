@@ -27,3 +27,22 @@ test("explore map is driven by the C1 zone registry", async () => {
     assert.match(iconBlock, new RegExp(`case "${kind}"`));
   }
 });
+
+test("explore mode exposes time-of-day and rain controls", async () => {
+  const source = await readExploreSource();
+  const menuBlock = sourceBlock(source, "xy-explore-menu", "换装面板");
+
+  assert.match(source, /loadExploreEnvironment/);
+  assert.match(source, /saveExploreEnvironment/);
+  assert.match(source, /EXPLORE_TIME_OPTIONS/);
+  assert.match(source, /EXPLORE_WEATHER_OPTIONS/);
+  assert.match(menuBlock, /时辰/);
+  assert.match(menuBlock, /天气/);
+  assert.match(menuBlock, /日出/);
+  assert.match(menuBlock, /中午/);
+  assert.match(menuBlock, /夕阳/);
+  assert.match(menuBlock, /夜晚/);
+  assert.match(menuBlock, /晴天/);
+  assert.match(menuBlock, /下雨/);
+  assert.doesNotMatch(menuBlock, /切白天|切夜晚/);
+});

@@ -26,6 +26,14 @@ import { selectCharacterAction, type CharacterActionClip } from "../lib/protagon
 import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
 import { EXPLORE_MAP_POIS, type ExplorePoiKind } from "../lib/exploreZones";
 import {
+  EXPLORE_TIME_OPTIONS,
+  EXPLORE_WEATHER_OPTIONS,
+  loadExploreEnvironment,
+  resolveExploreEnvironmentVisual,
+  saveExploreEnvironment,
+  type ExploreEnvironment,
+} from "../lib/exploreEnvironment";
+import {
   createCompanionVoice,
   getCompanionLevel,
   loadAutoVoice,
@@ -6316,6 +6324,7 @@ function ExploreLoading() {
 
 function ExploreScene({
   visual,
+  environment,
   inputRef,
   posRef,
   headingRef,
@@ -6338,7 +6347,6 @@ function ExploreScene({
   onCompanionInteract,
   character,
   expression,
-  forceNight,
   flowers,
   onPlantFlower,
   onNearFlower,
@@ -6362,6 +6370,7 @@ function ExploreScene({
   tier,
 }: {
   visual: SceneVisual;
+  environment: ExploreEnvironment;
   inputRef: React.RefObject<Input>;
   posRef: React.RefObject<THREE.Vector3>;
   headingRef: React.RefObject<number>;
@@ -6384,7 +6393,6 @@ function ExploreScene({
   onCompanionInteract?: () => void;
   character: CharKind;
   expression: string;
-  forceNight: boolean;
   flowers: Flower[];
   onPlantFlower: (x: number, z: number, color: string) => void;
   onNearFlower: (f: Flower | null) => void;
@@ -6409,12 +6417,13 @@ function ExploreScene({
 }) {
   const terrain = useMemo(() => buildExploreTerrain(), []);
   useEffect(() => () => terrain.dispose(), [terrain]);
+  const envVisual = useMemo(() => resolveExploreEnvironmentVisual(visual, environment), [visual, environment]);
+  const forceNight = environment.timeOfDay === "night";
   useEffect(() => { sceneEnv.night = forceNight; }, [forceNight]); // 夜间标记 → 车头灯只在夜里亮
   // posRef / headingRef 由父级 ExploreMode 持有并下传(Canvas 外的小地图也要实时读到玩家位置/朝向)
   const collidersRef = useRef<Map<string, Collider[]> | null>(null); // 障碍碰撞网格(Town 填充,Player 读取)
   const cheerRef = useRef(0); // 拾取计数(Player 读 → 欢呼)
   const nearRef = useRef(-1); // 最近 NPC(Player 读 → 好奇表情)
-  const fogHex = useMemo(() => new THREE.Color(visual.sea).getHex(), [visual.sea]);
   const shallowHex = useMemo(() => new THREE.Color(visual.seaHighlight).lerp(new THREE.Color("#eafdff"), 0.5).getStyle(), [visual.seaHighlight]); // 浅滩:海面高光再提亮
   const sketch = useMemo(() => new SketchEffect(), []);
   useEffect(() => () => sketch.dispose(), [sketch]);
@@ -6450,9 +6459,9 @@ function ExploreScene({
         grd.addColorStop(0.72, "#312a5a");
         grd.addColorStop(1, "#4a3b60");
       } else {
-        grd.addColorStop(0, visual.skyTop);
-        grd.addColorStop(0.5, visual.skyMid);
-        grd.addColorStop(1, visual.skyBottom);
+        grd.addColorStop(0, envVisual.skyTop);
+        grd.addColorStop(0.5, envVisual.skyMid);
+        grd.addColorStop(1, envVisual.skyBottom);
       }
       ctx.fillStyle = grd;
       ctx.fillRect(0, 0, W, H);
@@ -6470,7 +6479,7 @@ function ExploreScene({
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
-  }, [visual.skyTop, visual.skyMid, visual.skyBottom, forceNight]);
+  }, [envVisual.skyTop, envVisual.skyMid, envVisual.skyBottom, forceNight]);
   useEffect(() => () => skyTex.dispose(), [skyTex]);
   // toon 渐变(地形平涂赛璐璐)
   const toonGrad = useMemo(() => makeToonGradient(), []);
@@ -6498,10 +6507,10 @@ function ExploreScene({
   return (
     <>
       <primitive object={skyTex} attach="background" />
-      <fog attach="fog" args={[forceNight ? 0x1a2440 : fogHex, 230, 1060]} />
-      <ambientLight intensity={forceNight ? 0.30 : 0.75} />
-      <hemisphereLight args={[new THREE.Color(forceNight ? "#222c54" : visual.skyMid).getHex(), new THREE.Color(visual.sea).getHex(), forceNight ? 0.30 : 0.6]} />
-      <directionalLight position={[5, 8, 3]} intensity={forceNight ? 0.46 : 1.2} color={forceNight ? "#aab9e6" : visual.celestial} />
+      <fog attach="fog" args={[new THREE.Color(envVisual.fog).getHex(), envVisual.fogNear, envVisual.fogFar]} />
+      <ambientLight intensity={envVisual.ambient} />
+      <hemisphereLight args={[new THREE.Color(envVisual.skyMid).getHex(), new THREE.Color(visual.sea).getHex(), envVisual.hemi]} />
+      <directionalLight position={environment.timeOfDay === "sunset" ? [-7, 5, -4] : [5, 8, 3]} intensity={forceNight ? 0.46 : 1.2} color={envVisual.directional} />
       {isNight && <Stars radius={340} depth={80} count={4200} factor={4.5} saturation={0} fade speed={0.4} />}
       {isNight && <MilkyWay />}
       {isNight && <BrightStars />}
@@ -7334,7 +7343,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   // ====================== 新玩法:花田 / 天灯 / 垂钓 / 风铃心曲 ======================
   const [flowers, setFlowers] = useState<Flower[]>(() => { try { return JSON.parse(localStorage.getItem("xy_garden") || "[]"); } catch { return []; } });
   const [nearFlower, setNearFlower] = useState<Flower | null>(null);
-  const [night, setNight] = useState<boolean>(() => { try { return localStorage.getItem("xy_night") === "1"; } catch { return false; } });
+  const [environment, setEnvironment] = useState<ExploreEnvironment>(() => { try { return loadExploreEnvironment(localStorage); } catch { return { timeOfDay: "noon", weather: "clear" }; } });
   const [lanternOpen, setLanternOpen] = useState(false);
   const [lanternText, setLanternText] = useState("");
   const [lanternCount, setLanternCount] = useState<number>(() => { try { return parseInt(localStorage.getItem("xy_lanterns") || "0", 10) || 0; } catch { return 0; } });
@@ -7350,7 +7359,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [songFlash, setSongFlash] = useState(false);
   const SONG = [2, 0, 3, 1, 4]; // 风铃心曲目标序(五声)
   useEffect(() => { try { localStorage.setItem("xy_garden", JSON.stringify(flowers.slice(-120))); } catch { /* ignore */ } }, [flowers]);
-  useEffect(() => { try { localStorage.setItem("xy_night", night ? "1" : "0"); } catch { /* ignore */ } }, [night]);
+  useEffect(() => { try { saveExploreEnvironment(localStorage, environment); } catch { /* ignore */ } }, [environment]);
   useEffect(() => { try { localStorage.setItem("xy_lanterns", String(lanternCount)); } catch { /* ignore */ } }, [lanternCount]);
   // 天灯曲目后台预热；kmd.glb 仅非 low 档提前拉取，移动端把模型解析留到更晚的场景延迟里。
   useEffect(() => {
@@ -7435,6 +7444,18 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   };
   const ringChime = (i: number) => { chimeNote(CHIME_FREQS[i]); emitCompanionEvent("chime"); if (songDone) return; setSongProgress((p) => (i === SONG[p] ? p + 1 : i === SONG[0] ? 1 : 0)); };
   const fmtWhen = (t: number) => { const d = new Date(t); return `${d.getMonth() + 1}月${d.getDate()}日`; };
+  const activeTime = EXPLORE_TIME_OPTIONS.find((item) => item.value === environment.timeOfDay) ?? EXPLORE_TIME_OPTIONS[1];
+  const activeWeather = EXPLORE_WEATHER_OPTIONS.find((item) => item.value === environment.weather) ?? EXPLORE_WEATHER_OPTIONS[0];
+  const isExploreNight = environment.timeOfDay === "night";
+  const setExploreTime = (timeOfDay: ExploreEnvironment["timeOfDay"]) => {
+    if (timeOfDay === "night" && environment.timeOfDay !== "night") emitCompanionEvent("night");
+    setEnvironment((current) => ({ ...current, timeOfDay }));
+    playSfx("tap");
+  };
+  const setExploreWeather = (weather: ExploreEnvironment["weather"]) => {
+    setEnvironment((current) => ({ ...current, weather }));
+    playSfx(weather === "rain" ? "ripple" : "tap");
+  };
 
   const nearRef = useRef(-1);
   const giftedRef = useRef<number[]>([]);
@@ -7602,7 +7623,8 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     };
   }, []);
 
-  const sky = `linear-gradient(to bottom, ${visual.skyTop} 0%, ${visual.skyMid} 48%, ${visual.skyBottom} 82%)`;
+  const envVisual = resolveExploreEnvironmentVisual(visual, environment);
+  const sky = `linear-gradient(to bottom, ${envVisual.skyTop} 0%, ${envVisual.skyMid} 48%, ${envVisual.skyBottom} 82%)`;
   const done = collected >= total;
   const imprintsDone = hasImprints && pickedImprints.length >= imp.length;
   const allGifted = giftedIds.length >= NPC_TOTAL; // 送完岛上所有人 → 庆祝
@@ -7657,7 +7679,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         frameloop={forestDrive ? "never" : "always"}
       >
         <Suspense fallback={<ExploreLoading />}>
-          <ExploreScene visual={visual} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} forceNight={night} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} tier={tier} />
+          <ExploreScene visual={visual} environment={environment} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} tier={tier} />
         </Suspense>
       </Canvas>
 
@@ -7760,7 +7782,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       )}
 
       {/* 左上小地图(常驻缩略图,点开 → 可缩放全岛图) */}
-      <Minimap posRef={posRef} headingRef={headingRef} night={night || visual.time === "night" || !!visual.stars} />
+      <Minimap posRef={posRef} headingRef={headingRef} night={isExploreNight || visual.time === "night" || !!visual.stars} />
 
       {/* 左上极简菜单：低频功能（捏人/昼夜/天灯/种花/回到岸上）收进 ☰，平时只留一个圆按钮 */}
       <div className="xy-explore-menu absolute z-20" style={{ left: "calc(1.2rem + env(safe-area-inset-left))", top: "calc(1.2rem + env(safe-area-inset-top))" }}>
@@ -7782,7 +7804,30 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
               onClick={(e) => e.stopPropagation()}
             >
               <MenuButton icon="✎" label="捏人" onClick={() => { setDressOpen(true); setMenuOpen(false); }} />
-              <MenuButton icon={night ? "🌙" : "☀️"} label={night ? "切白天" : "切夜晚"} onClick={() => { if (!night) emitCompanionEvent("night"); setNight((v) => !v); playSfx("tap"); }} />
+              {/* 日出 / 中午 / 夕阳 / 夜晚 / 晴天 / 下雨 */}
+              <div className="px-2 pb-1 pt-1 text-[10px] uppercase tracking-[0.18em] text-white/38">时辰</div>
+              <div className="grid grid-cols-2 gap-1">
+                {EXPLORE_TIME_OPTIONS.map((item) => (
+                  <MenuButton
+                    key={item.value}
+                    icon={item.icon}
+                    label={item.value === activeTime.value ? `${item.label} ✓` : item.label}
+                    onClick={() => setExploreTime(item.value)}
+                  />
+                ))}
+              </div>
+              <div className="my-1 h-px bg-white/10" />
+              <div className="px-2 pb-1 pt-1 text-[10px] uppercase tracking-[0.18em] text-white/38">天气</div>
+              <div className="grid grid-cols-2 gap-1">
+                {EXPLORE_WEATHER_OPTIONS.map((item) => (
+                  <MenuButton
+                    key={item.value}
+                    icon={item.icon}
+                    label={item.value === activeWeather.value ? `${item.label} ✓` : item.label}
+                    onClick={() => setExploreWeather(item.value)}
+                  />
+                ))}
+              </div>
               <MenuButton icon="🏮" label="放天灯" onClick={() => { setLanternOpen(true); setMenuOpen(false); }} />
               <MenuButton icon="🪔" label="放飞一片" onClick={releaseLanternFlock} />
               <button
