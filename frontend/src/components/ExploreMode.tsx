@@ -7983,6 +7983,11 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
             </span>
           )}
         </div>
+        {nearDistrict && (
+          <div className="panel-glass-1 max-w-[92vw] rounded-full px-3.5 py-1 text-caption text-white/72">
+            {nearDistrict.icon} {nearDistrict.label} · {districtLine(nearDistrict)}
+          </div>
+        )}
         {/* 风铃心曲：精简引导——进度圆点已表达「依次」，只留一句方向提示 */}
         {!songDone && (
           <div className="panel-glass-1 whitespace-nowrap rounded-full px-3.5 py-1 text-caption text-white/70">🎐 跟着发光的风铃 {SONG.map((_, i) => (i < songProgress ? "◍" : "○")).join(" ")}</div>
@@ -8310,14 +8315,6 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           <div className="panel-glass-2 rounded-card px-7 py-5 text-center max-w-[16rem]">
             <p className="font-display text-[19px] tracking-wider text-white/90">心曲已成 🎐</p>
             <p className="text-caption text-white/65 mt-2 leading-relaxed">岛屿的摇篮曲被你唤齐了，<br />满岛萤火轻轻升起。</p>
-          </div>
-        </div>
-      )}
-
-      {nearDistrict && (
-        <div className="pointer-events-none absolute inset-x-0 top-[11rem] z-20 flex justify-center px-4">
-          <div className="panel-glass-1 max-w-[92vw] rounded-full px-3.5 py-1 text-caption text-white/72">
-            {nearDistrict.icon} {nearDistrict.label} · {districtLine(nearDistrict)}
           </div>
         </div>
       )}
