@@ -61,7 +61,7 @@ import {
   type RevisionResponse,
 } from "../lib/api";
 import { clearIdentity, loadIdentity, type LocalIdentity } from "../lib/localIdentity";
-import { resolveScene, DEFAULT_VISUAL, EMOTION_META, type BackendScene, type SceneVisual } from "../lib/sceneMap";
+import { resolveScene, DEFAULT_VISUAL, EMOTION_META, type BackendScene } from "../lib/sceneMap";
 import { STREAM_STAGE_TEXT, classifyError, type ErrorVoiceKind } from "../lib/islandVoice";
 import IslandHushCard from "../components/IslandHushCard";
 import TimeMachine from "../components/TimeMachine";
@@ -72,7 +72,6 @@ import { useParallax } from "../hooks/useParallax";
 import { useSkin3d } from "../hooks/useSkin3d";
 
 type Phase = "input" | "loading" | "breathing" | "narrative" | "safety";
-const EXPLORE_ARRIVAL_MIN_MS = 1150;
 
 // 高强度负面情绪 + 未触发安全硬阻断时，先邀请用户做一次潮汐呼吸再继续叙事。
 // 安全触发优先：自伤风险直接走 SafetyNotice，不被呼吸打断。
@@ -83,45 +82,6 @@ function shouldOfferBreathing(res: ReflectResponse): boolean {
   if (res.safety?.triggered) return false;
   if (!BREATHING_EMOTIONS.has(res.emotion)) return false;
   return res.intensity >= BREATHING_INTENSITY;
-}
-
-function IslandArrivalOverlay({ visual }: { visual: SceneVisual }) {
-  return (
-    <motion.div
-      key="explore-arrival"
-      className="island-arrival-overlay"
-      role="status"
-      aria-live="polite"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.34, ease: "easeOut" }}
-      style={{
-        background: `linear-gradient(180deg, rgba(3, 8, 22, 0.82) 0%, ${visual.skyTop}88 48%, ${visual.sea}cc 100%)`,
-      }}
-    >
-      <motion.div
-        className="island-arrival-light"
-        aria-hidden
-        initial={{ opacity: 0.15, scale: 0.84, y: 24 }}
-        animate={{ opacity: 0.82, scale: 1.08, y: 0 }}
-        transition={{ duration: 1.05, ease: "easeOut" }}
-        style={{ background: `radial-gradient(circle at center, ${visual.accent}d9 0%, ${visual.seaHighlight}80 38%, transparent 72%)` }}
-      />
-      <span className="island-arrival-mist island-arrival-mist--far" aria-hidden />
-      <span className="island-arrival-mist island-arrival-mist--mid" aria-hidden />
-      <span className="island-arrival-mist island-arrival-mist--near" aria-hidden />
-      <motion.div
-        className="island-arrival-copy"
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.55, delay: 0.12, ease: "easeOut" }}
-      >
-        <span className="island-arrival-kicker">海风把路照亮了</span>
-        <strong>正在靠岸……</strong>
-      </motion.div>
-    </motion.div>
-  );
 }
 
 export default function Home() {
@@ -174,32 +134,6 @@ export default function Home() {
   const [islandMapOpen, setIslandMapOpen] = useState(false);
   // 自由探索：上岛走走，控制小人收集心愿
   const [exploreOpen, setExploreOpen] = useState(false);
-  const [exploreArrivalVisible, setExploreArrivalVisible] = useState(false);
-  const exploreArrivalTimerRef = useRef<number | null>(null);
-
-  const clearExploreArrivalTimer = useCallback(() => {
-    if (exploreArrivalTimerRef.current === null) return;
-    window.clearTimeout(exploreArrivalTimerRef.current);
-    exploreArrivalTimerRef.current = null;
-  }, []);
-
-  const openExploreMode = useCallback(() => {
-    clearExploreArrivalTimer();
-    setExploreArrivalVisible(true);
-    setExploreOpen(true);
-    exploreArrivalTimerRef.current = window.setTimeout(() => {
-      setExploreArrivalVisible(false);
-      exploreArrivalTimerRef.current = null;
-    }, EXPLORE_ARRIVAL_MIN_MS);
-  }, [clearExploreArrivalTimer]);
-
-  const closeExploreMode = useCallback(() => {
-    clearExploreArrivalTimer();
-    setExploreArrivalVisible(false);
-    setExploreOpen(false);
-  }, [clearExploreArrivalTimer]);
-
-  useEffect(() => () => clearExploreArrivalTimer(), [clearExploreArrivalTimer]);
   // 首页就绪后空闲时预取「上岛」重 chunk + 模型，等用户点按钮时多半已在缓存里（首屏上岛提速）。
   useEffect(() => {
     // 省流量 / 弱网(2g)下不主动预缓存重资源，避免替用户花流量；改由 hover/点按时按需取。
@@ -736,7 +670,7 @@ export default function Home() {
               {/* 自由探索不依赖历史,任何时候都能上岛走走 —— 主行动召唤,明亮药丸 + 光晕脉冲 + 声纳环,光晕强度随情绪联动 */}
               <div className="text-center mt-4">
                 <motion.button
-                  onClick={openExploreMode}
+                  onClick={() => setExploreOpen(true)}
                   onPointerEnter={prefetchExplore}
                   onPointerDown={prefetchExplore}
                   className="island-cta"
@@ -963,15 +897,12 @@ export default function Home() {
       {/* 自由探索：z-[70] 控制小人在岛上走动收集心愿 */}
       {exploreOpen && (
         // 探索模式崩溃（WebGL 上下文丢失等）→ 自动退出回到岛屿主界面，而非整页失联。
-        <ErrorBoundary fallback={null} onError={closeExploreMode}>
+        <ErrorBoundary fallback={null} onError={() => setExploreOpen(false)}>
           <Suspense fallback={null}>
-            <ExploreMode key={identity?.user_id ?? "guest"} visual={visual} onExit={closeExploreMode} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} userId={identity?.user_id} />
+            <ExploreMode key={identity?.user_id ?? "guest"} visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} userId={identity?.user_id} />
           </Suspense>
         </ErrorBoundary>
       )}
-      <AnimatePresence>
-        {exploreArrivalVisible && <IslandArrivalOverlay key="explore-arrival" visual={visual} />}
-      </AnimatePresence>
     </div>
   );
 }
