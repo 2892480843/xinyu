@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/immutability, react-hooks/set-state-in-effect -- R3F animation refs/materials are mutated outside React render state. */
-import { Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Outlines, Html, useAnimations, useGLTF, Stars, Billboard, useTexture } from "@react-three/drei";
 import { EffectComposer } from "@react-three/postprocessing";
@@ -35,6 +35,15 @@ import {
   saveExploreEnvironment,
   type ExploreEnvironment,
 } from "../lib/exploreEnvironment";
+import {
+  FISHING_RHYTHM_DURATION_MS,
+  fishingMissReason,
+  fishingRhythmProgress,
+  isFishingRhythmHit,
+  pickFishingWaitMs,
+  type FishingMissReason,
+  type FishingState,
+} from "../lib/fishing";
 import {
   createCompanionVoice,
   getCompanionLevel,
@@ -5461,6 +5470,70 @@ function FishingSpot({ posRef, onAtWater, casting }: { posRef: React.RefObject<T
   );
 }
 
+const FISHING_CATCHES: { icon: string; title: string; lines: string[] }[] = [
+  { icon: "🐚", title: "一枚贝壳", lines: ["贴近耳边,你听见很远很远的海。", "它把潮声收了起来,等你想听的时候。", "纹路温温的,像谁的指纹。"] },
+  { icon: "🍾", title: "一只漂流瓶", lines: ["「今天也辛苦了,记得好好吃饭。」", "「看见这行字的此刻,你正被惦记着。」", "「慢慢来,海不会催你。」"] },
+  { icon: "🐟", title: "一条小鱼", lines: ["你把它放回海里,水面漾开一圈星光。", "它绕你一圈,像在道谢,然后游远了。"] },
+  { icon: "⭐", title: "一尾星海鱼", lines: ["稀客——鳞片随你此刻的心情变色。", "钓到它的人,心里大多都藏着光。"] },
+];
+
+function FishingRhythmHud({ startedAt, onReel }: { startedAt: number; onReel: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      setNow(Date.now());
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, []);
+
+  const progress = fishingRhythmProgress(now, startedAt);
+  const inWindow = isFishingRhythmHit(progress);
+  const ringScale = Math.max(0.36, 1.24 - progress * 0.86);
+  const ringOpacity = Math.max(0.42, 1 - progress * 0.36);
+
+  return (
+    <div className="panel-glass-2 rounded-card px-4 py-3 text-center text-white/90 shadow-2xl" role="status" aria-live="polite">
+      <div className="flex items-center gap-3">
+        <div className="relative h-[4.75rem] w-[4.75rem] shrink-0">
+          <div className="absolute inset-3 rounded-full border border-cyan-100/55 bg-cyan-100/10" />
+          <div
+            className="absolute inset-0 rounded-full border-2 border-white/80"
+            style={{
+              opacity: ringOpacity,
+              transform: `scale(${ringScale})`,
+              boxShadow: inWindow ? "0 0 24px rgba(125, 231, 255, 0.75)" : "0 0 14px rgba(255,255,255,0.28)",
+              transition: "box-shadow 120ms ease-out",
+            }}
+          />
+          <div
+            className="absolute inset-[1.58rem] rounded-full border-2"
+            style={{
+              borderColor: inWindow ? "rgba(134, 239, 172, 0.95)" : "rgba(255,255,255,0.34)",
+              background: inWindow ? "rgba(34,197,94,0.16)" : "rgba(255,255,255,0.07)",
+            }}
+          />
+          <span className="absolute inset-0 flex items-center justify-center text-[20px] leading-none">🎣</span>
+        </div>
+        <div className="min-w-0 text-left">
+          <p className="font-display text-[15px] tracking-wider">{inWindow ? "现在收线!" : "盯住光圈"}</p>
+          <p className="mt-1 text-caption leading-relaxed text-white/58">光圈贴近内环时收线，鱼会跟着海光上来。</p>
+          <button
+            type="button"
+            onClick={onReel}
+            className="btn-primary mt-2 px-5 py-2 text-[13px]"
+            aria-label="收线"
+          >
+            收线
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // 🌊🪵 位置感知音频：按玩家所在区域切换循环底噪 + 靠近地标触发点状音。
 // 区域判定用 exGroundY(高度) + bayMask(海湾) + 离心半径；地标用固定坐标+半径边沿触发。
 // 位置底噪与情绪底噪并行（lib/locationAmbience.ts 独立运行）；地标音走 envGain 独立常响。
@@ -7796,7 +7869,9 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [lanternPrep, setLanternPrep] = useState(false); // 天灯模型还没缓存好时:显示「准备中」,就绪后自动放飞
   const lanternWaitRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [atWater, setAtWater] = useState(false);
-  const [fishing, setFishing] = useState<"idle" | "cast" | "bite">("idle");
+  const [fishing, setFishing] = useState<FishingState>("idle");
+  const [rhythmStartedAt, setRhythmStartedAt] = useState(0);
+  const [fishingMiss, setFishingMiss] = useState<FishingMissReason | null>(null);
   const [shownCatch, setShownCatch] = useState<{ icon: string; title: string; line: string } | null>(null);
   const [catchCount, setCatchCount] = useState<number>(() => { try { return parseInt(localStorage.getItem("xy_catch") || "0", 10) || 0; } catch { return 0; } });
   const [songProgress, setSongProgress] = useState(0);
@@ -7820,12 +7895,42 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   }, [tier]);
   useEffect(() => { try { localStorage.setItem("xy_song", songDone ? "1" : "0"); } catch { /* ignore */ } }, [songDone]);
   useEffect(() => { try { localStorage.setItem("xy_catch", String(catchCount)); } catch { /* ignore */ } }, [catchCount]);
-  // 垂钓:抛竿 → 鱼讯(随机 1.6~3.8s) → 未及时收线则溜走;离开水边自动取消
+  // 垂钓:抛竿 → 等鱼 → 节奏收线;错过/离开水边都会温和复位
   useEffect(() => {
-    if (fishing === "cast") { const t = setTimeout(() => setFishing("bite"), 1600 + Math.random() * 2200); return () => clearTimeout(t); }
-    if (fishing === "bite") { playSfx("ripple"); const t = setTimeout(() => setFishing("idle"), 2600); return () => clearTimeout(t); }
+    if (fishing === "cast") {
+      const t = window.setTimeout(() => setFishing("waiting"), 650);
+      return () => window.clearTimeout(t);
+    }
+    if (fishing === "waiting") {
+      const t = window.setTimeout(() => {
+        setRhythmStartedAt(Date.now());
+        setFishing("bite");
+        playSfx("ripple");
+      }, pickFishingWaitMs());
+      return () => window.clearTimeout(t);
+    }
+    if (fishing === "bite") {
+      const t = window.setTimeout(() => {
+        setFishingMiss("late");
+        setFishing("missed");
+        playSfx("ripple");
+      }, FISHING_RHYTHM_DURATION_MS);
+      return () => window.clearTimeout(t);
+    }
+    if (fishing === "missed") {
+      const t = window.setTimeout(() => {
+        setFishingMiss(null);
+        setFishing("idle");
+      }, 1300);
+      return () => window.clearTimeout(t);
+    }
   }, [fishing]);
-  useEffect(() => { if (!atWater && fishing !== "idle") setFishing("idle"); }, [atWater, fishing]);
+  useEffect(() => {
+    if (!atWater && fishing !== "idle") {
+      setFishingMiss(null);
+      setFishing("idle");
+    }
+  }, [atWater, fishing]);
   // 风铃心曲:奏齐目标序 → 满岛萤火 + 持久解锁
   useEffect(() => {
     if (!songDone && songProgress >= SONG.length) { setSongDone(true); setSongFlash(true); playSfx("bloom"); const t = setTimeout(() => setSongFlash(false), 4500); return () => clearTimeout(t); }
@@ -7872,21 +7977,49 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const releaseLantern = () => ensureLantern("single");
   const releaseLanternFlock = () => ensureLantern("flock");
   useEffect(() => () => { if (lanternWaitRef.current) clearInterval(lanternWaitRef.current); }, []); // 卸载时清掉等待轮询
-  const CATCHES: { icon: string; title: string; lines: string[] }[] = [
-    { icon: "🐚", title: "一枚贝壳", lines: ["贴近耳边,你听见很远很远的海。", "它把潮声收了起来,等你想听的时候。", "纹路温温的,像谁的指纹。"] },
-    { icon: "🍾", title: "一只漂流瓶", lines: ["「今天也辛苦了,记得好好吃饭。」", "「看见这行字的此刻,你正被惦记着。」", "「慢慢来,海不会催你。」"] },
-    { icon: "🐟", title: "一条小鱼", lines: ["你把它放回海里,水面漾开一圈星光。", "它绕你一圈,像在道谢,然后游远了。"] },
-    { icon: "⭐", title: "一尾星海鱼", lines: ["稀客——鳞片随你此刻的心情变色。", "钓到它的人,心里大多都藏着光。"] },
-  ];
-  const onCast = () => {
-    if (fishing === "idle") { setFishing("cast"); playSfx("tap"); return; }
-    if (fishing === "bite") {
-      const c = CATCHES[Math.floor(Math.random() * CATCHES.length)];
-      const line = c.lines[Math.floor(Math.random() * c.lines.length)];
-      setShownCatch({ icon: c.icon, title: c.title, line }); setCatchCount((n) => n + 1); setFishing("idle"); playSfx(c.icon === "🐟" ? "ripple" : "shell");
-      emitCompanionEvent("fish_catch");
+  const onCast = useCallback(() => {
+    if (fishing === "idle") {
+      setFishingMiss(null);
+      setFishing("cast");
+      playSfx("tap");
+      return;
     }
-  };
+    if (fishing === "waiting") {
+      setFishingMiss(null);
+      setFishing("idle");
+      playSfx("tap");
+      return;
+    }
+    if (fishing !== "bite") return;
+
+    const progress = fishingRhythmProgress(Date.now(), rhythmStartedAt);
+    if (!isFishingRhythmHit(progress)) {
+      setFishingMiss(fishingMissReason(progress));
+      setFishing("missed");
+      playSfx("ripple");
+      return;
+    }
+
+    const c = FISHING_CATCHES[Math.floor(Math.random() * FISHING_CATCHES.length)];
+    const line = c.lines[Math.floor(Math.random() * c.lines.length)];
+    setShownCatch({ icon: c.icon, title: c.title, line });
+    setCatchCount((n) => n + 1);
+    setFishingMiss(null);
+    setFishing("idle");
+    playSfx(c.icon === "🐟" ? "ripple" : "shell");
+    emitCompanionEvent("fish_catch");
+  }, [fishing, rhythmStartedAt]);
+  useEffect(() => {
+    if (fishing !== "bite") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (event.code !== "Space" && event.code !== "Enter") return;
+      event.preventDefault();
+      onCast();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [fishing, onCast]);
   const ringChime = (i: number) => { chimeNote(CHIME_FREQS[i]); emitCompanionEvent("chime"); if (songDone) return; setSongProgress((p) => (i === SONG[p] ? p + 1 : i === SONG[0] ? 1 : 0)); };
   const fmtWhen = (t: number) => { const d = new Date(t); return `${d.getMonth() + 1}月${d.getDate()}日`; };
   const districtLine = (zone: ExploreZone): string => {
@@ -8470,9 +8603,21 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       {/* 海湾岸边:垂钓按钮(底部居中,避开送心愿) */}
       {atWater && nearNpc < 0 && (
         <div className="absolute inset-x-0 flex justify-center px-4" style={{ bottom: "calc(2.4rem + env(safe-area-inset-bottom))" }}>
-          <button onClick={onCast} className="panel-glass-2 rounded-full px-6 py-2.5 font-display text-[15px] tracking-wider text-white/90 active:scale-95 transition-transform">
-            {fishing === "idle" ? "🎣 垂钓" : fishing === "cast" ? "抛竿中…" : "❗ 收线!"}
-          </button>
+          {fishing === "bite" ? (
+            <FishingRhythmHud startedAt={rhythmStartedAt} onReel={onCast} />
+          ) : fishing === "missed" ? (
+            <div className="panel-glass-2 rounded-full px-5 py-2.5 text-center font-display text-[14px] tracking-wider text-white/86" role="status" aria-live="polite">
+              {fishingMiss === "early" ? "别急，它刚碰到浮标。" : "鱼从光里游走了。"}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onCast}
+              className="panel-glass-2 rounded-full px-6 py-2.5 font-display text-[15px] tracking-wider text-white/90 active:scale-95 transition-transform"
+            >
+              {fishing === "idle" ? "🎣 垂钓" : fishing === "cast" ? "抛竿中…" : "等鱼靠近…"}
+            </button>
+          )}
         </div>
       )}
 
