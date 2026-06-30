@@ -1945,8 +1945,8 @@ const XYSHZ_MODEL_SCALE = 0.0145;
 const XYSHZ_FOOT_OFFSET_Y = 49.9846 * XYSHZ_MODEL_SCALE;
 const XYSHZ_MODEL_ROTATION: [number, number, number] = [0, -Math.PI / 2, 0];
 const XYSHZ_WALK_TIMESCALE = 1.55;
-const XYSHZ_RUN_HOLD_SECONDS = 0.55;
-const XYSHZ_RUN_TIMESCALE = 1.18;
+const XYSHZ_RUN_HOLD_SECONDS = 0.38;
+const XYSHZ_RUN_TIMESCALE = 1.36;
 const XYSHZ_ACTION_CLIPS = ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"] as const;
 
 function isXyshzActionClip(clip: CharacterActionClip): clip is (typeof XYSHZ_ACTION_CLIPS)[number] {
@@ -2365,8 +2365,8 @@ function Player({
     const moving = _move.lengthSq() > 0.0001;
     moveHoldT.current += moving ? dt : -dt * 2;
     moveHoldT.current = Math.max(0, Math.min(XYSHZ_RUN_HOLD_SECONDS + 0.6, moveHoldT.current));
-    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + 0.35, moveHoldT.current) : 0;
-    const moveSpeed = PLAYER_SPEED * (1 + runBlend * 0.28);
+    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + 0.22, moveHoldT.current) : 0;
+    const moveSpeed = PLAYER_SPEED * (1 + runBlend * 0.46);
 
     if (moving) {
       _move.normalize();
