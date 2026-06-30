@@ -31,6 +31,8 @@ CLIPS = ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"]
 LEG_INNER_SIDE = 0.055
 LEG_OUTER_SIDE = 0.24
 ARM_SIDE_THRESHOLD = 0.32
+ARM_TUCK_X = 28.0
+FOREARM_TUCK_X = 8.0
 BVH_WALK_START = 40
 BVH_WALK_END = 160
 BVH_WALK_KEYS = 33
@@ -169,11 +171,78 @@ def create_armature(mesh: bpy.types.Object) -> bpy.types.Object:
     return arm
 
 
+def base_color_image(mesh: bpy.types.Object) -> bpy.types.Image | None:
+    for mat in mesh.data.materials:
+        if not mat or not mat.node_tree:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.bl_idname != "ShaderNodeTexImage" or not node.image:
+                continue
+            name = node.image.name.lower()
+            if "normal" in name or "_rm" in name or name.endswith("rm.png"):
+                continue
+            return node.image
+    return None
+
+
+def side_arm_skin_vertices(
+    mesh: bpy.types.Object,
+    min_x: float,
+    max_x: float,
+    min_y: float,
+    max_y: float,
+    min_z: float,
+    max_z: float,
+) -> set[int]:
+    uv_layer = mesh.data.uv_layers.active
+    image = base_color_image(mesh)
+    if not uv_layer or not image:
+        return set()
+
+    width, height_px = image.size
+    pixels = list(image.pixels)
+    front_depth = max_x - min_x
+    side_width = max_y - min_y
+    height = max_z - min_z
+    side_c = (min_y + max_y) * 0.5
+    skin: set[int] = set()
+
+    def sample(uv):
+        u = max(0.0, min(0.999999, uv.x % 1.0))
+        v = max(0.0, min(0.999999, uv.y % 1.0))
+        offset = (int(v * height_px) * width + int(u * width)) * 4
+        return pixels[offset], pixels[offset + 1], pixels[offset + 2]
+
+    def looks_like_skin(color) -> bool:
+        red, green, blue = color
+        return (
+            red > 0.52
+            and 0.24 < green < 0.62
+            and blue < 0.52
+            and red > green + 0.08
+            and red > blue + 0.12
+        )
+
+    for poly in mesh.data.polygons:
+        for loop_index in poly.loop_indices:
+            vertex_index = mesh.data.loops[loop_index].vertex_index
+            co = mesh.matrix_world @ mesh.data.vertices[vertex_index].co
+            zt = (co.z - min_z) / height if height else 0.0
+            front_ratio = (co.x - min_x) / front_depth if front_depth else 0.5
+            side_abs = abs(co.y - side_c) / side_width if side_width else 0.0
+            if 0.38 < zt < 0.64 and side_abs > ARM_SIDE_THRESHOLD and front_ratio > 0.44:
+                if looks_like_skin(sample(uv_layer.data[loop_index].uv)):
+                    skin.add(vertex_index)
+
+    return skin
+
+
 def assign_spatial_weights(mesh: bpy.types.Object, arm: bpy.types.Object) -> None:
     min_x, max_x, min_y, max_y, min_z, max_z = world_bounds(mesh)
     side_width = max_y - min_y
     height = max_z - min_z
     side_c = (min_y + max_y) * 0.5
+    skin_arm_vertices = side_arm_skin_vertices(mesh, min_x, max_x, min_y, max_y, min_z, max_z)
 
     for group in list(mesh.vertex_groups):
         mesh.vertex_groups.remove(group)
@@ -203,7 +272,14 @@ def assign_spatial_weights(mesh: bpy.types.Object, arm: bpy.types.Object) -> Non
         side = "L" if side_offset < 0 else "R"
 
         weights = None
-        if zt < 0.45 and LEG_INNER_SIDE < side_abs < LEG_OUTER_SIDE:
+        if vertex.index in skin_arm_vertices:
+            if zt > 0.55:
+                weights = [(f"UpperArm{side}", 0.62), (f"ForeArm{side}", 0.26), ("Chest", 0.12)]
+            elif zt > 0.44:
+                weights = [(f"ForeArm{side}", 0.58), (f"UpperArm{side}", 0.22), (f"Hand{side}", 0.12), ("Chest", 0.08)]
+            else:
+                weights = [(f"Hand{side}", 0.58), (f"ForeArm{side}", 0.30), ("Chest", 0.12)]
+        elif zt < 0.45 and LEG_INNER_SIDE < side_abs < LEG_OUTER_SIDE:
             if zt < 0.12:
                 weights = [(f"Foot{side}", 0.50), (f"LowerLeg{side}", 0.35), ("Hips", 0.15)]
             elif zt < 0.28:
@@ -300,18 +376,30 @@ def add_idle(arm: bpy.types.Object) -> None:
             "Spine": {"rot": (0.0, 0.0, 0.0)},
             "Chest": {"rot": (0.0, 0.0, 0.0)},
             "Head": {"rot": (0.0, 0.0, 0.0)},
+            "UpperArmL": {"rot": (r(ARM_TUCK_X), 0.0, r(0.6))},
+            "ForeArmL": {"rot": (r(FOREARM_TUCK_X), 0.0, r(-2.0))},
+            "UpperArmR": {"rot": (r(-ARM_TUCK_X), 0.0, r(-0.6))},
+            "ForeArmR": {"rot": (r(-FOREARM_TUCK_X), 0.0, r(-2.0))},
         }),
         (25, {
             "Hips": {"loc": (0.0, 0.0, 0.12)},
             "Spine": {"rot": (r(0.25), 0.0, 0.0)},
             "Chest": {"rot": (r(-0.2), 0.0, 0.0)},
             "Head": {"rot": (r(0.15), 0.0, 0.0)},
+            "UpperArmL": {"rot": (r(ARM_TUCK_X), 0.0, r(0.7))},
+            "ForeArmL": {"rot": (r(FOREARM_TUCK_X), 0.0, r(-2.0))},
+            "UpperArmR": {"rot": (r(-ARM_TUCK_X), 0.0, r(-0.7))},
+            "ForeArmR": {"rot": (r(-FOREARM_TUCK_X), 0.0, r(-2.0))},
         }),
         (49, {
             "Hips": {"loc": (0.0, 0.0, 0.0)},
             "Spine": {"rot": (0.0, 0.0, 0.0)},
             "Chest": {"rot": (0.0, 0.0, 0.0)},
             "Head": {"rot": (0.0, 0.0, 0.0)},
+            "UpperArmL": {"rot": (r(ARM_TUCK_X), 0.0, r(0.6))},
+            "ForeArmL": {"rot": (r(FOREARM_TUCK_X), 0.0, r(-2.0))},
+            "UpperArmR": {"rot": (r(-ARM_TUCK_X), 0.0, r(-0.6))},
+            "ForeArmR": {"rot": (r(-FOREARM_TUCK_X), 0.0, r(-2.0))},
         }),
     ]
     keyed_pose_action(arm, "Idle", 49, frames)
@@ -430,10 +518,10 @@ def build_bvh_gait_frames(key_count: int, gait: str = "walk"):
             "UpperLegR": {"rot": (0.0, 0.0, r(right_thigh * 12.0 * stride))},
             "LowerLegR": {"rot": (0.0, 0.0, r(1.5 + right_knee * 12.5 * knee))},
             "FootR": {"rot": (0.0, 0.0, r(right_foot * 3.2 * stride))},
-            "UpperArmL": {"rot": (0.0, 0.0, r(left_arm * 6.6 * arm + 1.0))},
-            "ForeArmL": {"rot": (0.0, 0.0, r(-3.2 if not is_run else -4.2))},
-            "UpperArmR": {"rot": (0.0, 0.0, r(right_arm * 6.6 * arm - 1.0))},
-            "ForeArmR": {"rot": (0.0, 0.0, r(-3.2 if not is_run else -4.2))},
+            "UpperArmL": {"rot": (r(ARM_TUCK_X), 0.0, r(left_arm * 6.4 * arm + 0.6))},
+            "ForeArmL": {"rot": (r(FOREARM_TUCK_X), 0.0, r(-2.4 if not is_run else -3.2))},
+            "UpperArmR": {"rot": (r(-ARM_TUCK_X), 0.0, r(right_arm * 6.4 * arm - 0.6))},
+            "ForeArmR": {"rot": (r(-FOREARM_TUCK_X), 0.0, r(-2.4 if not is_run else -3.2))},
         }
 
     out = []
