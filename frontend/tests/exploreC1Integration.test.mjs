@@ -138,6 +138,15 @@ test("explore scene renders C1 district groups", async () => {
   assert.match(districtBlock, /MODELS\.critterFish/);
 });
 
+test("explore districts do not render large translucent guide patches", async () => {
+  const source = await readExploreSource();
+  const patchBlock = sourceBlock(source, "function DistrictGroundPatch", "function DistrictFlatTile");
+
+  assert.match(patchBlock, /return null;/);
+  assert.doesNotMatch(patchBlock, /meshBasicMaterial color=\{patch\.color\}/);
+  assert.doesNotMatch(patchBlock, /meshBasicMaterial color=\{patch\.ring\}/);
+});
+
 test("explore districts drive proximity prompts and location ambience", async () => {
   const source = await readExploreSource();
   const audioBlock = sourceBlock(source, "function LocationAudio", "const MAP_VIEW");

@@ -6391,10 +6391,7 @@ function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: numb
   return <instancedMesh ref={ref} args={[geo, mat, count]} frustumCulled={false} />;
 }
 
-function DistrictGroundPatch({
-  patch,
-  shape = "circle",
-}: {
+function DistrictGroundPatch(_props: {
   patch: {
     x: number;
     z: number;
@@ -6408,22 +6405,7 @@ function DistrictGroundPatch({
   };
   shape?: "circle" | "rect";
 }) {
-  const width = patch.width ?? (patch.radius ?? 20) * 2;
-  const depth = patch.depth ?? (patch.radius ?? 20) * 2;
-  const radius = patch.radius ?? Math.max(width, depth) * 0.5;
-  const y = exGroundY(patch.x, patch.z);
-  return (
-    <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[patch.x, y + 0.045, patch.z]}>
-        {shape === "rect" ? <planeGeometry args={[width, depth]} /> : <circleGeometry args={[radius, 64]} />}
-        <meshBasicMaterial color={patch.color} transparent opacity={patch.opacity} depthWrite={false} toneMapped={false} />
-      </mesh>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[patch.x, y + 0.058, patch.z]}>
-        {shape === "rect" ? <planeGeometry args={[width + 5, depth + 5]} /> : <ringGeometry args={[radius * 0.98, radius * 1.08, 72]} />}
-        <meshBasicMaterial color={patch.ring} transparent opacity={patch.ringOpacity} depthWrite={false} toneMapped={false} wireframe={shape === "rect"} />
-      </mesh>
-    </group>
-  );
+  return null;
 }
 
 function DistrictFlatTile({
