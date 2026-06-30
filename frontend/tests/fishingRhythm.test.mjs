@@ -59,3 +59,53 @@ test("fishing wait time stays inside the existing gentle wait range", async () =
   assert.equal(fishing.pickFishingWaitMs(() => 1), 3800);
   assert.equal(fishing.pickFishingWaitMs(() => 0.5), 2700);
 });
+
+async function readExploreModeSource() {
+  return readFile(path.resolve("src/components/ExploreMode.tsx"), "utf8");
+}
+
+function sourceBlock(source, startNeedle, endNeedle) {
+  const start = source.indexOf(startNeedle);
+  const end = source.indexOf(endNeedle, start);
+  assert.notEqual(start, -1, `${startNeedle} should exist`);
+  assert.notEqual(end, -1, `${endNeedle} should follow ${startNeedle}`);
+  return source.slice(start, end);
+}
+
+test("ExploreMode wires the fishing rhythm state machine and HUD", async () => {
+  const source = await readExploreModeSource();
+  const stateBlock = sourceBlock(source, "const [atWater, setAtWater]", "const [songProgress, setSongProgress]");
+  const effectsBlock = sourceBlock(source, "useEffect(() => {\n    if (fishing === \"cast\")", "// 风铃心曲");
+  const actionBlock = sourceBlock(source, "const onCast = useCallback(() => {", "const ringChime =");
+  const hudBlock = sourceBlock(source, "function FishingRhythmHud", "function LocationAudio");
+  const renderBlock = sourceBlock(source, "{/* 海湾岸边:垂钓按钮", "{/* 🐚 听海海螺");
+
+  assert.match(source, /from "\.\.\/lib\/fishing"/);
+  assert.match(stateBlock, /useState<FishingState>\("idle"\)/);
+  assert.match(stateBlock, /const \[rhythmStartedAt, setRhythmStartedAt\]/);
+  assert.match(stateBlock, /const \[fishingMiss, setFishingMiss\]/);
+  assert.match(effectsBlock, /setFishing\("waiting"\)/);
+  assert.match(effectsBlock, /setFishing\("bite"\)/);
+  assert.match(effectsBlock, /FISHING_RHYTHM_DURATION_MS/);
+  assert.match(actionBlock, /fishingRhythmProgress\(Date\.now\(\), rhythmStartedAt\)/);
+  assert.match(actionBlock, /isFishingRhythmHit\(progress\)/);
+  assert.match(actionBlock, /fishingMissReason\(progress\)/);
+  assert.match(actionBlock, /FISHING_CATCHES/);
+  assert.match(hudBlock, /aria-label="收线"/);
+  assert.match(hudBlock, /fishingRhythmProgress\(now, startedAt\)/);
+  assert.match(hudBlock, /isFishingRhythmHit\(progress\)/);
+  assert.match(renderBlock, /<FishingRhythmHud/);
+  assert.match(renderBlock, /等鱼靠近/);
+  assert.match(renderBlock, /别急，它刚碰到浮标/);
+  assert.match(renderBlock, /鱼从光里游走了/);
+});
+
+test("ExploreMode supports keyboard reeling during the bite window", async () => {
+  const source = await readExploreModeSource();
+  const keyboardBlock = sourceBlock(source, "window.addEventListener(\"keydown\"", "window.removeEventListener(\"keydown\"");
+
+  assert.match(keyboardBlock, /event\.code !== "Space"/);
+  assert.match(keyboardBlock, /event\.code !== "Enter"/);
+  assert.match(keyboardBlock, /event\.preventDefault\(\)/);
+  assert.match(keyboardBlock, /onCast\(\)/);
+});
