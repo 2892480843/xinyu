@@ -6,10 +6,10 @@ const BEACH_SCENE_Z = Math.sin(0.55) * EXPLORE_WALK_RADIUS * 0.91;
 export const HEALING_WALK_CAMERA = {
   distance: 7,
   height: 4.2,
-  introSeconds: 2.35,
-  introSideAngle: 0.65,
-  introExtraDist: 34,
-  introExtraHeight: 22,
+  introSeconds: 3.2,
+  introSideAngle: 2.2,
+  introExtraDist: 120,
+  introExtraHeight: 130,
   lookAhead: 1.9,
   lookHeight: 1.38,
   collisionRadius: 1.35,
@@ -17,8 +17,8 @@ export const HEALING_WALK_CAMERA = {
   lookLerp: 7.4,
   lanternExtraDist: 4,
   lanternExtraHeight: 1.6,
-  canvasPosition: [0, 18, 31] as const,
-  canvasFov: 47,
+  canvasPosition: [0, 150, 290] as const,
+  canvasFov: 50,
 } as const;
 
 export const HEALING_RAIN_PRESENTATION = {

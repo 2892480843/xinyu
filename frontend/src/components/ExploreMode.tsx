@@ -2675,7 +2675,7 @@ function Player({
       lastFace.current = eff;
     }
 
-    // 第三人称跟随相机;开场从低位斜后方缓入,避免第一眼变成航拍全岛。
+    // 第三人称跟随相机;开场先看见整座岛,再从高空侧俯边降边收到角色身后。
     const ry = g.rotation.y;
     // 放飞天灯后:相机仰起跟拍天灯升空(入 / 保持 / 出 缓动),约 6s 后回到角色
     let watch = 0;
@@ -2687,7 +2687,7 @@ function Player({
     introT.current = Math.min(1, introT.current + dt / HEALING_WALK_CAMERA.introSeconds);
     if (introT.current < 1) {
       const e = introT.current * introT.current * (3 - 2 * introT.current); // smoothstep 缓动
-      const ang = ry + (1 - e) * HEALING_WALK_CAMERA.introSideAngle; // 起始小侧偏 → 收束到身后
+      const ang = ry + (1 - e) * HEALING_WALK_CAMERA.introSideAngle; // 起始侧偏 → 收束到身后
       const dist = CAM_DIST + (1 - e) * HEALING_WALK_CAMERA.introExtraDist;
       const ht = CAM_HEIGHT + (1 - e) * HEALING_WALK_CAMERA.introExtraHeight;
       _camTarget.set(pos.x - Math.sin(ang) * dist, pos.y + ht, pos.z - Math.cos(ang) * dist);

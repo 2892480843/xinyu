@@ -169,7 +169,7 @@ test("explore districts drive proximity prompts and location ambience", async ()
   assert.match(proximityBlock, /onNear\(zone\)/);
 });
 
-test("explore C1 uses healing-walk presentation tuning", async () => {
+test("explore C1 uses far-map island arrival camera tuning", async () => {
   const source = await readExploreSource();
   const presentation = await readFile(path.resolve("src/lib/explorePresentation.ts"), "utf8");
   const playerBlock = sourceBlock(source, "function Player", "function Wishes");
@@ -179,8 +179,12 @@ test("explore C1 uses healing-walk presentation tuning", async () => {
   assert.match(source, /HEALING_WALK_CAMERA/);
   assert.match(source, /HEALING_RAIN_PRESENTATION/);
   assert.match(source, /HEALING_DISTRICT_PRESENTATION/);
-  assert.match(presentation, /introExtraDist:\s*34/);
-  assert.match(presentation, /introExtraHeight:\s*22/);
+  assert.match(presentation, /introSeconds:\s*3\.2/);
+  assert.match(presentation, /introSideAngle:\s*2\.2/);
+  assert.match(presentation, /introExtraDist:\s*120/);
+  assert.match(presentation, /introExtraHeight:\s*130/);
+  assert.match(presentation, /canvasPosition:\s*\[0,\s*150,\s*290\]\s*as const/);
+  assert.match(presentation, /canvasFov:\s*50/);
   assert.match(presentation, /lookAhead:\s*1\.9/);
   assert.match(presentation, /normalCount:\s*260/);
   assert.match(presentation, /lowCount:\s*140/);
