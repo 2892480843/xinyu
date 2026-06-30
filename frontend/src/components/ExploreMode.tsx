@@ -5892,22 +5892,20 @@ function Minimap({ posRef, headingRef, night }: { posRef: React.RefObject<THREE.
 
 // 🎐 风铃心曲:5 个散布风铃,走近(进入半径的瞬间)敲响其音;ExploreMode 比对目标曲序
 const CHIME_FREQS = [523.25, 587.33, 659.25, 783.99, 880.0]; // C D E G A 五声音阶
-// 引导光标:下一个该敲的风铃亮起脉动光环 + 光柱 + 点光 —— 玩家「跟着发光的风铃走」即可奏曲
+// 引导光标:下一个该敲的风铃只保留低调光环 + 微弱点光,避免近镜头出现大片黄色光幕。
 function ChimeBeacon({ pos }: { pos: { x: number; y: number; z: number } }) {
   const ring = useRef<THREE.Mesh>(null);
-  const ringMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#ffe6a0", transparent: true, opacity: 0.5, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }), []);
-  const beamMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#ffe6a0", transparent: true, opacity: 0.16, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }), []);
-  useEffect(() => () => { ringMat.dispose(); beamMat.dispose(); }, [ringMat, beamMat]);
+  const ringMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#dffcff", transparent: true, opacity: 0.36, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }), []);
+  useEffect(() => () => { ringMat.dispose(); }, [ringMat]);
   useFrame((s) => {
     const pulse = 0.5 + Math.sin(s.clock.elapsedTime * 3) * 0.5;
     const r = ring.current; if (r) { const k = 1 + pulse * 0.3; r.scale.set(k, k, 1); }
-    ringMat.opacity = 0.22 + pulse * 0.4; beamMat.opacity = 0.08 + pulse * 0.14;
+    ringMat.opacity = 0.14 + pulse * 0.2;
   });
   return (
     <group position={[pos.x, pos.y, pos.z]}>
       <mesh ref={ring} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.12, 0]} material={ringMat}><ringGeometry args={[1.1, 1.6, 32]} /></mesh>
-      <mesh position={[0, 3.2, 0]} material={beamMat}><cylinderGeometry args={[0.18, 0.7, 6.4, 10, 1, true]} /></mesh>
-      <pointLight color="#ffe6a0" intensity={3.6} distance={10} decay={1.7} position={[0, 2.6, 0]} />
+      <pointLight color="#dffcff" intensity={1.2} distance={5.5} decay={1.9} position={[0, 2.2, 0]} />
     </group>
   );
 }
