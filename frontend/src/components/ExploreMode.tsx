@@ -55,6 +55,7 @@ import {
   getSecretText,
   loadCompanionState,
   nightVisitCompanion,
+  normalizeCompanionAnimation,
   pickCompanionOpenLine,
   renameCompanion,
   saveCompanionState,
@@ -1143,12 +1144,24 @@ function companionLightColor(emotion?: string): string {
 function companionFallbackAction(name: CompanionAnimation): CompanionAnimation {
   if (name === "TalkListen") return "Worried";
   if (name === "SleepFloat") return "IdleLoop";
+  if (name === "DiscoveryHop" || name === "LanternGaze") return "Joyful";
+  if (name === "Nuzzle" || name === "CuriousPeek" || name === "ComfortPulse" || name === "NightGuard") return "BondGlow";
   return "Joyful";
 }
 
-function normalizeCompanionAnimation(value: string | undefined): CompanionAnimation {
-  const allowed: CompanionAnimation[] = ["IdleLoop", "Joyful", "Worried", "FeedTreat", "TalkListen", "BondGlow", "SleepFloat", "SecretTwirl", "SingSong"];
-  return allowed.includes(value as CompanionAnimation) ? (value as CompanionAnimation) : "BondGlow";
+function companionChatterAction(event: CompanionChatterEvent): CompanionAnimation {
+  switch (event) {
+    case "lantern":
+      return "LanternGaze";
+    case "discover":
+    case "fish_catch":
+    case "collect":
+      return "DiscoveryHop";
+    case "night":
+      return "NightGuard";
+    default:
+      return "BondGlow";
+  }
 }
 
 // 轻飘的 glb 道具(风筝等):上下浮 + 轻摆。
@@ -7655,8 +7668,8 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       lastChatterAtRef.current = now;
       lastChatterLineRef.current = line;
       setCompanionChatter({ text: line, nonce: now });
-      // 配一个应景的小动作：发现 / 钓到 / 放灯 → 雀跃；其余 → 羁绊微光
-      triggerCompanionAction(event === "discover" || event === "fish_catch" || event === "lantern" ? "Joyful" : "BondGlow");
+      // 配一个应景的小动作：发现 / 钓到 / 放灯 / 夜晚都有对应的小动作，其余走羁绊微光。
+      triggerCompanionAction(companionChatterAction(event));
       speakCompanion(line); // 语音开关关时自动静默
     };
   });
@@ -7945,7 +7958,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     }
     setCompanionThinking(true);
     setCompanionMessage(`${result.state.name}把你的话收进灯塔里，正轻轻听着...`);
-    triggerCompanionAction("TalkListen");
+    triggerCompanionAction("CuriousPeek");
     playSfx("chime");
     const ai = await requestCompanionChat({
       user_id: userId,
@@ -7972,7 +7985,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const handleCompanionPet = () => {
     const reply = `${companionState.name}轻轻蹭了蹭你的身边，灯塔光像呼吸一样亮了一下。`;
     setCompanionMessage(reply);
-    triggerCompanionAction("BondGlow");
+    triggerCompanionAction("Nuzzle");
     playSfx("tap");
     speakCompanion(reply);
   };
