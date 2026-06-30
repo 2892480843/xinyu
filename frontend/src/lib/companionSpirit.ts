@@ -1,4 +1,22 @@
-export type CompanionAnimation = "IdleLoop" | "Joyful" | "Worried" | "FeedTreat" | "TalkListen" | "BondGlow" | "SleepFloat" | "SecretTwirl" | "SingSong";
+export const COMPANION_ANIMATIONS = [
+  "IdleLoop",
+  "Joyful",
+  "Worried",
+  "FeedTreat",
+  "TalkListen",
+  "BondGlow",
+  "SleepFloat",
+  "SecretTwirl",
+  "SingSong",
+  "Nuzzle",
+  "CuriousPeek",
+  "DiscoveryHop",
+  "LanternGaze",
+  "ComfortPulse",
+  "NightGuard",
+] as const;
+
+export type CompanionAnimation = (typeof COMPANION_ANIMATIONS)[number];
 
 export type CompanionFoodId = "moonShell" | "starPearl" | "warmTea";
 
@@ -170,6 +188,10 @@ export function saveCompanionState(state: CompanionState, storage?: Pick<Storage
   }
 }
 
+export function normalizeCompanionAnimation(value: string | undefined): CompanionAnimation {
+  return COMPANION_ANIMATIONS.includes(value as CompanionAnimation) ? (value as CompanionAnimation) : "BondGlow";
+}
+
 export function feedCompanion(state: CompanionState, foodId: CompanionFoodId, now = Date.now()): CompanionInteractionResult {
   const food = COMPANION_FOODS.find((item) => item.id === foodId) ?? COMPANION_FOODS[0];
   const next: CompanionState = {
@@ -206,7 +228,7 @@ export function talkToCompanion(state: CompanionState, emotion?: string, now = D
   return {
     state: { ...next, unlockedSecrets: [...next.unlockedSecrets, ...unlockedNow] },
     reply: replies[index],
-    animation: worried ? "TalkListen" : "BondGlow",
+    animation: worried ? "ComfortPulse" : "CuriousPeek",
     unlockedNow,
   };
 }
@@ -291,7 +313,7 @@ export function nightVisitCompanion(state: CompanionState, now = Date.now()): Co
   return {
     state: { ...state, unlockedSecrets: [...state.unlockedSecrets, ...unlockedNow] },
     reply: MIDNIGHT_REPLY,
-    animation: "BondGlow",
+    animation: "NightGuard",
     unlockedNow,
   };
 }

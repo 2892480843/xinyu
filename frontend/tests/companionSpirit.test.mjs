@@ -57,8 +57,34 @@ test("dialogue responds gently to worried emotion and unlocks a listening secret
   };
   const result = talkToCompanion(state, "worried", 30_000);
 
-  assert.equal(result.animation, "TalkListen");
+  assert.equal(result.animation, "ComfortPulse");
   assert.ok(result.reply.includes("慢慢"));
   assert.deepEqual(result.unlockedNow, ["firstWhisper"]);
   assert.ok(result.state.talkCount > state.talkCount);
+});
+
+test("accepts the expanded companion action library", async () => {
+  const { COMPANION_ANIMATIONS, normalizeCompanionAnimation } = await importCompanionSpirit();
+
+  for (const clip of ["Nuzzle", "CuriousPeek", "DiscoveryHop", "LanternGaze", "ComfortPulse", "NightGuard"]) {
+    assert.ok(COMPANION_ANIMATIONS.includes(clip), `missing companion action ${clip}`);
+    assert.equal(normalizeCompanionAnimation(clip), clip);
+  }
+
+  assert.equal(normalizeCompanionAnimation("DanceNow"), "BondGlow");
+  assert.equal(normalizeCompanionAnimation(undefined), "BondGlow");
+});
+
+test("companion care interactions choose the new emotional action clips", async () => {
+  const { createCompanionState, talkToCompanion, nightVisitCompanion } = await importCompanionSpirit();
+
+  const worried = talkToCompanion({ ...createCompanionState("local-test-user"), affinity: 24 }, "worried", 30_000);
+  assert.equal(worried.animation, "ComfortPulse");
+
+  const calm = talkToCompanion(createCompanionState("local-test-user"), "calm", 40_000);
+  assert.equal(calm.animation, "CuriousPeek");
+
+  const night = nightVisitCompanion(createCompanionState("local-test-user"), new Date(2026, 5, 30, 22, 0, 0).getTime());
+  assert.ok(night);
+  assert.equal(night.animation, "NightGuard");
 });
