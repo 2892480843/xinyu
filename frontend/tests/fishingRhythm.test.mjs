@@ -102,7 +102,7 @@ test("ExploreMode wires the fishing rhythm state machine and HUD", async () => {
 
 test("ExploreMode supports keyboard reeling during the bite window", async () => {
   const source = await readExploreModeSource();
-  const keyboardBlock = sourceBlock(source, "window.addEventListener(\"keydown\"", "window.removeEventListener(\"keydown\"");
+  const keyboardBlock = sourceBlock(source, "useEffect(() => {\n    if (fishing !== \"bite\") return;", "window.removeEventListener(\"keydown\"");
 
   assert.match(keyboardBlock, /event\.code !== "Space"/);
   assert.match(keyboardBlock, /event\.code !== "Enter"/);
