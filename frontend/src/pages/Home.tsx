@@ -7,8 +7,8 @@ const Island3D = lazy(() => import("../components/Island3D"));
 // 自由探索模式(可走动小人)——按需加载,和 3D 同属重型 chunk
 const importExplore = () => import("../components/ExploreMode");
 const ExploreMode = lazy(importExplore);
-// 预取:首页空闲、或用户接近「上岛」按钮时，提前把这个重 chunk(含 three-vendor)拉进缓存，
-// 点下去就不必从零下载——首屏上岛慢的主因之一。一次性节流。
+// 预取:首页空闲、或用户接近「上岛」按钮时，提前把探索 chunk + 地图模型拉进缓存。
+// 点下去时远景开场能尽量直接看见完整岛貌；省流量 / 弱网仍跳过空闲预取。
 let explorePrefetched = false;
 function prefetchExplore() {
   if (explorePrefetched) return;

@@ -842,34 +842,22 @@ const MODELS = {
   townblock: "/models/688215b008dc48e8a47295ef1211afb6.glb", // 建筑街区(原生约 35×38×42,底在原点下 17.5)
   skyLantern: "/models/kmd.glb", // 天灯(放飞升空)
 } as const;
-// 重模型(写实地标/车/天灯)不参与首屏预载:各自在独立 Suspense 边界内按需加载。
-// 桌面端预载近百个小模型,移动端跳过顶层预载,避免导入探索 chunk 时触发一波请求/解析尖峰。
-const HEAVY_DEFER = new Set<string>([
-  MODELS.bathhouse,
-  MODELS.rhododendron,
-  MODELS.townblock,
-  MODELS.qiche,
-  MODELS.skyLantern,
-  MODELS.companion, // 灯塔精灵 4.4M：移出首屏关键路径，世界先可走、精灵随后淡入（见下方独立 Suspense）
-]);
-const shouldPreloadLightModels = !isCoarsePointerDevice();
-Object.values(MODELS).forEach((u) => {
-  if (shouldPreloadLightModels && !HEAVY_DEFER.has(u)) useGLTF.preload(u);
-});
+// 桌面端在首页空闲 / CTA 意图阶段分批预热整张探索地图的模型。
+// 这样远景开场时能尽量直接展示完整岛貌；触摸/低配仍跳过,把解析压力留到场景内。
+const EXPLORE_PREFETCH_MODELS = Object.values(MODELS);
 
-// 首页空闲(或桌面 hover「上岛走走」)时由 Home 调用(import 本模块即已 preload 近百个非重小模型 = 进岛门所需)。
-// 触摸设备跳过重模型后台预热:移动端最容易在点按、横屏、Canvas 挂载时与 GLB 解析撞车。
-// 桌面再按「小→大」错峰交给 drei preload,避免手动 fetch 和 useGLTF 同时请求同一个重模型。
+// 触摸设备跳过后台预热:移动端最容易在点按、横屏、Canvas 挂载时与 GLB 解析撞车。
+// 写实地标/车/天灯/灯塔精灵等重模型交给场景内独立 Suspense 按需加载。
 // 这个工具导出与默认组件同文件是有意的(依赖本模块的 MODELS 表),HMR fast-refresh 的告警在此豁免。
-let _heavyWarmStarted = false;
-let _exploreActive = false;            // 用户已进岛 → 立刻停后台预热,把 CPU/带宽全让给进岛自身的加载
-let _warmAbort: AbortController | null = null;
+let _prefetchStarted = false;
+let _exploreActive = false;            // 用户已进岛 → 停掉后台预热队列,把 CPU/带宽全让给进岛自身的加载
+let _prefetchTimers: number[] = [];
 
-// ExploreMode 进/出岛时调用:进岛即停后台重模型预热——否则解析会与进岛时的场景挂载
+// ExploreMode 进/出岛时调用:进岛即停后台轻量预热——否则解析会与进岛时的场景挂载
 // (草丛 + 地形几何 + 模型解析)抢资源,反而让进岛更卡。
 function setExploreActive(active: boolean): void {
   _exploreActive = active;
-  if (active) _warmAbort?.abort();
+  if (active) clearExplorePreloadQueue();
 }
 
 function isCoarsePointerDevice(): boolean {
@@ -882,29 +870,31 @@ function isCoarsePointerDevice(): boolean {
   );
 }
 
+function clearExplorePreloadQueue(): void {
+  if (typeof window === "undefined") return;
+  for (const id of _prefetchTimers) window.clearTimeout(id);
+  _prefetchTimers = [];
+}
+
+function queueExplorePreload(urls: readonly string[]): void {
+  if (typeof window === "undefined") return;
+  clearExplorePreloadQueue();
+  urls.forEach((url, index) => {
+    const id = window.setTimeout(() => {
+      _prefetchTimers = _prefetchTimers.filter((timer) => timer !== id);
+      if (_exploreActive) return;
+      useGLTF.preload(url);
+    }, 80 + index * 90);
+    _prefetchTimers.push(id);
+  });
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function prefetchExploreAssets(): void {
-  if (_heavyWarmStarted) return; // 幂等:首页 idle 与 hover/点按可能各调一次
-  _heavyWarmStarted = true;
+  if (_prefetchStarted) return; // 幂等:hover/点按可能各调一次
+  _prefetchStarted = true;
   if (isCoarsePointerDevice()) return;
-  useGLTF.preload(MODELS.companion); // 精灵进岛即在 → 最高优先,立即预热
-  // 写实/较重大件按「小→大」串行预热(skyLantern 2.9M → 浴场 28M 最后)
-  const order = [MODELS.skyLantern, MODELS.townblock, MODELS.qiche, MODELS.rhododendron, MODELS.bathhouse];
-  _warmAbort = new AbortController();
-  const sig = _warmAbort.signal;
-  void (async () => {
-    // 先让模块顶层 preload 的近百小模型(进岛门所需关键件)跑在前头,再开始串行预热重地标 → 真正「按序」、不抢关键路径
-    await new Promise((res) => setTimeout(res, 600));
-    for (const url of order) {
-      if (_exploreActive || sig.aborted) return; // 已进岛 → 停止,让进岛优先(其余重模型进岛后各自 Suspense 流式)
-      try {
-        useGLTF.preload(url);                            // 交 drei 拉取并解析入缓存
-        await new Promise((res) => setTimeout(res, 900)); // 给解析/主线程喘息,再起下一个
-      } catch {
-        /* abort 或单个失败:不影响后续与进岛(进岛仍可各自 Suspense 流式) */
-      }
-    }
-  })();
+  queueExplorePreload(EXPLORE_PREFETCH_MODELS);
 }
 
 // 陪伴精灵:跟随玩家漂浮的小灵兽(强化「情感陪伴」)。保留 glb 原材质(半透+发光),不套 toon。
@@ -6951,18 +6941,18 @@ function ExploreScene({
   const [degraded, setDegraded] = useState(false);
   const lowTier = tier === "low";
   const revealDelay = {
-    town: lowTier ? 5200 : 250,
-    village: lowTier ? 7600 : 250,
-    coastline: lowTier ? 9600 : 250,
-    districts: lowTier ? 12500 : 500,
+    town: lowTier ? 5200 : 0,
+    village: lowTier ? 7600 : 0,
+    coastline: lowTier ? 9600 : 0,
+    districts: lowTier ? 12500 : 0,
     interactions: lowTier ? 11200 : 0,
     companion: lowTier ? 14000 : 0,
     car: lowTier ? 9000 : 0,
     lanterns: lowTier ? 15000 : 0,
-    townblock: lowTier ? 14000 : 2000,
-    rhododendron: lowTier ? 16500 : 2800,
-    manor: lowTier ? 19000 : 3600,
-    bath: lowTier ? 22000 : 4400,
+    townblock: lowTier ? 14000 : 0,
+    rhododendron: lowTier ? 16500 : 0,
+    manor: lowTier ? 19000 : 0,
+    bath: lowTier ? 22000 : 0,
   };
   // 渐变天空作 scene.background(放进 3D,否则 EffectComposer 会把空域清成黑)
   const skyTex = useMemo(() => {
@@ -7048,7 +7038,7 @@ function ExploreScene({
         <ringGeometry args={[WALK_RADIUS * 1.0, WALK_RADIUS * 1.1, 96]} />
         <meshBasicMaterial color="#e6f6f8" transparent opacity={0.3} depthWrite={false} toneMapped={false} />
       </mesh>
-      {/* 程序小镇 / 村落 / 海岸:模型量最大。移动端分段错峰挂载,首段只保留地形/水/玩家与输入响应。 */}
+      {/* 程序小镇 / 村落 / 海岸:桌面开场直接展示完整岛貌;低配/移动端分段错峰挂载保流畅。 */}
       <DelayedMount ms={revealDelay.town}>
         <Suspense fallback={null}>
           {/* 程序小镇 */}
