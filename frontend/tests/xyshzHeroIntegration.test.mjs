@@ -68,14 +68,16 @@ test("xyshz hero connects the dedicated RunLoop clip for held movement", async (
   const heroBlock = sourceBlock(source, "function GltfHero", "function GltfGuardian");
   const playerBlock = sourceBlock(source, "function Player", "// 心愿之光收集物");
 
-  assert.match(source, /const XYSHZ_RUN_HOLD_SECONDS = 0\.38/);
-  assert.match(source, /const XYSHZ_RUN_TIMESCALE = 1\.36/);
+  assert.match(source, /const PLAYER_SPEED = 15\.5/);
+  assert.match(source, /const XYSHZ_RUN_HOLD_SECONDS = 0\.32/);
+  assert.match(source, /const XYSHZ_RUN_TIMESCALE = 1\.52/);
   assert.match(heroBlock, /const looped = next === "Idle" \|\| next === "RunLoop" \|\| next === "WalkLoop"/);
   assert.match(heroBlock, /nextAction\.clampWhenFinished = !looped/);
   assert.match(heroBlock, /nextAction\.timeScale = next === "RunLoop" \? XYSHZ_RUN_TIMESCALE : next === "WalkLoop" \? XYSHZ_WALK_TIMESCALE : 1/);
   assert.match(playerBlock, /moveHoldT\.current \+= moving \? dt : -dt \* 2/);
-  assert.match(playerBlock, /smoothstep01\(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS \+ 0\.22, moveHoldT\.current\)/);
-  assert.match(playerBlock, /const moveSpeed = PLAYER_SPEED \* \(1 \+ runBlend \* 0\.46\)/);
+  assert.match(playerBlock, /smoothstep01\(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS \+ 0\.18, moveHoldT\.current\)/);
+  assert.match(playerBlock, /const moveSpeed = PLAYER_SPEED \* \(1 \+ runBlend \* 0\.60\)/);
+  assert.match(playerBlock, /stepT\.current = wading \? 0\.46 - runBlend \* 0\.08 : 0\.42 - runBlend \* 0\.12/);
   assert.match(playerBlock, /running: character === "hero" && moveHoldT\.current >= XYSHZ_RUN_HOLD_SECONDS/);
   assert.match(playerBlock, /character === "hero" && characterActionRef\.current !== "Idle"/);
 });
@@ -121,7 +123,7 @@ test("xyshz hero speeds up WalkLoop so held movement reads as walking", async ()
   const source = await readExploreSource();
   const heroBlock = sourceBlock(source, "function GltfHero", "function GltfGuardian");
 
-  assert.match(source, /const XYSHZ_WALK_TIMESCALE = 1\.55/);
+  assert.match(source, /const XYSHZ_WALK_TIMESCALE = 1\.65/);
   assert.match(heroBlock, /nextAction\.timeScale = next === "RunLoop" \? XYSHZ_RUN_TIMESCALE : next === "WalkLoop" \? XYSHZ_WALK_TIMESCALE : 1/);
 });
 
