@@ -6,7 +6,19 @@ import bpy
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "frontend" / "public" / "models" / "xy_pet_spirit_lighthouse.glb"
-CLIPS = ["FeedTreat", "TalkListen", "BondGlow", "SleepFloat", "SecretTwirl"]
+CLIPS = [
+    "FeedTreat",
+    "TalkListen",
+    "BondGlow",
+    "SleepFloat",
+    "SecretTwirl",
+    "Nuzzle",
+    "CuriousPeek",
+    "DiscoveryHop",
+    "LanternGaze",
+    "ComfortPulse",
+    "NightGuard",
+]
 
 
 def obj(name: str):
@@ -161,6 +173,95 @@ def add_actions():
             (1, {"rot": (0, 0, 0), "scale": (1, 1, 1)}),
             (36, {"rot": (0, 0, math.radians(side * 160)), "scale": (1.1, 1.1, 1.1)}),
             (72, {"rot": (0, 0, math.radians(side * 320)), "scale": (1, 1, 1)}),
+        ])
+
+    keyed_action(root, "Nuzzle", 64, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (16, {"loc": (-0.06, 0.03, 0.04), "rot": (math.radians(3), 0, math.radians(8)), "scale": (1.03, 1.03, 1.02)}),
+        (32, {"loc": (0.07, 0.04, 0.06), "rot": (math.radians(2), 0, math.radians(-9)), "scale": (1.05, 1.05, 1.03)}),
+        (48, {"loc": (-0.03, 0.02, 0.03), "rot": (math.radians(1), 0, math.radians(5)), "scale": (1.02, 1.02, 1.01)}),
+        (64, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    keyed_action(tail, "Nuzzle", 64, [
+        (1, {"rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (12, {"rot": (0, 0, math.radians(18)), "scale": (1.04, 1.04, 1.04)}),
+        (24, {"rot": (0, 0, math.radians(-24)), "scale": (1.07, 1.07, 1.07)}),
+        (36, {"rot": (0, 0, math.radians(22)), "scale": (1.06, 1.06, 1.06)}),
+        (50, {"rot": (0, 0, math.radians(-12)), "scale": (1.03, 1.03, 1.03)}),
+        (64, {"rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+
+    keyed_action(root, "CuriousPeek", 72, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (18, {"loc": (0, 0.06, 0.03), "rot": (math.radians(-5), 0, 0), "scale": (1.02, 1.02, 1.02)}),
+        (36, {"loc": (0, 0.1, 0.02), "rot": (math.radians(-8), 0, math.radians(2)), "scale": (1.04, 1.04, 1.02)}),
+        (54, {"loc": (0, 0.05, 0.03), "rot": (math.radians(-4), 0, math.radians(-2)), "scale": (1.02, 1.02, 1.01)}),
+        (72, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    keyed_action(orb, "CuriousPeek", 72, [
+        (1, {"loc": (0, 0, 0), "scale": (1, 1, 1)}),
+        (36, {"loc": (0, 0.08, 0.12), "scale": (1.2, 1.2, 1.2)}),
+        (72, {"loc": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+
+    keyed_action(root, "DiscoveryHop", 58, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (10, {"loc": (0, 0, -0.03), "scale": (1.08, 1.08, 0.94)}),
+        (24, {"loc": (0, 0.02, 0.26), "rot": (math.radians(-8), 0, math.radians(-8)), "scale": (1.05, 1.05, 1.08)}),
+        (38, {"loc": (0, 0.04, 0.08), "rot": (math.radians(4), 0, math.radians(7)), "scale": (0.98, 0.98, 1.03)}),
+        (58, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    keyed_action(tail, "DiscoveryHop", 58, [
+        (1, {"rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (24, {"rot": (0, 0, math.radians(-28)), "scale": (1.1, 1.1, 1.1)}),
+        (38, {"rot": (0, 0, math.radians(24)), "scale": (1.06, 1.06, 1.06)}),
+        (58, {"rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    keyed_action(orb, "DiscoveryHop", 58, [
+        (1, {"rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (24, {"rot": (0, 0, math.radians(120)), "scale": (1.32, 1.32, 1.32)}),
+        (58, {"rot": (0, 0, math.radians(240)), "scale": (1, 1, 1)}),
+    ])
+
+    keyed_action(root, "LanternGaze", 96, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (24, {"loc": (0, 0, 0.08), "rot": (math.radians(-6), 0, 0), "scale": (1.02, 1.02, 1.02)}),
+        (54, {"loc": (0, 0, 0.18), "rot": (math.radians(-12), 0, math.radians(3)), "scale": (1.04, 1.04, 1.04)}),
+        (78, {"loc": (0, 0, 0.1), "rot": (math.radians(-8), 0, math.radians(-2)), "scale": (1.02, 1.02, 1.02)}),
+        (96, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    keyed_action(orb, "LanternGaze", 96, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (54, {"loc": (0, 0.02, 0.18), "rot": (math.radians(-12), 0, math.radians(30)), "scale": (1.18, 1.18, 1.18)}),
+        (96, {"loc": (0, 0, 0), "rot": (0, 0, math.radians(60)), "scale": (1, 1, 1)}),
+    ])
+
+    keyed_action(root, "ComfortPulse", 108, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (28, {"loc": (0, 0.01, -0.04), "rot": (math.radians(5), 0, 0), "scale": (0.97, 0.97, 1.02)}),
+        (54, {"loc": (0, 0.02, 0.04), "rot": (math.radians(2), 0, 0), "scale": (1.08, 1.08, 1.08)}),
+        (82, {"loc": (0, 0.01, -0.02), "rot": (math.radians(4), 0, 0), "scale": (0.99, 0.99, 1.03)}),
+        (108, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    for glow in [halo_a, halo_b, diamond, orb]:
+        keyed_action(glow, "ComfortPulse", 108, [
+            (1, {"scale": (1, 1, 1), "rot": (0, 0, 0)}),
+            (54, {"scale": (1.34, 1.34, 1.34), "rot": (0, 0, math.radians(24))}),
+            (108, {"scale": (1, 1, 1), "rot": (0, 0, math.radians(48))}),
+        ])
+
+    keyed_action(root, "NightGuard", 132, [
+        (1, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+        (33, {"loc": (0.02, 0, 0.09), "rot": (0, 0, math.radians(3)), "scale": (1.03, 1.03, 1.03)}),
+        (66, {"loc": (-0.02, 0, 0.14), "rot": (0, 0, math.radians(-3)), "scale": (1.06, 1.06, 1.06)}),
+        (99, {"loc": (0.02, 0, 0.08), "rot": (0, 0, math.radians(2)), "scale": (1.03, 1.03, 1.03)}),
+        (132, {"loc": (0, 0, 0), "rot": (0, 0, 0), "scale": (1, 1, 1)}),
+    ])
+    for glow in [halo_a, halo_b, diamond, orb]:
+        keyed_action(glow, "NightGuard", 132, [
+            (1, {"scale": (1, 1, 1), "rot": (0, 0, 0)}),
+            (66, {"scale": (1.5, 1.5, 1.5), "rot": (0, 0, math.radians(18))}),
+            (132, {"scale": (1.12, 1.12, 1.12), "rot": (0, 0, math.radians(36))}),
         ])
 
 
