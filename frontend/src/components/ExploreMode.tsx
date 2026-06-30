@@ -5446,14 +5446,23 @@ function GltfFishingBobber() {
   return <primitive object={obj} scale={1.0} />;
 }
 
-function FishingSpot({ posRef, onAtWater, casting }: { posRef: React.RefObject<THREE.Vector3>; onAtWater: (b: boolean) => void; casting: boolean }) {
-  const was = useRef(false); const bob = useRef<THREE.Group>(null);
-  useFrame((s) => {
+function FishingWaterSensor({ posRef, onAtWater }: { posRef: React.RefObject<THREE.Vector3>; onAtWater: (b: boolean) => void }) {
+  const was = useRef(false);
+  useFrame(() => {
     const p = posRef.current; if (!p) return;
     const r2 = p.x * p.x + p.z * p.z;
     const shore = WALK_RADIUS * 0.78;
     const at = r2 > shore * shore && bayMask(p.x, p.z) > 0.32;
     if (at !== was.current) { was.current = at; onAtWater(at); }
+  });
+  return null;
+}
+
+function FishingSpot({ posRef, casting }: { posRef: React.RefObject<THREE.Vector3>; casting: boolean }) {
+  const bob = useRef<THREE.Group>(null);
+  useFrame((s) => {
+    const p = posRef.current; if (!p) return;
+    const r2 = p.x * p.x + p.z * p.z;
     const b = bob.current; if (b) {
       b.visible = casting;
       if (casting) {
@@ -7087,6 +7096,7 @@ function ExploreScene({
       <Suspense fallback={null}>
         <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
       </Suspense>
+      <FishingWaterSensor posRef={posRef} onAtWater={onAtWater} />
       {/* 灯塔精灵 4.4M 重模型：独立 Suspense，不阻塞「可上岛」，世界就绪后随即淡入 */}
       <DelayedMount ms={revealDelay.companion}>
         <Suspense fallback={null}>
@@ -7134,7 +7144,7 @@ function ExploreScene({
           <Suspense fallback={null}><SkyLanterns launchRef={lanternLaunch} posRef={posRef} /></Suspense>
         </DelayedMount>
         <Fireworks launchRef={lanternLaunch} posRef={posRef} active={isNight} tier={tier} />
-        <FishingSpot posRef={posRef} onAtWater={onAtWater} casting={fishingCasting} />
+        <FishingSpot posRef={posRef} casting={fishingCasting} />
         <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
         <LocationAudio posRef={posRef} night={isNight} />
         {songDone && <Fireflies count={tier === "low" ? 24 : 46} />}

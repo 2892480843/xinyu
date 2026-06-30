@@ -100,6 +100,23 @@ test("ExploreMode wires the fishing rhythm state machine and HUD", async () => {
   assert.match(renderBlock, /鱼从光里游走了/);
 });
 
+test("ExploreMode keeps fishing water detection outside heavy model loading", async () => {
+  const source = await readExploreModeSource();
+  const sensorBlock = sourceBlock(source, "function FishingWaterSensor", "function FishingSpot");
+  const sceneBlock = sourceBlock(source, "function ExploreScene", "function ExploreMode");
+  const sensorIndex = sceneBlock.indexOf("<FishingWaterSensor posRef={posRef} onAtWater={onAtWater} />");
+  const interactionsIndex = sceneBlock.indexOf("<DelayedMount ms={revealDelay.interactions}>");
+  const bobberIndex = sceneBlock.indexOf("<FishingSpot posRef={posRef} casting={fishingCasting} />");
+
+  assert.match(sensorBlock, /onAtWater\(at\)/);
+  assert.notEqual(sensorIndex, -1);
+  assert.notEqual(interactionsIndex, -1);
+  assert.notEqual(bobberIndex, -1);
+  assert.ok(sensorIndex < interactionsIndex);
+  assert.ok(interactionsIndex < bobberIndex);
+  assert.doesNotMatch(sceneBlock, /<FishingSpot[^>]+onAtWater=\{onAtWater\}/);
+});
+
 test("ExploreMode supports keyboard reeling during the bite window", async () => {
   const source = await readExploreModeSource();
   const keyboardBlock = sourceBlock(source, "useEffect(() => {\n    if (fishing !== \"bite\") return;", "window.removeEventListener(\"keydown\"");
