@@ -456,7 +456,7 @@ function nearIsleProp(x: number, z: number, margin = 0): boolean {
   for (const p of ISLE_PROPS) { const dx = p.x - x, dz = p.z - z, rr = p.r + margin; if (dx * dx + dz * dz < rr * rr) return true; }
   return false;
 }
-const PLAYER_SPEED = 13.2; // 移动速度(稳一点的探索步速,长按后再过渡到跑步)
+const PLAYER_SPEED = 10.4; // 移动速度(慢行探索步速,长按后再过渡到小跑)
 const JUMP_V = 11.0; // 起跳初速度
 const GRAVITY = 34.0; // 重力加速度(跳跃抛物);跳跃高度 ≈ V²/2g ≈ 1.8 单位
 const CAM_DIST = HEALING_WALK_CAMERA.distance; // 相机跟在身后的距离:近景散步,角色更大、更有代入感
@@ -1944,9 +1944,9 @@ function GltfAvatar({ avatar, legL, legR, armL, armR }: {
 const XYSHZ_MODEL_SCALE = 0.0145;
 const XYSHZ_FOOT_OFFSET_Y = 49.9846 * XYSHZ_MODEL_SCALE;
 const XYSHZ_MODEL_ROTATION: [number, number, number] = [0, -Math.PI / 2, 0];
-const XYSHZ_WALK_TIMESCALE = 1.5;
-const XYSHZ_RUN_HOLD_SECONDS = 0.36;
-const XYSHZ_RUN_TIMESCALE = 1.38;
+const XYSHZ_WALK_TIMESCALE = 1.22;
+const XYSHZ_RUN_HOLD_SECONDS = 0.45;
+const XYSHZ_RUN_TIMESCALE = 1.18;
 const XYSHZ_ACTION_CLIPS = ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"] as const;
 
 function isXyshzActionClip(clip: CharacterActionClip): clip is (typeof XYSHZ_ACTION_CLIPS)[number] {
@@ -2365,8 +2365,8 @@ function Player({
     const moving = _move.lengthSq() > 0.0001;
     moveHoldT.current += moving ? dt : -dt * 2;
     moveHoldT.current = Math.max(0, Math.min(XYSHZ_RUN_HOLD_SECONDS + 0.6, moveHoldT.current));
-    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + 0.22, moveHoldT.current) : 0;
-    const moveSpeed = PLAYER_SPEED * (1 + runBlend * 0.46);
+    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + 0.3, moveHoldT.current) : 0;
+    const moveSpeed = PLAYER_SPEED * (1 + runBlend * 0.35);
 
     if (moving) {
       _move.normalize();
@@ -2482,7 +2482,7 @@ function Player({
     // 采样未就绪时静默（无合成对应，断网可接受）。stepT 限频(慢走 0.46s/步、涉水 0.5s)。
     stepT.current -= dt;
     if (!airborne.current && gait > 0.25 && stepT.current <= 0) {
-      stepT.current = wading ? 0.5 - runBlend * 0.08 : 0.46 - runBlend * 0.1;
+      stepT.current = wading ? 0.56 - runBlend * 0.07 : 0.52 - runBlend * 0.08;
       playSample(wading ? "water_splash" : "footstep", { gain: wading ? 0.5 : 0.6, rate: 0.9 + Math.random() * 0.2 });
     }
     sq.current = Math.max(0, sq.current - dt * 3.5); // 压扁回弹衰减
