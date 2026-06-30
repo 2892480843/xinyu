@@ -20,6 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "frontend" / "public" / "models" / "xyshz.glb"
 OUT = ROOT / "frontend" / "public" / "models" / "xyshz_rigged.glb"
 MOCAP_WALK = ROOT / "external" / "mocap" / "02_01.bvh"
+MOCAP_RUN = ROOT / "external" / "mocap" / "09_01.bvh"
+MOCAP_JUMP = ROOT / "external" / "mocap" / "13_39.bvh"
+MOCAP_WAVE = ROOT / "external" / "mocap" / "13_26.bvh"
+MOCAP_FLUTE = ROOT / "external" / "mocap" / "14_04.bvh"
+MOCAP_SIT = ROOT / "external" / "mocap" / "14_27.bvh"
+MOCAP_CHEER = ROOT / "external" / "mocap" / "13_29.bvh"
 ARMATURE_NAME = "XYSHZ_Rig"
 CLIPS = ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"]
 LEG_INNER_SIDE = 0.055
@@ -41,6 +47,11 @@ def clamp(value: float, lo: float, hi: float) -> float:
 
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def smoothstep(value: float) -> float:
+    value = clamp(value, 0.0, 1.0)
+    return value * value * (3.0 - 2.0 * value)
 
 
 def reset_scene() -> None:
@@ -186,6 +197,7 @@ def assign_spatial_weights(mesh: bpy.types.Object, arm: bpy.types.Object) -> Non
     for vertex in mesh.data.vertices:
         co = mesh.matrix_world @ vertex.co
         side_offset = co.y - side_c
+        front_ratio = (co.x - min_x) / (max_x - min_x) if max_x > min_x else 0.5
         zt = (co.z - min_z) / height if height else 0.0
         side_abs = abs(side_offset) / side_width if side_width else 0.0
         side = "L" if side_offset < 0 else "R"
@@ -198,13 +210,13 @@ def assign_spatial_weights(mesh: bpy.types.Object, arm: bpy.types.Object) -> Non
                 weights = [(f"LowerLeg{side}", 0.55), (f"UpperLeg{side}", 0.25), ("Hips", 0.20)]
             else:
                 weights = [(f"UpperLeg{side}", 0.45), ("Hips", 0.55)]
-        elif 0.25 < zt < 0.77 and side_abs > ARM_SIDE_THRESHOLD:
+        elif 0.25 < zt < 0.77 and side_abs > ARM_SIDE_THRESHOLD and front_ratio > 0.44:
             if zt > 0.58:
-                weights = [(f"UpperArm{side}", 0.55), ("Chest", 0.45)]
+                weights = [(f"UpperArm{side}", 0.30), ("Chest", 0.70)]
             elif zt > 0.38:
-                weights = [(f"ForeArm{side}", 0.55), (f"UpperArm{side}", 0.25), ("Chest", 0.20)]
+                weights = [(f"ForeArm{side}", 0.34), (f"UpperArm{side}", 0.16), ("Chest", 0.50)]
             else:
-                weights = [(f"Hand{side}", 0.55), (f"ForeArm{side}", 0.30), ("Chest", 0.15)]
+                weights = [(f"Hand{side}", 0.34), (f"ForeArm{side}", 0.18), ("Chest", 0.48)]
 
         if weights is None:
             weights = body_weights(zt)
@@ -347,16 +359,19 @@ def parse_bvh_motion(path: Path):
 
 
 def build_bvh_gait_frames(key_count: int, gait: str = "walk"):
-    motion = parse_bvh_motion(MOCAP_WALK)
+    mocap_path = MOCAP_RUN if gait == "run" else MOCAP_WALK
+    motion = parse_bvh_motion(mocap_path)
     frames = motion["frames"]
     channel_index = {channel: index for index, channel in enumerate(motion["channels"])}
-    source_start = max(1, min(BVH_WALK_START, len(frames) - 2))  # skip frame 0 T-pose
-    source_end = max(source_start + 1, min(BVH_WALK_END, len(frames) - 1))
     is_run = gait == "run"
-    stride = 1.34 if is_run else 1.0
-    knee = 1.28 if is_run else 1.0
-    arm = 1.48 if is_run else 1.0
-    bob = 1.35 if is_run else 1.0
+    source_start = 18 if is_run else BVH_WALK_START
+    source_end = 118 if is_run else BVH_WALK_END
+    source_start = max(1, min(source_start, len(frames) - 2))  # skip frame 0 T-pose
+    source_end = max(source_start + 1, min(source_end, len(frames) - 1))
+    stride = 1.58 if is_run else 1.10
+    knee = 1.25 if is_run else 1.08
+    arm = 1.52 if is_run else 1.25
+    bob = 1.20 if is_run else 0.94
 
     def value_at(frame_float: float, joint: str, channel: str) -> float:
         index = channel_index[(joint, channel)]
@@ -409,16 +424,16 @@ def build_bvh_gait_frames(key_count: int, gait: str = "walk"):
             "Hips": {"loc": (0.0, 0.0, 0.06 + hips_bob * 0.16 * bob), "rot": (0.0, 0.0, r(centered(frame_float, "Hips", "Zrotation") * 0.7))},
             "Chest": {"rot": (r(0.2 if not is_run else 0.45), 0.0, r(spine_sway * (0.8 if not is_run else 1.05)))},
             "Head": {"rot": (r(-0.1), 0.0, r(head_sway * 0.5))},
-            "UpperLegL": {"rot": (0.0, 0.0, r(left_thigh * 13.2 * stride))},
-            "LowerLegL": {"rot": (0.0, 0.0, r(2.0 + left_knee * 14.0 * knee))},
-            "FootL": {"rot": (0.0, 0.0, r(left_foot * 4.0 * stride))},
-            "UpperLegR": {"rot": (0.0, 0.0, r(right_thigh * 13.2 * stride))},
-            "LowerLegR": {"rot": (0.0, 0.0, r(2.0 + right_knee * 14.0 * knee))},
-            "FootR": {"rot": (0.0, 0.0, r(right_foot * 4.0 * stride))},
-            "UpperArmL": {"rot": (0.0, 0.0, r(left_arm * 8.5 * arm + 1.5))},
-            "ForeArmL": {"rot": (0.0, 0.0, r(-4.0 if not is_run else -6.0))},
-            "UpperArmR": {"rot": (0.0, 0.0, r(right_arm * 8.5 * arm - 1.5))},
-            "ForeArmR": {"rot": (0.0, 0.0, r(-4.0 if not is_run else -6.0))},
+            "UpperLegL": {"rot": (0.0, 0.0, r(left_thigh * 12.0 * stride))},
+            "LowerLegL": {"rot": (0.0, 0.0, r(1.5 + left_knee * 12.5 * knee))},
+            "FootL": {"rot": (0.0, 0.0, r(left_foot * 3.2 * stride))},
+            "UpperLegR": {"rot": (0.0, 0.0, r(right_thigh * 12.0 * stride))},
+            "LowerLegR": {"rot": (0.0, 0.0, r(1.5 + right_knee * 12.5 * knee))},
+            "FootR": {"rot": (0.0, 0.0, r(right_foot * 3.2 * stride))},
+            "UpperArmL": {"rot": (0.0, 0.0, r(left_arm * 6.6 * arm + 1.0))},
+            "ForeArmL": {"rot": (0.0, 0.0, r(-3.2 if not is_run else -4.2))},
+            "UpperArmR": {"rot": (0.0, 0.0, r(right_arm * 6.6 * arm - 1.0))},
+            "ForeArmR": {"rot": (0.0, 0.0, r(-3.2 if not is_run else -4.2))},
         }
 
     out = []
@@ -454,263 +469,185 @@ def add_run_loop(arm: bpy.types.Object) -> None:
     keyed_pose_action(arm, "RunLoop", BVH_RUN_KEYS, frames)
 
 
+def build_controlled_external_frames(path: Path, source_start: int, source_end: int, key_count: int, kind: str):
+    motion = parse_bvh_motion(path)
+    frames = motion["frames"]
+    channel_index = {channel: index for index, channel in enumerate(motion["channels"])}
+    source_start = max(1, min(source_start, len(frames) - 2))
+    source_end = max(source_start + 1, min(source_end, len(frames) - 1))
+
+    def has(joint: str, channel: str) -> bool:
+        return (joint, channel) in channel_index
+
+    def value_at(frame_float: float, joint: str, channel: str) -> float:
+        key = (joint, channel)
+        if key not in channel_index:
+            return 0.0
+        index = channel_index[key]
+        lo = int(math.floor(frame_float))
+        hi = min(len(frames) - 1, lo + 1)
+        t = frame_float - lo
+        return lerp(frames[lo][index], frames[hi][index], t)
+
+    stats: dict[tuple[str, str], tuple[float, float, float]] = {}
+
+    def series(joint: str, channel: str):
+        if not has(joint, channel):
+            return [0.0]
+        index = channel_index[(joint, channel)]
+        return [frames[frame][index] for frame in range(source_start, source_end + 1)]
+
+    def centered(frame_float: float, joint: str, channel: str) -> float:
+        key = (joint, channel)
+        if key not in stats:
+            values = series(joint, channel)
+            lo = min(values)
+            hi = max(values)
+            stats[key] = (lo, hi, (lo + hi) * 0.5)
+        lo, hi, mid = stats[key]
+        half = max(0.001, (hi - lo) * 0.5)
+        return clamp((value_at(frame_float, joint, channel) - mid) / half, -1.0, 1.0)
+
+    def normalized(frame_float: float, joint: str, channel: str) -> float:
+        key = (joint, channel)
+        if key not in stats:
+            values = series(joint, channel)
+            lo = min(values)
+            hi = max(values)
+            stats[key] = (lo, hi, (lo + hi) * 0.5)
+        lo, hi, _ = stats[key]
+        return clamp((value_at(frame_float, joint, channel) - lo) / max(0.001, hi - lo), 0.0, 1.0)
+
+    def pose_from_source(frame_float: float):
+        progress = clamp((frame_float - source_start) / max(1.0, source_end - source_start), 0.0, 1.0)
+        rise_fall = smoothstep(progress / 0.22) * smoothstep((1.0 - progress) / 0.18)
+        hold_in = smoothstep(progress / 0.25)
+        hip_lift = normalized(frame_float, "Hips", "Yposition")
+        chest_sway = centered(frame_float, "Spine1", "Zrotation")
+        head_sway = centered(frame_float, "Head", "Yrotation")
+        l_thigh = centered(frame_float, "LeftUpLeg", "Xrotation")
+        r_thigh = centered(frame_float, "RightUpLeg", "Xrotation")
+        l_knee = normalized(frame_float, "LeftLeg", "Xrotation")
+        r_knee = normalized(frame_float, "RightLeg", "Xrotation")
+        l_arm = centered(frame_float, "LeftArm", "Xrotation")
+        r_arm = centered(frame_float, "RightArm", "Xrotation")
+        l_fore = centered(frame_float, "LeftForeArm", "Xrotation")
+        r_fore = centered(frame_float, "RightForeArm", "Xrotation")
+        r_wave = centered(frame_float, "RightForeArm", "Zrotation")
+        l_wave = centered(frame_float, "LeftForeArm", "Zrotation")
+
+        if kind == "jump":
+            return {
+                "Hips": {"loc": (0.0, 0.0, -1.2 + hip_lift * 7.0)},
+                "Chest": {"rot": (r(-1.2 + hip_lift * 1.2), 0.0, r(chest_sway * 1.6))},
+                "Head": {"rot": (r(-0.4), 0.0, r(head_sway * 1.0))},
+                "UpperLegL": {"rot": (0.0, 0.0, r(l_thigh * 15.0))},
+                "UpperLegR": {"rot": (0.0, 0.0, r(r_thigh * 15.0))},
+                "LowerLegL": {"rot": (0.0, 0.0, r(4.0 + l_knee * 18.0))},
+                "LowerLegR": {"rot": (0.0, 0.0, r(4.0 + r_knee * 18.0))},
+                "UpperArmL": {"rot": (0.0, 0.0, r(l_arm * 9.0 - 2.0))},
+                "UpperArmR": {"rot": (0.0, 0.0, r(r_arm * 9.0 + 2.0))},
+                "ForeArmL": {"rot": (0.0, 0.0, r(-5.0 + l_fore * 3.0))},
+                "ForeArmR": {"rot": (0.0, 0.0, r(-5.0 + r_fore * 3.0))},
+            }
+
+        if kind == "wave":
+            amount = rise_fall
+            return {
+                "Chest": {"rot": (r(-0.9 * amount), 0.0, r((3.4 + chest_sway * 0.9) * amount))},
+                "Head": {"rot": (r(-0.7 * amount), 0.0, r((-1.8 + head_sway * 0.7) * amount))},
+                "UpperArmR": {"rot": (r((52.0 + r_arm * 5.0) * amount), r(-4.0 * amount), r((-16.0 + r_wave * 7.0) * amount))},
+                "ForeArmR": {"rot": (r((24.0 + r_fore * 6.0) * amount), 0.0, r((r_wave * 25.0) * amount))},
+                "HandR": {"rot": (0.0, 0.0, r((r_wave * 18.0) * amount))},
+                "UpperArmL": {"rot": (r(-2.0 * amount), 0.0, r(-2.0 * amount))},
+                "ForeArmL": {"rot": (r(-2.0 * amount), 0.0, r(-2.5 * amount))},
+            }
+
+        if kind == "flute":
+            amount = hold_in
+            breath = math.sin((frame_float - source_start) / max(1, source_end - source_start) * math.pi * 2)
+            pose = {
+                "Chest": {"rot": (r((-2.0 + breath * 0.35) * amount), 0.0, r(chest_sway * 0.7 * amount))},
+                "Head": {"rot": (r((3.5 + breath * 0.25) * amount), 0.0, r((head_sway * 0.8 - 0.8) * amount))},
+                "UpperArmL": {"rot": (r((-50.0 + l_arm * 2.0) * amount), r(3.0 * amount), r((-12.0 + l_wave * 2.0) * amount))},
+                "ForeArmL": {"rot": (r((-36.0 + l_fore * 3.0) * amount), 0.0, r((34.0 + l_wave * 3.0) * amount))},
+                "HandL": {"rot": (r(-4.0 * amount), 0.0, r((-5.0 + l_wave * 1.5) * amount))},
+                "UpperArmR": {"rot": (r((50.0 + r_arm * 2.0) * amount), r(-3.0 * amount), r((12.0 + r_wave * 2.0) * amount))},
+                "ForeArmR": {"rot": (r((36.0 + r_fore * 3.0) * amount), 0.0, r((-34.0 + r_wave * 3.0) * amount))},
+                "HandR": {"rot": (r(4.0 * amount), 0.0, r((5.0 + r_wave * 1.5) * amount))},
+            }
+            if amount > 0.01:
+                pose["HandL"]["world_loc"] = (3.5, -4.0, 27.0)
+                pose["HandR"]["world_loc"] = (5.5, 4.0, 27.0)
+            return pose
+
+        if kind == "sit":
+            settle = min(1.0, (frame_float - source_start) / max(1.0, (source_end - source_start) * 0.55))
+            settle = smoothstep(settle)
+            return {
+                "Hips": {"world_loc": (0.0, 0.0, -16.0 * settle), "rot": (r(-2.0 * settle), 0.0, 0.0)},
+                "Spine": {"rot": (r(3.0 * settle), 0.0, 0.0)},
+                "Chest": {"rot": (r(-2.0 * settle), 0.0, r(chest_sway * 0.8 * settle))},
+                "Head": {"rot": (r(0.8 * settle), 0.0, r(head_sway * 0.7 * settle))},
+                "UpperLegL": {"rot": (0.0, 0.0, r(-38.0 * settle + l_thigh * 2.5))},
+                "UpperLegR": {"rot": (0.0, 0.0, r(-38.0 * settle + r_thigh * 2.5))},
+                "LowerLegL": {"rot": (0.0, 0.0, r(26.0 * settle + l_knee * 3.0))},
+                "LowerLegR": {"rot": (0.0, 0.0, r(26.0 * settle + r_knee * 3.0))},
+                "FootL": {"rot": (0.0, 0.0, r(5.0 * settle))},
+                "FootR": {"rot": (0.0, 0.0, r(5.0 * settle))},
+                "UpperArmL": {"rot": (r(-8.0 * settle), 0.0, r(-4.0 * settle))},
+                "UpperArmR": {"rot": (r(8.0 * settle), 0.0, r(4.0 * settle))},
+                "ForeArmL": {"rot": (r(-5.0 * settle), 0.0, r(4.0 * settle))},
+                "ForeArmR": {"rot": (r(5.0 * settle), 0.0, r(-4.0 * settle))},
+            }
+
+        if kind == "cheer":
+            amount = math.sin(progress * math.pi)
+            bounce = math.sin((frame_float - source_start) / max(1, source_end - source_start) * math.pi)
+            return {
+                "Hips": {"loc": (0.0, 0.0, bounce * 3.0)},
+                "Chest": {"rot": (r((-3.8 + bounce * -0.8) * amount), 0.0, r((chest_sway * 1.0 + 2.0) * amount))},
+                "Head": {"rot": (r(-1.4 * amount), 0.0, r(head_sway * 0.8 * amount))},
+                "UpperArmL": {"rot": (r((-72.0 + l_arm * 4.0) * amount), 0.0, r((12.0 + l_wave * 4.0) * amount))},
+                "UpperArmR": {"rot": (r((72.0 + r_arm * 4.0) * amount), 0.0, r((-12.0 + r_wave * 4.0) * amount))},
+                "ForeArmL": {"rot": (r((-26.0 + l_fore * 4.0) * amount), 0.0, r((8.0 + l_wave * 5.0) * amount))},
+                "ForeArmR": {"rot": (r((26.0 + r_fore * 4.0) * amount), 0.0, r((-8.0 + r_wave * 5.0) * amount))},
+                "HandL": {"rot": (0.0, 0.0, r(l_wave * 6.0 * amount))},
+                "HandR": {"rot": (0.0, 0.0, r(r_wave * 6.0 * amount))},
+            }
+
+        return {}
+
+    out = []
+    for key_index in range(key_count):
+        frame = key_index + 1
+        source_frame = source_start + (source_end - source_start) * (key_index / max(1, key_count - 1))
+        out.append((frame, pose_from_source(source_frame)))
+    return out
+
+
 def add_jump(arm: bpy.types.Object) -> None:
-    frames = [
-        (1, {
-            "Hips": {"loc": (0.0, 0.0, 0.0)},
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperLegR": {"rot": (0.0, 0.0, 0.0)},
-            "LowerLegL": {"rot": (0.0, 0.0, 0.0)},
-            "LowerLegR": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-        (8, {
-            "Hips": {"loc": (0.0, 0.0, -3.5)},
-            "Chest": {"rot": (r(2.0), 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, r(12.0))},
-            "UpperLegR": {"rot": (0.0, 0.0, r(12.0))},
-            "LowerLegL": {"rot": (0.0, 0.0, r(20.0))},
-            "LowerLegR": {"rot": (0.0, 0.0, r(20.0))},
-            "UpperArmL": {"rot": (r(-16.0), 0.0, r(-4.0))},
-            "UpperArmR": {"rot": (r(16.0), 0.0, r(4.0))},
-        }),
-        (17, {
-            "Hips": {"loc": (0.0, 0.0, 11.0)},
-            "Chest": {"rot": (r(-2.5), 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, r(-10.0))},
-            "UpperLegR": {"rot": (0.0, 0.0, r(-10.0))},
-            "LowerLegL": {"rot": (0.0, 0.0, r(7.0))},
-            "LowerLegR": {"rot": (0.0, 0.0, r(7.0))},
-            "UpperArmL": {"rot": (r(-48.0), 0.0, r(8.0))},
-            "UpperArmR": {"rot": (r(48.0), 0.0, r(-8.0))},
-        }),
-        (27, {
-            "Hips": {"loc": (0.0, 0.0, -1.5)},
-            "Chest": {"rot": (r(1.5), 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, r(10.0))},
-            "UpperLegR": {"rot": (0.0, 0.0, r(10.0))},
-            "LowerLegL": {"rot": (0.0, 0.0, r(16.0))},
-            "LowerLegR": {"rot": (0.0, 0.0, r(16.0))},
-            "UpperArmL": {"rot": (r(-20.0), 0.0, r(-2.0))},
-            "UpperArmR": {"rot": (r(20.0), 0.0, r(2.0))},
-        }),
-        (37, {
-            "Hips": {"loc": (0.0, 0.0, 0.0)},
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperLegR": {"rot": (0.0, 0.0, 0.0)},
-            "LowerLegL": {"rot": (0.0, 0.0, 0.0)},
-            "LowerLegR": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-    ]
+    frames = build_controlled_external_frames(MOCAP_JUMP, 50, 270, 37, "jump")
     keyed_pose_action(arm, "Jump", 37, frames)
 
 
 def add_wave(arm: bpy.types.Object) -> None:
-    frames = [
-        (1, {
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "Head": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmR": {"rot": (0.0, 0.0, 0.0)},
-            "HandR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-        (11, {
-            "Chest": {"rot": (r(-1.0), 0.0, r(-3.5))},
-            "Head": {"rot": (r(-1.0), 0.0, r(2.0))},
-            "UpperArmR": {"rot": (r(72.0), r(-8.0), r(-18.0))},
-            "ForeArmR": {"rot": (r(32.0), 0.0, r(-12.0))},
-            "HandR": {"rot": (0.0, r(0.0), r(-8.0))},
-        }),
-        (19, {
-            "Chest": {"rot": (r(-1.0), 0.0, r(-4.5))},
-            "Head": {"rot": (r(-1.0), 0.0, r(2.5))},
-            "UpperArmR": {"rot": (r(82.0), r(-8.0), r(-28.0))},
-            "ForeArmR": {"rot": (r(56.0), 0.0, r(20.0))},
-            "HandR": {"rot": (0.0, 0.0, r(18.0))},
-        }),
-        (27, {
-            "Chest": {"rot": (r(-1.0), 0.0, r(-3.0))},
-            "Head": {"rot": (r(-1.0), 0.0, r(1.5))},
-            "UpperArmR": {"rot": (r(78.0), r(-8.0), r(-22.0))},
-            "ForeArmR": {"rot": (r(35.0), 0.0, r(-24.0))},
-            "HandR": {"rot": (0.0, 0.0, r(-16.0))},
-        }),
-        (35, {
-            "Chest": {"rot": (r(-1.0), 0.0, r(-4.0))},
-            "Head": {"rot": (r(-1.0), 0.0, r(2.0))},
-            "UpperArmR": {"rot": (r(80.0), r(-8.0), r(-26.0))},
-            "ForeArmR": {"rot": (r(54.0), 0.0, r(18.0))},
-            "HandR": {"rot": (0.0, 0.0, r(16.0))},
-        }),
-        (49, {
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "Head": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmR": {"rot": (0.0, 0.0, 0.0)},
-            "HandR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-    ]
+    frames = build_controlled_external_frames(MOCAP_WAVE, 480, 680, 49, "wave")
     keyed_pose_action(arm, "Wave", 49, frames)
 
 
 def add_flute(arm: bpy.types.Object) -> None:
-    playing_pose = {
-        "Chest": {"rot": (r(-2.5), 0.0, 0.0)},
-        "Head": {"rot": (r(4.0), 0.0, r(-1.5))},
-        "UpperArmL": {"rot": (r(-72.0), r(6.0), r(-20.0))},
-        "ForeArmL": {"rot": (r(-55.0), r(0.0), r(58.0))},
-        "HandL": {"world_loc": (4.0, -4.0, 28.0), "rot": (r(-8.0), r(0.0), r(-8.0))},
-        "UpperArmR": {"rot": (r(72.0), r(-6.0), r(20.0))},
-        "ForeArmR": {"rot": (r(55.0), 0.0, r(-58.0))},
-        "HandR": {"world_loc": (6.0, 4.0, 28.0), "rot": (r(8.0), 0.0, r(8.0))},
-    }
-    frames = [
-        (1, {
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "Head": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmL": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmL": {"rot": (0.0, 0.0, 0.0)},
-            "HandL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmR": {"rot": (0.0, 0.0, 0.0)},
-            "HandR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-        (17, {
-            "Chest": {"rot": (r(-1.5), 0.0, 0.0)},
-            "Head": {"rot": (r(2.0), 0.0, r(-1.0))},
-            "UpperArmL": {"rot": (r(-52.0), r(4.0), r(-12.0))},
-            "ForeArmL": {"rot": (r(-36.0), 0.0, r(34.0))},
-            "HandL": {"world_loc": (3.0, -8.0, 20.0), "rot": (r(-4.0), 0.0, r(-4.0))},
-            "UpperArmR": {"rot": (r(52.0), r(-4.0), r(12.0))},
-            "ForeArmR": {"rot": (r(36.0), 0.0, r(-34.0))},
-            "HandR": {"world_loc": (5.0, 8.0, 20.0), "rot": (r(4.0), 0.0, r(4.0))},
-        }),
-        (33, playing_pose),
-        (49, {
-            **playing_pose,
-            "Head": {"rot": (r(5.0), 0.0, r(1.5))},
-            "Chest": {"rot": (r(-2.0), 0.0, r(1.0))},
-        }),
-    ]
+    frames = build_controlled_external_frames(MOCAP_FLUTE, 120, 620, 49, "flute")
     keyed_pose_action(arm, "Flute", 49, frames)
 
 
 def add_sit(arm: bpy.types.Object) -> None:
-    seated_pose = {
-        "Hips": {"world_loc": (0.0, 0.0, -20.0), "rot": (r(-3.0), 0.0, 0.0)},
-        "Spine": {"rot": (r(4.0), 0.0, 0.0)},
-        "Chest": {"rot": (r(-3.0), 0.0, 0.0)},
-        "Head": {"rot": (r(1.0), 0.0, 0.0)},
-        "UpperLegL": {"rot": (0.0, 0.0, r(-44.0))},
-        "UpperLegR": {"rot": (0.0, 0.0, r(-44.0))},
-        "LowerLegL": {"rot": (0.0, 0.0, r(32.0))},
-        "LowerLegR": {"rot": (0.0, 0.0, r(32.0))},
-        "FootL": {"rot": (0.0, 0.0, r(7.0))},
-        "FootR": {"rot": (0.0, 0.0, r(7.0))},
-        "UpperArmL": {"rot": (r(-12.0), 0.0, r(-6.0))},
-        "UpperArmR": {"rot": (r(12.0), 0.0, r(6.0))},
-        "ForeArmL": {"rot": (r(-8.0), 0.0, r(6.0))},
-        "ForeArmR": {"rot": (r(8.0), 0.0, r(-6.0))},
-    }
-    frames = [
-        (1, {
-            "Hips": {"loc": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0)},
-            "Spine": {"rot": (0.0, 0.0, 0.0)},
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "Head": {"rot": (0.0, 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperLegR": {"rot": (0.0, 0.0, 0.0)},
-            "LowerLegL": {"rot": (0.0, 0.0, 0.0)},
-            "LowerLegR": {"rot": (0.0, 0.0, 0.0)},
-            "FootL": {"rot": (0.0, 0.0, 0.0)},
-            "FootR": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmL": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-        (17, {
-            "Hips": {"world_loc": (0.0, 0.0, -14.0), "rot": (r(-2.0), 0.0, 0.0)},
-            "Spine": {"rot": (r(2.5), 0.0, 0.0)},
-            "Chest": {"rot": (r(-1.5), 0.0, 0.0)},
-            "UpperLegL": {"rot": (0.0, 0.0, r(-28.0))},
-            "UpperLegR": {"rot": (0.0, 0.0, r(-28.0))},
-            "LowerLegL": {"rot": (0.0, 0.0, r(20.0))},
-            "LowerLegR": {"rot": (0.0, 0.0, r(20.0))},
-            "UpperArmL": {"rot": (r(-8.0), 0.0, r(-4.0))},
-            "UpperArmR": {"rot": (r(8.0), 0.0, r(4.0))},
-            "ForeArmL": {"rot": (r(-5.0), 0.0, r(4.0))},
-            "ForeArmR": {"rot": (r(5.0), 0.0, r(-4.0))},
-        }),
-        (33, seated_pose),
-        (49, seated_pose),
-    ]
+    frames = build_controlled_external_frames(MOCAP_SIT, 120, 760, 49, "sit")
     keyed_pose_action(arm, "Sit", 49, frames)
 
 
 def add_cheer(arm: bpy.types.Object) -> None:
-    frames = [
-        (1, {
-            "Hips": {"loc": (0.0, 0.0, 0.0)},
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "Head": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmL": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmR": {"rot": (0.0, 0.0, 0.0)},
-            "HandL": {"rot": (0.0, 0.0, 0.0)},
-            "HandR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-        (9, {
-            "Hips": {"loc": (0.0, 0.0, 1.5)},
-            "Chest": {"rot": (r(-2.0), 0.0, r(-2.0))},
-            "Head": {"rot": (r(-1.0), 0.0, r(1.0))},
-            "UpperArmL": {"rot": (r(-88.0), r(0.0), r(9.0))},
-            "UpperArmR": {"rot": (r(88.0), r(0.0), r(-9.0))},
-            "ForeArmL": {"rot": (r(-28.0), 0.0, r(-9.0))},
-            "ForeArmR": {"rot": (r(28.0), 0.0, r(9.0))},
-            "HandL": {"rot": (0.0, 0.0, r(-5.0))},
-            "HandR": {"rot": (0.0, 0.0, r(5.0))},
-        }),
-        (19, {
-            "Hips": {"loc": (0.0, 0.0, 4.5)},
-            "Chest": {"rot": (r(-5.0), 0.0, r(3.0))},
-            "Head": {"rot": (r(-2.0), 0.0, r(-2.0))},
-            "UpperArmL": {"rot": (r(-108.0), r(0.0), r(18.0))},
-            "UpperArmR": {"rot": (r(108.0), r(0.0), r(-18.0))},
-            "ForeArmL": {"rot": (r(-42.0), 0.0, r(12.0))},
-            "ForeArmR": {"rot": (r(42.0), 0.0, r(-12.0))},
-            "HandL": {"rot": (0.0, 0.0, r(10.0))},
-            "HandR": {"rot": (0.0, 0.0, r(-10.0))},
-        }),
-        (29, {
-            "Hips": {"loc": (0.0, 0.0, 1.0)},
-            "Chest": {"rot": (r(-3.0), 0.0, r(-2.5))},
-            "Head": {"rot": (r(-1.5), 0.0, r(1.0))},
-            "UpperArmL": {"rot": (r(-96.0), 0.0, r(12.0))},
-            "UpperArmR": {"rot": (r(96.0), 0.0, r(-12.0))},
-            "ForeArmL": {"rot": (r(-30.0), 0.0, r(-8.0))},
-            "ForeArmR": {"rot": (r(30.0), 0.0, r(8.0))},
-            "HandL": {"rot": (0.0, 0.0, r(-6.0))},
-            "HandR": {"rot": (0.0, 0.0, r(6.0))},
-        }),
-        (41, {
-            "Hips": {"loc": (0.0, 0.0, 0.0)},
-            "Chest": {"rot": (0.0, 0.0, 0.0)},
-            "Head": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmL": {"rot": (0.0, 0.0, 0.0)},
-            "UpperArmR": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmL": {"rot": (0.0, 0.0, 0.0)},
-            "ForeArmR": {"rot": (0.0, 0.0, 0.0)},
-            "HandL": {"rot": (0.0, 0.0, 0.0)},
-            "HandR": {"rot": (0.0, 0.0, 0.0)},
-        }),
-    ]
+    frames = build_controlled_external_frames(MOCAP_CHEER, 180, 420, 41, "cheer")
     keyed_pose_action(arm, "Cheer", 41, frames)
 
 
