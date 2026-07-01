@@ -69,6 +69,7 @@ from app.services.revision_service import RevisionService
 from app.services.phrase_service import PhraseService
 from app.services.tts_service import TTSService, tts_voice_options
 from app.services.aliyun_tts_service import AliyunTTSService, aliyun_voice_options
+from app.services.agent_evaluation_service import AgentEvaluationService
 from app.services.agent_telemetry_service import AgentTelemetryService
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.long_term_memory_service import LongTermMemoryService, PROFILE_VERSION
@@ -93,6 +94,7 @@ async def lifespan(app: FastAPI):
         db.init_db()
         memory_service.ensure_demo_seed()
         knowledge_base_service.ensure_seed()
+        agent_evaluation_service.ensure_seed_cases()
     except Exception as e:
         logger.warning("启动时 DB 初始化失败，将在首次请求时重试：%s", e)
     # 同步端点(reflect/chat/agent_ask 等 def 函数)由 FastAPI 跑在 anyio 线程池(默认上限 40)。
@@ -136,6 +138,7 @@ revision_service = RevisionService()
 phrase_service = PhraseService()
 tts_service = TTSService()
 aliyun_tts_service = AliyunTTSService()
+agent_evaluation_service = AgentEvaluationService()
 long_term_memory_service = LongTermMemoryService(memory_service)
 knowledge_base_service = KnowledgeBaseService()
 telemetry_service = AgentTelemetryService()
@@ -1360,7 +1363,7 @@ def agent_ask(req: AgentAskRequest) -> AgentAskResponse:
         )
     agent = ToolChatAgent(_chat_tools_for(user_id), tools_spec=ASK_KB_TOOLS)
     answer, used = agent.run(ASK_SYSTEM, [{"role": "user", "content": q}])
-    answer = _scrub_generated(answer, "我先安静地陪着你。") or "我这会儿没接上信号，但我一直在你这座岛上。"
+    answer = _scrub_generated(answer, "我先安静地陪着你。") or "我听见了。我这会儿没接上信号，但我在这座岛上陪着你，先慢慢呼吸一下。"
     run_id = _record_agent_run(
         user_id=user_id,
         entrypoint="agent_ask",

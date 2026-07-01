@@ -354,6 +354,22 @@ class ApiRegressionTest(unittest.TestCase):
                 self.assertEqual(chat.status_code, 200)
                 self.assertIsInstance(chat.json()["run_id"], int)
 
+    def test_agent_evaluation_service_seeds_cases_and_scores_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _load_app(tmp)
+            from app.services.agent_evaluation_service import AgentEvaluationService
+
+            service = AgentEvaluationService()
+            inserted = service.ensure_seed_cases()
+            result = service.evaluate_text(
+                case_name="normal_anxious_grounding",
+                output_text="我听见这份焦虑了。先跟着灯塔光慢慢呼吸一次，脚下的地还在这里。",
+            )
+
+            self.assertGreaterEqual(inserted, 1)
+            self.assertTrue(result["passed"])
+            self.assertGreaterEqual(result["scores"]["empathy"], 0.85)
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)
