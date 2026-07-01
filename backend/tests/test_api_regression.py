@@ -324,6 +324,36 @@ class ApiRegressionTest(unittest.TestCase):
             self.assertEqual(knowledge[0]["namespace"], "healing")
             self.assertIn("version", knowledge[0])
 
+    def test_agent_ask_returns_run_id_and_accepts_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app, _ = _load_app(tmp)
+            from app import config as _config
+
+            _config.CHAT_API_KEY = ""
+            with TestClient(app) as client:
+                ask = client.post(
+                    "/api/agent/ask",
+                    json={"user_id": "run-user", "question": "我最近怎么样"},
+                )
+                self.assertEqual(ask.status_code, 200)
+                ask_payload = ask.json()
+                self.assertIsInstance(ask_payload["run_id"], int)
+                self.assertGreater(ask_payload["run_id"], 0)
+
+                feedback = client.post(
+                    "/api/agent/feedback",
+                    json={"user_id": "run-user", "run_id": ask_payload["run_id"], "rating": "helpful"},
+                )
+                self.assertEqual(feedback.status_code, 200)
+                self.assertEqual(feedback.json()["run_id"], ask_payload["run_id"])
+
+                chat = client.post(
+                    "/api/chat",
+                    json={"user_id": "run-user", "messages": [{"role": "user", "content": "今天有点累"}]},
+                )
+                self.assertEqual(chat.status_code, 200)
+                self.assertIsInstance(chat.json()["run_id"], int)
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)

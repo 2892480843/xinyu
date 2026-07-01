@@ -244,6 +244,7 @@ class IslandChatResponse(BaseModel):
     reply: str = ""
     safety: Safety = Safety()
     tools_used: List[str] = Field(default_factory=list)  # 本轮 agent 实际调用过的工具
+    run_id: Optional[int] = None
 
 
 class AgentAskRequest(BaseModel):
@@ -257,6 +258,7 @@ class AgentAskResponse(BaseModel):
     answer: str = ""
     tools_used: List[str] = Field(default_factory=list)
     safety: Safety = Safety()
+    run_id: Optional[int] = None
 
 
 class AgentFeedbackRequest(BaseModel):

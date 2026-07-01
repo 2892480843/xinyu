@@ -1251,6 +1251,34 @@ def _chat_tools_for(user_id: str):
     }
 
 
+def _record_agent_run(
+    *,
+    user_id: str,
+    entrypoint: str,
+    input_text: str,
+    tools_used: List[str],
+    output_text: str,
+    prompt_version: str,
+    safety_triggered: bool = False,
+) -> Optional[int]:
+    try:
+        row = telemetry_service.record_run(
+            user_id=user_id,
+            entrypoint=entrypoint,
+            input_text=input_text,
+            tools_used=tools_used,
+            retrieved_refs=[{"type": "tool", "name": name} for name in tools_used],
+            output_text=output_text,
+            kb_version=knowledge_base_service.version(),
+            prompt_version=prompt_version,
+            safety_triggered=safety_triggered,
+        )
+        return int(row["id"])
+    except Exception as exc:
+        logger.warning("agent run telemetry failed user=%s entrypoint=%s: %s", user_id, entrypoint, exc)
+        return None
+
+
 @app.post("/api/agent/feedback", response_model=AgentFeedbackResponse)
 def agent_feedback(req: AgentFeedbackRequest) -> AgentFeedbackResponse:
     user_id = (req.user_id or "demo-user").strip() or "demo-user"
@@ -1270,6 +1298,7 @@ def agent_feedback(req: AgentFeedbackRequest) -> AgentFeedbackResponse:
 @app.post("/api/chat", response_model=IslandChatResponse)
 def island_chat(req: IslandChatRequest) -> IslandChatResponse:
     """P2 多轮对话伙伴：带上整段对话历史，岛屿/精灵用工具型 agent 多轮回应。"""
+    user_id = (req.user_id or "demo-user").strip() or "demo-user"
     msgs = [
         {"role": "assistant" if t.role == "assistant" else "user", "content": t.content}
         for t in req.messages if t.content and t.content.strip()
@@ -1278,27 +1307,70 @@ def island_chat(req: IslandChatRequest) -> IslandChatResponse:
     if not msgs or not last_user.strip():
         return IslandChatResponse(reply="我在这儿，慢慢说。")
     if safety_service.has_risk_keyword(last_user):  # 安全前置
-        return IslandChatResponse(reply=SAFETY_MESSAGE, safety=Safety(triggered=True, message=SAFETY_MESSAGE))
-    agent = ToolChatAgent(_chat_tools_for(req.user_id), tools_spec=CHAT_KB_TOOLS)
+        run_id = _record_agent_run(
+            user_id=user_id,
+            entrypoint="chat",
+            input_text=last_user,
+            tools_used=[],
+            output_text=SAFETY_MESSAGE,
+            prompt_version="chat-kb-v1",
+            safety_triggered=True,
+        )
+        return IslandChatResponse(
+            reply=SAFETY_MESSAGE,
+            safety=Safety(triggered=True, message=SAFETY_MESSAGE),
+            run_id=run_id,
+        )
+    agent = ToolChatAgent(_chat_tools_for(user_id), tools_spec=CHAT_KB_TOOLS)
     reply, used = agent.run(CHAT_SYSTEM, msgs)
     reply = _scrub_generated(reply, "此刻就让岛屿静静陪着你，不必急着说什么。") or "我在听，慢慢说，不急。"
-    logger.info("chat user=%s turns=%s tools=%s", req.user_id, len(msgs), used)
-    return IslandChatResponse(reply=reply, tools_used=used)
+    run_id = _record_agent_run(
+        user_id=user_id,
+        entrypoint="chat",
+        input_text=last_user,
+        tools_used=used,
+        output_text=reply,
+        prompt_version="chat-kb-v1",
+    )
+    logger.info("chat user=%s turns=%s tools=%s run_id=%s", user_id, len(msgs), used, run_id)
+    return IslandChatResponse(reply=reply, tools_used=used, run_id=run_id)
 
 
 @app.post("/api/agent/ask", response_model=AgentAskResponse)
 def agent_ask(req: AgentAskRequest) -> AgentAskResponse:
     """P3 常驻助手：问『我最近怎么样』『回顾这周』，agent 调记忆/统计工具据实回答。"""
+    user_id = (req.user_id or "demo-user").strip() or "demo-user"
     q = (req.question or "").strip()
     if not q:
         return AgentAskResponse(answer="想问我点什么呢？比如『我最近怎么样』。")
     if safety_service.has_risk_keyword(q):
-        return AgentAskResponse(answer=SAFETY_MESSAGE, safety=Safety(triggered=True, message=SAFETY_MESSAGE))
-    agent = ToolChatAgent(_chat_tools_for(req.user_id), tools_spec=ASK_KB_TOOLS)
+        run_id = _record_agent_run(
+            user_id=user_id,
+            entrypoint="agent_ask",
+            input_text=q,
+            tools_used=[],
+            output_text=SAFETY_MESSAGE,
+            prompt_version="ask-kb-v1",
+            safety_triggered=True,
+        )
+        return AgentAskResponse(
+            answer=SAFETY_MESSAGE,
+            safety=Safety(triggered=True, message=SAFETY_MESSAGE),
+            run_id=run_id,
+        )
+    agent = ToolChatAgent(_chat_tools_for(user_id), tools_spec=ASK_KB_TOOLS)
     answer, used = agent.run(ASK_SYSTEM, [{"role": "user", "content": q}])
     answer = _scrub_generated(answer, "我先安静地陪着你。") or "我这会儿没接上信号，但我一直在你这座岛上。"
-    logger.info("ask user=%s tools=%s", req.user_id, used)
-    return AgentAskResponse(answer=answer, tools_used=used)
+    run_id = _record_agent_run(
+        user_id=user_id,
+        entrypoint="agent_ask",
+        input_text=q,
+        tools_used=used,
+        output_text=answer,
+        prompt_version="ask-kb-v1",
+    )
+    logger.info("ask user=%s tools=%s run_id=%s", user_id, used, run_id)
+    return AgentAskResponse(answer=answer, tools_used=used, run_id=run_id)
 
 
 @app.websocket("/ws/reflect")
