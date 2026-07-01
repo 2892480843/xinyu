@@ -17,6 +17,8 @@ from pydantic import ValidationError
 
 from app import config, db
 from app.schemas import (
+    AgentFeedbackRequest,
+    AgentFeedbackResponse,
     AgentAskRequest,
     AgentAskResponse,
     AgentTraceItem,
@@ -67,6 +69,9 @@ from app.services.revision_service import RevisionService
 from app.services.phrase_service import PhraseService
 from app.services.tts_service import TTSService, tts_voice_options
 from app.services.aliyun_tts_service import AliyunTTSService, aliyun_voice_options
+from app.services.agent_telemetry_service import AgentTelemetryService
+from app.services.knowledge_base_service import KnowledgeBaseService
+from app.services.long_term_memory_service import LongTermMemoryService, PROFILE_VERSION
 from app.services import scene_map
 from app.services.companion_prompt import COMPANION_PROMPT_VERSION
 from app.services.healing_kb import KB_VERSION
@@ -87,6 +92,7 @@ async def lifespan(app: FastAPI):
     try:
         db.init_db()
         memory_service.ensure_demo_seed()
+        knowledge_base_service.ensure_seed()
     except Exception as e:
         logger.warning("启动时 DB 初始化失败，将在首次请求时重试：%s", e)
     # 同步端点(reflect/chat/agent_ask 等 def 函数)由 FastAPI 跑在 anyio 线程池(默认上限 40)。
@@ -130,6 +136,9 @@ revision_service = RevisionService()
 phrase_service = PhraseService()
 tts_service = TTSService()
 aliyun_tts_service = AliyunTTSService()
+long_term_memory_service = LongTermMemoryService(memory_service)
+knowledge_base_service = KnowledgeBaseService()
+telemetry_service = AgentTelemetryService()
 
 
 def resolve_tts_provider() -> Optional[str]:
@@ -611,6 +620,9 @@ def health():
         "chat_model": config.CHAT_MODEL if config.CHAT_API_KEY else "mock",
         "emotions": scene_map.list_emotions(),
         "healing_kb": KB_VERSION,
+        "knowledge_base": knowledge_base_service.version(),
+        "long_term_profile": PROFILE_VERSION,
+        "knowledge_items": knowledge_base_service.get_active_count(),
     }
 
 
@@ -694,18 +706,29 @@ def delete_identity(user_id: str) -> Dict[str, Any]:
     memories = memory_service.delete_by_user_id(clean)
     artifacts = artifact_service.delete_by_user_id(clean)
     phrases = phrase_service.delete_by_user_id(clean)
+    memory_insights = long_term_memory_service.delete_by_user_id(clean)
+    long_term_profile = True
+    agent_runs = telemetry_service.delete_by_user_id(clean)
     vector_ok = False
     try:
         vector_ok = bool(vector_memory_service.delete_by_user_id(clean))
     except Exception as e:
         logger.warning("vector memory delete failed for user=%s: %s", clean, e)
     logger.info(
-        "identity_delete user=%s memories=%d artifacts=%d phrases=%d vector=%s",
-        clean, memories, artifacts, phrases, vector_ok,
+        "identity_delete user=%s memories=%d artifacts=%d phrases=%d insights=%d runs=%d vector=%s",
+        clean, memories, artifacts, phrases, memory_insights, agent_runs, vector_ok,
     )
     return {
         "user_id": clean,
-        "deleted": {"memories": memories, "artifacts": artifacts, "phrases": phrases, "vector": vector_ok},
+        "deleted": {
+            "memories": memories,
+            "artifacts": artifacts,
+            "phrases": phrases,
+            "memory_insights": memory_insights,
+            "long_term_profile": long_term_profile,
+            "agent_runs": agent_runs,
+            "vector": vector_ok,
+        },
     }
 
 
@@ -1202,6 +1225,22 @@ def _chat_tools_for(user_id: str):
         ]
 
     return {"recall_memories": _recall, "read_island": _island, "list_recent_memories": _list_recent}
+
+
+@app.post("/api/agent/feedback", response_model=AgentFeedbackResponse)
+def agent_feedback(req: AgentFeedbackRequest) -> AgentFeedbackResponse:
+    user_id = (req.user_id or "demo-user").strip() or "demo-user"
+    try:
+        row = telemetry_service.record_feedback(
+            run_id=req.run_id,
+            user_id=user_id,
+            rating=req.rating,
+            reason=req.reason,
+            free_text=req.free_text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AgentFeedbackResponse(**row)
 
 
 @app.post("/api/chat", response_model=IslandChatResponse)

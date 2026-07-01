@@ -272,6 +272,38 @@ class ApiRegressionTest(unittest.TestCase):
             self.assertEqual(feedback["rating"], "helpful")
             self.assertEqual(service.delete_by_user_id("telemetry-user"), 1)
 
+    def test_delete_identity_purges_knowledge_user_data_and_health_reports_kb(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app, memory_service = _load_app(tmp)
+            from app.main import long_term_memory_service, telemetry_service
+
+            memory_service.save({"user_id": "kb-purge", "text": "项目让我焦虑", "emotion": "anxious", "summary": "项目焦虑"})
+            memory_service.save({"user_id": "kb-purge", "text": "项目又让我睡不着", "emotion": "anxious", "summary": "项目焦虑"})
+            long_term_memory_service.refresh_for_user("kb-purge")
+            run = telemetry_service.record_run(
+                user_id="kb-purge",
+                entrypoint="agent_ask",
+                input_text="我最近怎么样",
+                tools_used=[],
+                retrieved_refs=[],
+                output_text="最近项目压力出现过几次。",
+                kb_version="xinyu-kb-v1",
+                prompt_version="ask-v1",
+                safety_triggered=False,
+            )
+            telemetry_service.record_feedback(run_id=run["id"], user_id="kb-purge", rating="helpful")
+
+            with TestClient(app) as client:
+                health = client.get("/api/health").json()
+                self.assertEqual(health["knowledge_base"], "xinyu-kb-v1")
+
+                response = client.delete("/api/identity/kb-purge")
+                self.assertEqual(response.status_code, 200)
+                deleted = response.json()["deleted"]
+                self.assertGreaterEqual(deleted["memory_insights"], 1)
+                self.assertEqual(deleted["long_term_profile"], True)
+                self.assertEqual(deleted["agent_runs"], 1)
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)
