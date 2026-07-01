@@ -190,6 +190,44 @@ class ApiRegressionTest(unittest.TestCase):
                 ],
             )
 
+    def test_long_term_memory_service_builds_profile_and_insights(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, memory_service = _load_app(tmp)
+            from app.services.long_term_memory_service import LongTermMemoryService
+
+            memory_service.save({
+                "user_id": "ltm-user",
+                "text": "最近总是因为项目截止日期焦虑",
+                "emotion": "anxious",
+                "intensity": 0.68,
+                "summary": "项目焦虑",
+            })
+            memory_service.save({
+                "user_id": "ltm-user",
+                "text": "今天又因为项目截止日期睡不着",
+                "emotion": "anxious",
+                "intensity": 0.72,
+                "summary": "截止日期焦虑",
+            })
+            memory_service.save({
+                "user_id": "ltm-user",
+                "text": "听海浪声的时候会安静一点",
+                "emotion": "calm",
+                "intensity": 0.52,
+                "summary": "海浪带来平静",
+            })
+
+            service = LongTermMemoryService(memory_service)
+            result = service.refresh_for_user("ltm-user")
+            profile = service.get_profile("ltm-user")
+            insights = service.recall_insights("ltm-user", "项目焦虑", limit=5)
+
+            self.assertGreaterEqual(result["insights_written"], 2)
+            self.assertIn("项目", profile["summary"])
+            self.assertIn("anxious", profile["profile_json"]["emotion_counts"])
+            self.assertTrue(any(i["kind"] == "stress_pattern" for i in insights))
+            self.assertTrue(all(i["evidence_memory_ids"] for i in insights))
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)
