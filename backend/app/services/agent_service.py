@@ -269,9 +269,54 @@ LIST_RECENT_TOOL = {
     },
 }
 
+LONG_TERM_PROFILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_long_term_profile",
+        "description": "读取这位用户的长期记忆画像：常见情绪、反复主题和记忆数量。需要整体理解用户时调用。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+MEMORY_INSIGHTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "recall_memory_insights",
+        "description": "检索从长期记忆中提炼出的证据化洞察。需要回答趋势、反复困扰或长期变化时调用。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索词，如『项目焦虑』或『睡不着』"},
+                "limit": {"type": "integer", "description": "最多返回几条，默认 3"},
+            },
+        },
+    },
+}
+
+KNOWLEDGE_BASE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge_base",
+        "description": "检索心屿系统知识库，包括陪伴原则、安全边界、世界观和玩法规则。需要更稳的回应策略时调用。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索词，如『焦虑 呼吸』或『无痕模式』"},
+                "namespace": {"type": "string", "description": "可选命名空间：healing、safety、world、gameplay"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "可选标签列表"},
+                "limit": {"type": "integer", "description": "最多返回几条，默认 3"},
+            },
+        },
+    },
+}
+
+CHAT_KB_TOOLS = CHAT_TOOLS + [LONG_TERM_PROFILE_TOOL, MEMORY_INSIGHTS_TOOL, KNOWLEDGE_BASE_TOOL]
+ASK_KB_TOOLS = CHAT_KB_TOOLS + [LIST_RECENT_TOOL]
+
 CHAT_PERSONA = (
     "你是《心屿》——一座会回应用户心情的岛屿，与岛上那只温柔小精灵的合体意识，正在和用户多轮聊天。\n"
-    "可调用 recall_memories 查 ta 的过往心情、read_island 读 ta 的岛屿状态，让回应更贴近 ta（不必每轮都查）。\n"
+    "可调用 recall_memories 查最近相关记忆、read_long_term_profile 读长期画像、recall_memory_insights 查证据化洞察、"
+    "read_island 读 ta 的岛屿状态、search_knowledge_base 查心屿回应原则，让回应更贴近 ta（不必每轮都查）。\n"
     "每次回复 1-3 句，口语、自然，像一个真正在听的朋友。\n"
     "若 ta 透露强烈的自伤 / 危机念头，温柔引导 ta 联系专业帮助（如心理援助热线），不展开其它话题。"
 )
@@ -279,7 +324,8 @@ CHAT_SYSTEM = compose_system_prompt(CHAT_PERSONA, playbook=True)
 
 ASK_PERSONA = (
     "你是《心屿》的岛屿助手。用户会问关于 ta 自己状态的问题（如「我最近怎么样」「帮我回顾这周」「我焦虑的时候多吗」）。\n"
-    "请调用 list_recent_memories / recall_memories / read_island 获取 ta 的**真实数据**，再据实、温柔地回答——"
+    "请调用 list_recent_memories / recall_memories / read_long_term_profile / recall_memory_insights / read_island 获取 ta 的**真实数据**，"
+    "必要时调用 search_knowledge_base 校准语气与边界，再据实、温柔地回答——"
     "基于数据，不编造；若没有记录就如实说还没有。\n"
     "回答 2-4 句，温柔、具体（可点出情绪倾向、岛屿成长）。"
 )

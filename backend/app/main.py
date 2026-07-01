@@ -56,8 +56,8 @@ from app.services.agent_service import (
     ToolChatAgent,
     CHAT_SYSTEM,
     ASK_SYSTEM,
-    CHAT_TOOLS,
-    LIST_RECENT_TOOL,
+    CHAT_KB_TOOLS,
+    ASK_KB_TOOLS,
 )
 from app.services.embedding_service import EmbeddingService
 from app.services.memory_service import MemoryService
@@ -1224,7 +1224,31 @@ def _chat_tools_for(user_id: str):
             for m in recent[:n]
         ]
 
-    return {"recall_memories": _recall, "read_island": _island, "list_recent_memories": _list_recent}
+    def _profile():
+        return long_term_memory_service.get_profile(user_id)
+
+    def _insights(query: str = "", limit: int = 3):
+        n = max(1, min(10, int(limit or 3)))
+        return long_term_memory_service.recall_insights(user_id, query=query or "", limit=n)
+
+    def _knowledge(query: str = "", namespace: str = "", tags: Optional[List[str]] = None, limit: int = 3):
+        n = max(1, min(10, int(limit or 3)))
+        clean_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
+        return knowledge_base_service.search(
+            namespace=(namespace or "").strip(),
+            query=query or "",
+            tags=clean_tags,
+            limit=n,
+        )
+
+    return {
+        "recall_memories": _recall,
+        "read_island": _island,
+        "list_recent_memories": _list_recent,
+        "read_long_term_profile": _profile,
+        "recall_memory_insights": _insights,
+        "search_knowledge_base": _knowledge,
+    }
 
 
 @app.post("/api/agent/feedback", response_model=AgentFeedbackResponse)
@@ -1255,7 +1279,7 @@ def island_chat(req: IslandChatRequest) -> IslandChatResponse:
         return IslandChatResponse(reply="我在这儿，慢慢说。")
     if safety_service.has_risk_keyword(last_user):  # 安全前置
         return IslandChatResponse(reply=SAFETY_MESSAGE, safety=Safety(triggered=True, message=SAFETY_MESSAGE))
-    agent = ToolChatAgent(_chat_tools_for(req.user_id))
+    agent = ToolChatAgent(_chat_tools_for(req.user_id), tools_spec=CHAT_KB_TOOLS)
     reply, used = agent.run(CHAT_SYSTEM, msgs)
     reply = _scrub_generated(reply, "此刻就让岛屿静静陪着你，不必急着说什么。") or "我在听，慢慢说，不急。"
     logger.info("chat user=%s turns=%s tools=%s", req.user_id, len(msgs), used)
@@ -1270,7 +1294,7 @@ def agent_ask(req: AgentAskRequest) -> AgentAskResponse:
         return AgentAskResponse(answer="想问我点什么呢？比如『我最近怎么样』。")
     if safety_service.has_risk_keyword(q):
         return AgentAskResponse(answer=SAFETY_MESSAGE, safety=Safety(triggered=True, message=SAFETY_MESSAGE))
-    agent = ToolChatAgent(_chat_tools_for(req.user_id), tools_spec=CHAT_TOOLS + [LIST_RECENT_TOOL])
+    agent = ToolChatAgent(_chat_tools_for(req.user_id), tools_spec=ASK_KB_TOOLS)
     answer, used = agent.run(ASK_SYSTEM, [{"role": "user", "content": q}])
     answer = _scrub_generated(answer, "我先安静地陪着你。") or "我这会儿没接上信号，但我一直在你这座岛上。"
     logger.info("ask user=%s tools=%s", req.user_id, used)

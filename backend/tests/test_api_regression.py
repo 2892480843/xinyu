@@ -304,6 +304,26 @@ class ApiRegressionTest(unittest.TestCase):
                 self.assertEqual(deleted["long_term_profile"], True)
                 self.assertEqual(deleted["agent_runs"], 1)
 
+    def test_chat_tools_expose_profile_insights_and_knowledge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, memory_service = _load_app(tmp)
+            from app.main import _chat_tools_for, knowledge_base_service, long_term_memory_service
+
+            memory_service.save({"user_id": "kb-tools", "text": "项目截止日期让我焦虑", "emotion": "anxious", "summary": "项目焦虑"})
+            memory_service.save({"user_id": "kb-tools", "text": "项目进度又让我睡不着", "emotion": "anxious", "summary": "项目压力"})
+            long_term_memory_service.refresh_for_user("kb-tools")
+            knowledge_base_service.ensure_seed()
+
+            tools = _chat_tools_for("kb-tools")
+            profile = tools["read_long_term_profile"]()
+            insights = tools["recall_memory_insights"](query="项目", limit=3)
+            knowledge = tools["search_knowledge_base"](query="焦虑 呼吸", namespace="healing", tags=["anxious"], limit=3)
+
+            self.assertIn("项目", profile["summary"])
+            self.assertTrue(insights)
+            self.assertEqual(knowledge[0]["namespace"], "healing")
+            self.assertIn("version", knowledge[0])
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)
