@@ -1,5 +1,6 @@
 .DS_Store
 .superpowers/
+.worktrees/
 
 # Runtime data
 backend/app/data/*.db
