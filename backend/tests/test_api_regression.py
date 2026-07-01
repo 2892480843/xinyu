@@ -29,7 +29,12 @@ def _reset_db() -> None:
     """清空所有表，保证用例间隔离、可独立复现（重载 app 时 db.init_db 会重新建表）。"""
     with psycopg.connect(TEST_DATABASE_URL) as conn:
         with conn.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS memory_vectors, memories, artifacts, phrases CASCADE")
+            cur.execute(
+                "DROP TABLE IF EXISTS "
+                "eval_runs, eval_cases, agent_feedback, agent_runs, "
+                "memory_insights, user_memory_profiles, knowledge_items, "
+                "memory_vectors, memories, artifacts, phrases CASCADE"
+            )
         conn.commit()
 
 
@@ -144,6 +149,46 @@ class ApiRegressionTest(unittest.TestCase):
             self.assertEqual(deleted, 2)
             self.assertEqual(memory_service.get_all("clear-me"), [])
             self.assertEqual(len(memory_service.get_all("keep-me")), 1)
+
+    def test_knowledge_base_schema_tables_are_created(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app, _ = _load_app(tmp)
+            with TestClient(app):
+                pass
+            with psycopg.connect(TEST_DATABASE_URL) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name = ANY(%s)
+                        ORDER BY table_name
+                        """,
+                        ([
+                            "agent_feedback",
+                            "agent_runs",
+                            "eval_cases",
+                            "eval_runs",
+                            "knowledge_items",
+                            "memory_insights",
+                            "user_memory_profiles",
+                        ],),
+                    )
+                    names = [row[0] for row in cur.fetchall()]
+
+            self.assertEqual(
+                names,
+                [
+                    "agent_feedback",
+                    "agent_runs",
+                    "eval_cases",
+                    "eval_runs",
+                    "knowledge_items",
+                    "memory_insights",
+                    "user_memory_profiles",
+                ],
+            )
 
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

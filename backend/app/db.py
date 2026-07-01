@@ -70,6 +70,102 @@ _RELATIONAL_DDL = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_phrases_user_emotion ON phrases (user_id, emotion) WHERE is_active = 1",
+    """
+    CREATE TABLE IF NOT EXISTS memory_insights (
+        id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        user_id             TEXT NOT NULL,
+        kind                TEXT NOT NULL,
+        content             TEXT NOT NULL,
+        evidence_memory_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        confidence          DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+        valid_from          TEXT NOT NULL,
+        valid_until         TEXT NOT NULL DEFAULT '',
+        status              TEXT NOT NULL DEFAULT 'active',
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_memory_insights_user_status ON memory_insights (user_id, status, id DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS user_memory_profiles (
+        user_id      TEXT PRIMARY KEY,
+        profile_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        summary      TEXT NOT NULL DEFAULT '',
+        version      TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_items (
+        id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        namespace  TEXT NOT NULL,
+        title      TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        tags       JSONB NOT NULL DEFAULT '[]'::jsonb,
+        priority   INTEGER NOT NULL DEFAULT 0,
+        version    TEXT NOT NULL DEFAULT '',
+        is_active  SMALLINT NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(namespace, title, version)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_items_lookup ON knowledge_items (namespace, is_active, priority DESC, id DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_runs (
+        id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        user_id          TEXT NOT NULL DEFAULT '',
+        entrypoint       TEXT NOT NULL,
+        input_text       TEXT NOT NULL DEFAULT '',
+        tools_used       JSONB NOT NULL DEFAULT '[]'::jsonb,
+        retrieved_refs   JSONB NOT NULL DEFAULT '[]'::jsonb,
+        output_text      TEXT NOT NULL DEFAULT '',
+        kb_version       TEXT NOT NULL DEFAULT '',
+        prompt_version   TEXT NOT NULL DEFAULT '',
+        safety_triggered SMALLINT NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs (user_id, id DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_feedback (
+        id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        run_id     BIGINT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        user_id    TEXT NOT NULL DEFAULT '',
+        rating     TEXT NOT NULL,
+        reason     TEXT NOT NULL DEFAULT '',
+        free_text  TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_feedback_user ON agent_feedback (user_id, id DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS eval_cases (
+        id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        name            TEXT NOT NULL UNIQUE,
+        entrypoint      TEXT NOT NULL,
+        input_text      TEXT NOT NULL,
+        expected_traits JSONB NOT NULL DEFAULT '[]'::jsonb,
+        risk_level      TEXT NOT NULL DEFAULT 'normal',
+        tags            JSONB NOT NULL DEFAULT '[]'::jsonb,
+        is_active       SMALLINT NOT NULL DEFAULT 1,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_eval_cases_active ON eval_cases (is_active, id)",
+    """
+    CREATE TABLE IF NOT EXISTS eval_runs (
+        id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        case_id     BIGINT NOT NULL REFERENCES eval_cases(id) ON DELETE CASCADE,
+        entrypoint  TEXT NOT NULL,
+        output_text TEXT NOT NULL DEFAULT '',
+        scores_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        passed      SMALLINT NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL
+    )
+    """,
 )
 
 
