@@ -228,6 +228,21 @@ class ApiRegressionTest(unittest.TestCase):
             self.assertTrue(any(i["kind"] == "stress_pattern" for i in insights))
             self.assertTrue(all(i["evidence_memory_ids"] for i in insights))
 
+    def test_knowledge_base_service_seeds_and_searches_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _load_app(tmp)
+            from app.services.knowledge_base_service import KnowledgeBaseService
+
+            service = KnowledgeBaseService()
+            inserted = service.ensure_seed()
+            items = service.search(namespace="healing", query="焦虑 呼吸", tags=["anxious", "chat"], limit=3)
+
+            self.assertGreaterEqual(inserted, 1)
+            self.assertTrue(items)
+            self.assertEqual(items[0]["namespace"], "healing")
+            self.assertIn("version", items[0])
+            self.assertTrue(service.version().startswith("xinyu-kb-"))
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)
