@@ -243,6 +243,35 @@ class ApiRegressionTest(unittest.TestCase):
             self.assertIn("version", items[0])
             self.assertTrue(service.version().startswith("xinyu-kb-"))
 
+    def test_agent_telemetry_records_runs_and_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _load_app(tmp)
+            from app.services.agent_telemetry_service import AgentTelemetryService
+
+            service = AgentTelemetryService()
+            run = service.record_run(
+                user_id="telemetry-user",
+                entrypoint="agent_ask",
+                input_text="我最近怎么样",
+                tools_used=["read_long_term_profile"],
+                retrieved_refs=[{"type": "profile", "id": "telemetry-user"}],
+                output_text="最近你多次提到疲惫。",
+                kb_version="xinyu-kb-v1",
+                prompt_version="ask-v1",
+                safety_triggered=False,
+            )
+            feedback = service.record_feedback(
+                run_id=run["id"],
+                user_id="telemetry-user",
+                rating="helpful",
+                reason="具体",
+                free_text="这次有记得我",
+            )
+
+            self.assertEqual(run["entrypoint"], "agent_ask")
+            self.assertEqual(feedback["rating"], "helpful")
+            self.assertEqual(service.delete_by_user_id("telemetry-user"), 1)
+
     def test_reflect_returns_island_state_and_agent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app, _ = _load_app(tmp)

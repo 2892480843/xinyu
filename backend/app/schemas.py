@@ -257,3 +257,21 @@ class AgentAskResponse(BaseModel):
     answer: str = ""
     tools_used: List[str] = Field(default_factory=list)
     safety: Safety = Safety()
+
+
+class AgentFeedbackRequest(BaseModel):
+    run_id: int
+    user_id: str = "demo-user"
+    rating: str
+    reason: str = Field(default="", max_length=120)
+    free_text: str = Field(default="", max_length=500)
+
+
+class AgentFeedbackResponse(BaseModel):
+    id: int
+    run_id: int
+    user_id: str
+    rating: str
+    reason: str = ""
+    free_text: str = ""
+    created_at: str
