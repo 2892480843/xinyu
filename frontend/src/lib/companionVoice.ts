@@ -1,4 +1,4 @@
-import { synthesizeSpeech } from "./api";
+import { playStreamingSpeech, synthesizeSpeech, type StreamingSpeechPlayback } from "./api";
 
 // 专属精灵语音：复用岛屿叙事同款「云端情感 TTS 优先、浏览器原生降级」管线。
 // 让精灵不光文字回你，还能用它自己的声音说出来。情绪 → 语速/音高微调，
@@ -121,6 +121,7 @@ export interface CompanionVoiceController {
 export function createCompanionVoice(): CompanionVoiceController {
   const speechSupported = isBrowserSpeechSupported();
   let audioEl: HTMLAudioElement | null = null;
+  let streaming: StreamingSpeechPlayback | null = null;
   // 发声令牌：每次 speak / stop 自增。旧的一句在 await 之后若发现自己已被顶替（my !== seq）
   // 就立刻放弃，绝不再开口 —— 根治「两句抢着播 / 念半截 / 串音」。
   let seq = 0;
@@ -131,6 +132,10 @@ export function createCompanionVoice(): CompanionVoiceController {
 
   const teardownAudio = () => {
     stopLevelLoop();
+    if (streaming) {
+      streaming.stop();
+      streaming = null;
+    }
     if (audioEl) {
       audioEl.onended = null;
       audioEl.onerror = null;
@@ -181,7 +186,24 @@ export function createCompanionVoice(): CompanionVoiceController {
     const my = ++seq; // 认领这次发声
     teardownAudio();
     stopBrowser();
-    // 优先云端情感 TTS；未配置 / 失败则无缝降级浏览器原生（情绪调音）。
+    // 优先真流式云端情感 TTS；不可用时回退整段云端音频，再回退浏览器原生（情绪调音）。
+    const stream = await playStreamingSpeech(clean, emotion, voice ?? undefined);
+    if (my !== seq) {
+      stream?.stop();
+      return;
+    }
+    if (stream) {
+      streaming = stream;
+      audioEl = stream.audio;
+      const tune = VOICE_TUNING[emotion] ?? { rate: 0.9, pitch: 1.0 };
+      startSimLevel(clean, tune.rate, () => !stream.audio.paused && !stream.audio.ended);
+      stream.done.finally(() => {
+        if (my !== seq || streaming !== stream) return;
+        simulatedUntil = 0;
+        teardownAudio();
+      });
+      return;
+    }
     const dataUrl = await synthesizeSpeech(clean, emotion, voice ?? undefined);
     if (my !== seq) return; // 已被更新的一句顶替 → 放弃
     if (dataUrl) {

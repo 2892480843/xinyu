@@ -69,12 +69,9 @@ function statusOf(name: SampleName): Status {
 /** 后台加载某采样并解码缓存。失败则标记 failed，不再重试。 */
 async function loadSample(name: SampleName): Promise<void> {
   if (statusOf(name) !== "idle") return;
-  cache.set(name, { status: "loading", buffer: null });
   const ctx = getAudioContext();
-  if (!ctx) {
-    cache.set(name, { status: "failed", buffer: null });
-    return;
-  }
+  if (!ctx) return;
+  cache.set(name, { status: "loading", buffer: null });
   try {
     const res = await fetch(sampleUrl(name));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

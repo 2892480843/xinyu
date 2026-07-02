@@ -140,6 +140,7 @@ def export(name):
     print("exported ->", os.path.join(OUT, name), os.path.getsize(os.path.join(OUT, name)), "bytes")
 
 WOOD = "#9c6b43"; WOODD = "#7a5a3e"; STONE = "#9aa0ab"; TEAL = "#4fa6a0"
+BEACH_AQUA = "#45c7d1"
 
 # =============================== assets =================================== #
 def build_well():
@@ -225,7 +226,7 @@ def build_swing():
     finish("Swing", V, F, mb, M); export("xy_isle_swing.glb")
 
 def build_hammock():
-    reset(); mb = MB(); WD = mb.add("Wood", WOODD); FA = mb.add("Fabric", "#e8a06a"); FB = mb.add("FabricB", "#f3ece0")
+    reset(); mb = MB(); WD = mb.add("Wood", WOODD); FA = mb.add("Fabric", "#e8a06a"); FB = mb.add("FabricB", BEACH_AQUA)
     V, F, M = [], [], []
     for sx in (-1.7, 1.7): add_cyl(V, F, M, sx, 0, 0, 0.12, 1.6, WD, 6)   # posts
     n = 10; top = 1.4; sag = 0.9

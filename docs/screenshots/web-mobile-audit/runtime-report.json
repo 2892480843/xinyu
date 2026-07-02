@@ -1,0 +1,1196 @@
+[
+  {
+    "name": "desktop-home",
+    "detail": {
+      "url": "http://127.0.0.1:5173/?view=desktop"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/?view=desktop",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scroll": {
+        "htmlWidth": 1440,
+        "bodyWidth": 1440,
+        "htmlHeight": 900,
+        "bodyHeight": 927
+      },
+      "overflowing": [
+        {
+          "tag": "div",
+          "className": "absolute inset-0",
+          "text": "",
+          "left": -43,
+          "right": 1483,
+          "width": 1526,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "absolute inset-0 overflow-hidden",
+          "text": "",
+          "left": -43,
+          "right": 1483,
+          "width": 1526,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "img",
+          "className": "absolute inset-0 h-full w-full object-cover",
+          "text": "",
+          "left": -55,
+          "right": 1500,
+          "width": 1556,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "absolute inset-0",
+          "text": "",
+          "left": -43,
+          "right": 1483,
+          "width": 1526,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute -inset-[6%]",
+          "text": "",
+          "left": -185,
+          "right": 1625,
+          "width": 1810,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute -inset-x-[10%] top-[7%] h-[48%]",
+          "text": "",
+          "left": -191,
+          "right": 1641,
+          "width": 1832,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute inset-x-0 bottom-[8%] h-[32%]",
+          "text": "",
+          "left": -43,
+          "right": 1483,
+          "width": 1526,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute inset-0 z-10",
+          "text": "",
+          "left": -43,
+          "right": 1483,
+          "width": 1526,
+          "display": "block",
+          "visibility": "visible"
+        }
+      ],
+      "canvases": [],
+      "buttons": [
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图第1级 · 0 片心情 · 翻开",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "静海模式 · 减弱动态",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "真 3D 岛屿 · 实验",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "麦",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "🏝上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [
+      {
+        "type": "warning",
+        "text": "[.WebGL-0x10c004e3c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+      }
+    ],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "desktop-explore",
+    "detail": {
+      "modeVisible": true,
+      "canvasCount": 1
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/?view=desktop",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scroll": {
+        "htmlWidth": 1440,
+        "bodyWidth": 1440,
+        "htmlHeight": 900,
+        "bodyHeight": 927
+      },
+      "overflowing": [
+        {
+          "tag": "div",
+          "className": "absolute inset-0",
+          "text": "",
+          "left": -56,
+          "right": 1496,
+          "width": 1553,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "absolute inset-0 overflow-hidden",
+          "text": "",
+          "left": -56,
+          "right": 1496,
+          "width": 1553,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "img",
+          "className": "absolute inset-0 h-full w-full object-cover",
+          "text": "",
+          "left": -68,
+          "right": 1519,
+          "width": 1587,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "absolute inset-0",
+          "text": "",
+          "left": -56,
+          "right": 1496,
+          "width": 1553,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute -inset-[6%]",
+          "text": "",
+          "left": -173,
+          "right": 1613,
+          "width": 1785,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute -inset-x-[10%] top-[7%] h-[48%]",
+          "text": "",
+          "left": -173,
+          "right": 1686,
+          "width": 1859,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute inset-x-0 bottom-[8%] h-[32%]",
+          "text": "",
+          "left": -41,
+          "right": 1481,
+          "width": 1521,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "div",
+          "className": "pointer-events-none absolute inset-0 z-10",
+          "text": "",
+          "left": -56,
+          "right": 1496,
+          "width": 1553,
+          "display": "block",
+          "visibility": "visible"
+        },
+        {
+          "tag": "button",
+          "className": "panel-glass-2 absolute z-10 flex items-center gap-1.5 rounded-full px-3 py-2 font-display text-[13px] tracking-wider tex",
+          "text": "✦精灵",
+          "left": -19,
+          "right": 51,
+          "width": 70,
+          "display": "flex",
+          "visibility": "visible"
+        },
+        {
+          "tag": "span",
+          "className": "text-[#ffe2a0]",
+          "text": "✦",
+          "left": -6,
+          "right": 5,
+          "width": 11,
+          "display": "block",
+          "visibility": "visible"
+        }
+      ],
+      "canvases": [
+        {
+          "width": 1440,
+          "height": 900,
+          "attrWidth": 936,
+          "attrHeight": 585,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图第1级 · 0 片心情 · 翻开",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "静海模式 · 减弱动态",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "真 3D 岛屿 · 实验",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "麦",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "🏝上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [
+      {
+        "type": "warning",
+        "text": "[.WebGL-0x124004d3c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+      }
+    ],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "mobile-redirect",
+    "detail": {
+      "url": "http://127.0.0.1:5173/mobile.html"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/mobile.html",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scroll": {
+        "htmlWidth": 390,
+        "bodyWidth": 390,
+        "htmlHeight": 844,
+        "bodyHeight": 873
+      },
+      "overflowing": [
+        {
+          "tag": "button",
+          "className": "chip disabled:opacity-40",
+          "text": "其实今天挺开心的",
+          "left": 327,
+          "right": 441,
+          "width": 114,
+          "display": "flex",
+          "visibility": "visible"
+        },
+        {
+          "tag": "span",
+          "className": "island-cta__ring",
+          "text": "",
+          "left": -31,
+          "right": 421,
+          "width": 452,
+          "display": "block",
+          "visibility": "visible"
+        }
+      ],
+      "canvases": [
+        {
+          "width": 390,
+          "height": 844,
+          "attrWidth": 585,
+          "attrHeight": 1266,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "展开音乐面板",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "麦",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "mobile-home",
+    "detail": {
+      "url": "http://127.0.0.1:5173/mobile.html"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/mobile.html",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scroll": {
+        "htmlWidth": 390,
+        "bodyWidth": 390,
+        "htmlHeight": 844,
+        "bodyHeight": 873
+      },
+      "overflowing": [
+        {
+          "tag": "button",
+          "className": "chip disabled:opacity-40",
+          "text": "其实今天挺开心的",
+          "left": 327,
+          "right": 441,
+          "width": 114,
+          "display": "flex",
+          "visibility": "visible"
+        },
+        {
+          "tag": "span",
+          "className": "island-cta__ring",
+          "text": "",
+          "left": -32,
+          "right": 422,
+          "width": 454,
+          "display": "block",
+          "visibility": "visible"
+        }
+      ],
+      "canvases": [
+        {
+          "width": 390,
+          "height": 844,
+          "attrWidth": 585,
+          "attrHeight": 1266,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "展开音乐面板",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "麦",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "mobile-short",
+    "detail": {
+      "url": "http://127.0.0.1:5173/mobile.html"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/mobile.html",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 390,
+        "height": 640
+      },
+      "scroll": {
+        "htmlWidth": 390,
+        "bodyWidth": 390,
+        "htmlHeight": 640,
+        "bodyHeight": 720
+      },
+      "overflowing": [
+        {
+          "tag": "button",
+          "className": "chip disabled:opacity-40",
+          "text": "其实今天挺开心的",
+          "left": 324,
+          "right": 439,
+          "width": 114,
+          "display": "flex",
+          "visibility": "visible"
+        },
+        {
+          "tag": "span",
+          "className": "island-cta__ring",
+          "text": "",
+          "left": -30,
+          "right": 420,
+          "width": 450,
+          "display": "block",
+          "visibility": "visible"
+        }
+      ],
+      "canvases": [
+        {
+          "width": 390,
+          "height": 640,
+          "attrWidth": 585,
+          "attrHeight": 960,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "展开音乐面板",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "mobile-landscape",
+    "detail": {
+      "url": "http://127.0.0.1:5173/mobile.html"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/mobile.html",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 844,
+        "height": 390
+      },
+      "scroll": {
+        "htmlWidth": 844,
+        "bodyWidth": 844,
+        "htmlHeight": 390,
+        "bodyHeight": 653
+      },
+      "overflowing": [],
+      "canvases": [
+        {
+          "width": 844,
+          "height": 390,
+          "attrWidth": 1266,
+          "attrHeight": 585,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "展开音乐面板",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "mobile-explore",
+    "detail": {
+      "error": "locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('上岛走走').first()\u001b[22m\n\u001b[2m    - locator resolved to <button tabindex=\"0\" type=\"button\" class=\"island-cta\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not stable\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not stable\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    42 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not stable\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at openExplore (/Users/a111/chen/code/心屿/frontend/tmp/web_mobile_runtime_audit.mjs:154:40)\n    at /Users/a111/chen/code/心屿/frontend/tmp/web_mobile_runtime_audit.mjs:236:16\n    at async scenario (/Users/a111/chen/code/心屿/frontend/tmp/web_mobile_runtime_audit.mjs:135:14)\n    at async file:///Users/a111/chen/code/%E5%BF%83%E5%B1%BF/frontend/tmp/web_mobile_runtime_audit.mjs:228:14"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/mobile.html",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scroll": {
+        "htmlWidth": 390,
+        "bodyWidth": 390,
+        "htmlHeight": 844,
+        "bodyHeight": 873
+      },
+      "overflowing": [
+        {
+          "tag": "button",
+          "className": "chip disabled:opacity-40",
+          "text": "其实今天挺开心的",
+          "left": 327,
+          "right": 441,
+          "width": 114,
+          "display": "flex",
+          "visibility": "visible"
+        }
+      ],
+      "canvases": [
+        {
+          "width": 390,
+          "height": 844,
+          "attrWidth": 585,
+          "attrHeight": 1266,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "展开音乐面板",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "切换用户 / 清除本地身份",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "删除全部记忆",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "心象地图",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天先到这里",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "和岛屿说一会儿话",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "试一句 1/4 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "今天有点焦虑",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "一个人有点孤独",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "累到不想动",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "其实今天挺开心的",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "说给岛屿",
+          "disabled": true,
+          "visible": true
+        },
+        {
+          "name": "麦",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "用手写一个字给岛屿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "什么都不说，坐一会儿",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "上岛走走›",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [],
+    "pageErrors": [],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "name": "mobile-submit",
+    "detail": {
+      "error": "locator.waitFor: Timeout 40000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('再说一刻').first() to be visible\u001b[22m\n\n    at /Users/a111/chen/code/心屿/frontend/tmp/web_mobile_runtime_audit.mjs:249:40\n    at async scenario (/Users/a111/chen/code/心屿/frontend/tmp/web_mobile_runtime_audit.mjs:135:14)\n    at async file:///Users/a111/chen/code/%E5%BF%83%E5%B1%BF/frontend/tmp/web_mobile_runtime_audit.mjs:239:14"
+    },
+    "metrics": {
+      "url": "http://127.0.0.1:5173/mobile.html",
+      "title": "心屿 · 一座会回应你的岛屿",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scroll": {
+        "htmlWidth": 390,
+        "bodyWidth": 390,
+        "htmlHeight": 844,
+        "bodyHeight": 1259
+      },
+      "overflowing": [],
+      "canvases": [
+        {
+          "width": 390,
+          "height": 844,
+          "attrWidth": 585,
+          "attrHeight": 1266,
+          "visible": true
+        }
+      ],
+      "buttons": [
+        {
+          "name": "暂停背景音乐",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "展开音乐面板",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "享受这份平静扬起一面小帆选这一个 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "把平静收好拾一枚海边的贝壳选这一个 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "为此刻留念在岸边种一朵花选这一个 ▸",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "保存为 PNG",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "朗读叙事",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "继续聊聊 ›",
+          "disabled": false,
+          "visible": true
+        },
+        {
+          "name": "再说一次",
+          "disabled": false,
+          "visible": true
+        }
+      ]
+    },
+    "logs": [],
+    "pageErrors": [],
+    "failedRequests": [
+      {
+        "method": "GET",
+        "type": "media",
+        "url": "/audio/default.m4a",
+        "error": "net::ERR_ABORTED"
+      }
+    ],
+    "badResponses": []
+  }
+]

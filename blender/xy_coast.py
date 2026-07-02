@@ -179,6 +179,7 @@ def export(name):
     print("exported ->", os.path.join(OUT, name), os.path.getsize(os.path.join(OUT, name)), "bytes")
 
 ROCK = ["#7d8694", "#646d7a", "#8a929e"]; GRASS = "#5bab63"; SAND = "#ecd7a6"
+BEACH_AQUA = "#45c7d1"; BEACH_YELLOW = "#f0bb4f"
 
 # ============================ §B 地形 terrain ============================== #
 def build_archrock():
@@ -327,7 +328,7 @@ def build_coral():
     finish("Coral", V, F, mb, M, smooth=True); export("xy_beach_coral.glb")
 
 def build_deckchair():
-    reset(); mb = MB(); WD = mb.add("Wood", "#a9794f"); FA = mb.add("FabricA", "#e8826a"); FB = mb.add("FabricB", "#f3ece0")
+    reset(); mb = MB(); WD = mb.add("Wood", "#a9794f"); FA = mb.add("FabricA", "#e8826a"); FB = mb.add("FabricB", BEACH_AQUA)
     V, F, M = [], [], []
     for sx in (-0.55, 0.55):                              # side frames
         add_box(V, F, M, sx, -0.2, 0.05, 0.08, 1.5, 0.08, WD)
@@ -341,7 +342,7 @@ def build_deckchair():
     finish("Deckchair", V, F, mb, M); export("xy_beach_deckchair.glb")
 
 def build_surfboard():
-    reset(); mb = MB(); A = mb.add("BoardA", "#f3ece0"); B = mb.add("BoardB", "#e8826a"); F2 = mb.add("Fin", "#7fd9d2")
+    reset(); mb = MB(); A = mb.add("BoardA", BEACH_AQUA); B = mb.add("BoardB", "#e8826a"); F2 = mb.add("Fin", "#7fd9d2")
     V, F, M = [], [], []
     add_ball(V, F, M, 0, 0, 1.0, 1.0, A, 8, 6, sz=1.0)            # placeholder, scaled below
     # rebuild as a flattened elongated board standing vertical
@@ -378,7 +379,7 @@ def build_dunegrass():
     finish("DuneGrass", V, F, mb, M); export("xy_beach_dunegrass.glb")
 
 def build_ball():
-    reset(); mb = MB(); cols = [mb.add("PanelA", "#e8826a"), mb.add("PanelB", "#f3ece0"), mb.add("PanelC", "#7fd9d2")]
+    reset(); mb = MB(); cols = [mb.add("PanelA", "#e8826a"), mb.add("PanelB", BEACH_YELLOW), mb.add("PanelC", "#7fd9d2")]
     V, F, M = [], [], []
     add_ball(V, F, M, 0, 0, 0.4, 0.4, cols[0], 10, 6)
     me_start = 0

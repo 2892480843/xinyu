@@ -6,16 +6,17 @@
 // 因此一个静音开关即可同时停掉干湿两路；湿声给整体一层柔和的海岛回响空气感。
 //
 // 真实采样层（2026-06 集成）：`play()` 对 chime/ripple/collect/bloom/page/inscribe/
-// settle/whoosh 这 8 个音效「采样优先 + 合成降级」——命中 samples.ts 缓存则播真实录音，
-// 未命中（首访 / 断网 / 解码失败）立即回退本文件合成版。其余音效（wave/shell/breath/
+// settle 这 7 个音效「采样优先 + 合成降级」——命中 samples.ts 缓存则播真实录音，
+// 未命中（首访 / 断网 / 解码失败）立即回退本文件合成版。whoosh 保持纯合成，避免进探索首帧拉音频。
+// 其余音效（wave/shell/breath/
 // 这样既提升沉浸感，又保留断网可跑的离线韧性（离线优先的硬要求）。
 
 // 采样池（循环依赖是安全的：两模块顶层都不执行对方代码，仅在运行时互调函数）。
 import { playSample, type SampleName } from "./samples";
 
-// 有真实采样可替代的 8 个音效名；命中缓存时优先播采样，否则 fall through 到合成。
+// 有真实采样可替代的 7 个音效名；命中缓存时优先播采样，否则 fall through 到合成。
 const SAMPLED_NAMES: ReadonlySet<SampleName> = new Set<SampleName>([
-  "chime", "ripple", "collect", "bloom", "page", "inscribe", "settle", "whoosh",
+  "chime", "ripple", "collect", "bloom", "page", "inscribe", "settle",
 ]);
 
 type SfxName =
@@ -37,9 +38,12 @@ type SfxName =
 let ctx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
 let reverbSend: GainNode | null = null; // 混响母线入口（湿声汇集点）
+let audioUnlocked = false;
+let unlockListenersRegistered = false;
 let muted = false;
 
 const MASTER_VOLUME = 0.18;
+const AUDIO_UNLOCK_EVENTS = ["pointerdown", "keydown", "touchstart"] as const;
 
 // 生成一段指数衰减的噪声脉冲，作为轻量混响的 impulse response（无需外部音频）。
 function buildImpulse(c: AudioContext, seconds: number, decay: number): AudioBuffer {
@@ -55,8 +59,44 @@ function buildImpulse(c: AudioContext, seconds: number, decay: number): AudioBuf
   return impulse;
 }
 
-function ensure(): AudioContext | null {
+function canStartAudioContext(): boolean {
+  if (audioUnlocked) return true;
+  if (typeof navigator === "undefined") return false;
+  return navigator.userActivation?.isActive === true;
+}
+
+function unregisterAudioUnlockListeners() {
+  if (typeof window === "undefined" || !unlockListenersRegistered) return;
+  unlockListenersRegistered = false;
+  AUDIO_UNLOCK_EVENTS.forEach((event) => {
+    window.removeEventListener(event, unlockAudioFromGesture, { capture: true });
+  });
+}
+
+function markAudioUnlockedIfRunning(c: AudioContext) {
+  if (c.state !== "running") return;
+  audioUnlocked = true;
+  unregisterAudioUnlockListeners();
+}
+
+function unlockAudioFromGesture() {
+  void ensure(true);
+}
+
+function registerAudioUnlockListeners() {
+  if (typeof window === "undefined" || unlockListenersRegistered || audioUnlocked) return;
+  unlockListenersRegistered = true;
+  AUDIO_UNLOCK_EVENTS.forEach((event) => {
+    window.addEventListener(event, unlockAudioFromGesture, { capture: true, passive: true });
+  });
+}
+
+function ensure(force = false): AudioContext | null {
   if (typeof window === "undefined") return null;
+  if (!ctx && !force && !canStartAudioContext()) {
+    registerAudioUnlockListeners();
+    return null;
+  }
   if (!ctx) {
     const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AC) return null;
@@ -78,8 +118,16 @@ function ensure(): AudioContext | null {
       return null;
     }
   }
-  // iOS / 浏览器自动暂停时需要用户手势唤醒
-  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  markAudioUnlockedIfRunning(ctx);
+  if (ctx.state === "suspended") {
+    if (!force && !canStartAudioContext()) {
+      registerAudioUnlockListeners();
+      return null;
+    }
+    void ctx.resume()
+      .then(() => markAudioUnlockedIfRunning(ctx!))
+      .catch(() => registerAudioUnlockListeners());
+  }
   return ctx;
 }
 

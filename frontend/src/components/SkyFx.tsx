@@ -157,69 +157,158 @@ export function MilkyWay() {
 
 // ───────────────────────── 流星雨 MeteorShower ─────────────────────────
 // 一群独立循环的流星,从大致同一辐射方向斜划而下;各自有亮头 + 渐隐尾。
-type Meteor = { t: number; dur: number; from: THREE.Vector3; to: THREE.Vector3; init: boolean };
-export function MeteorShower({ count = 10 }: { count?: number }) {
+type Meteor = { t: number; dur: number; from: THREE.Vector3; to: THREE.Vector3; init: boolean; tint: [number, number, number]; flare: number };
+function makeMeteorState(count: number, meteorMode: boolean): Meteor[] {
+  return Array.from({ length: count }, (_, i) => {
+    const rnd = makeRng(i + (meteorMode ? 41.7 : 0.3));
+    const cool = rnd() > 0.42;
+    return {
+      t: rnd() * (meteorMode ? 3.8 : 6),
+      dur: 1,
+      from: new THREE.Vector3(),
+      to: new THREE.Vector3(),
+      init: false,
+      tint: cool ? [0.72, 0.9, 1.0] : [1.0, 0.84, 0.62],
+      flare: meteorMode ? 1.15 + rnd() * 0.45 : 1,
+    };
+  });
+}
+export function MeteorShower({ count = 10, meteorMode = false }: { count?: number; meteorMode?: boolean }) {
   const RADIANT = 3.6; // 辐射方位(弧度,北偏)
-  const state = useRef<Meteor[]>(
-    // 初始时延用确定性随机(按 i 派生),避免渲染期 Math.random()(渲染须纯函数)。
-    Array.from({ length: count }, (_, i) => ({ t: makeRng(i + 0.3)() * 6, dur: 1, from: new THREE.Vector3(), to: new THREE.Vector3(), init: false })),
-  );
-  const refs = useRef<(THREE.Object3D | null)[]>([]);
+  const state = useRef<Meteor[]>(makeMeteorState(count, meteorMode));
+  useEffect(() => { state.current = makeMeteorState(count, meteorMode); }, [count, meteorMode]);
+  const refs = useRef<(THREE.Group | null)[]>([]);
   const items = useMemo(
     () =>
       Array.from({ length: count }, () => {
-        const T = 14;
-        const g = new THREE.BufferGeometry();
-        g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(T * 3), 3));
-        g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(T * 3), 3));
-        const m = new THREE.PointsMaterial({ size: 10, map: fxGlow(), vertexColors: true, transparent: true, opacity: 1, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, sizeAttenuation: false, fog: false });
-        return { g, m, T };
+        const headCount = 2;
+        const lineSegments = meteorMode ? 18 : 9;
+        const sparkCount = meteorMode ? 7 : 0;
+        const headGeo = new THREE.BufferGeometry();
+        const lineGeo = new THREE.BufferGeometry();
+        const sparkGeo = new THREE.BufferGeometry();
+        headGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(headCount * 3), 3));
+        headGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(headCount * 3), 3));
+        lineGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(lineSegments * 2 * 3), 3));
+        lineGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(lineSegments * 2 * 3), 3));
+        sparkGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(sparkCount * 3), 3));
+        sparkGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(sparkCount * 3), 3));
+        const headMat = new THREE.PointsMaterial({ size: meteorMode ? 4.8 : 4.2, map: fxGlow(), vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, sizeAttenuation: false, fog: false });
+        const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: meteorMode ? 1 : 0.78, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, fog: false });
+        const sparkMat = new THREE.PointsMaterial({ size: meteorMode ? 2.2 : 1.8, map: fxGlow(), vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, sizeAttenuation: false, fog: false });
+        return { headGeo, lineGeo, sparkGeo, headMat, lineMat, sparkMat, headCount, lineSegments, sparkCount };
       }),
-    [count],
+    [count, meteorMode],
   );
-  useEffect(() => () => items.forEach((x) => { x.g.dispose(); x.m.dispose(); }), [items]);
+  useEffect(() => () => items.forEach((x) => {
+    x.headGeo.dispose(); x.lineGeo.dispose(); x.sparkGeo.dispose();
+    x.headMat.dispose(); x.lineMat.dispose(); x.sparkMat.dispose();
+  }), [items]);
 
   const reroll = (st: Meteor) => {
-    const a = RADIANT + (Math.random() - 0.5) * 0.55;
-    const rr = 420 + Math.random() * 280;
-    const startY = 250 + Math.random() * 150;
+    const a = RADIANT + (Math.random() - 0.5) * (meteorMode ? 0.85 : 0.55);
+    const rr = (meteorMode ? 360 : 420) + Math.random() * (meteorMode ? 360 : 280);
+    const startY = (meteorMode ? 265 : 250) + Math.random() * (meteorMode ? 165 : 150);
     st.from.set(Math.cos(a) * rr, startY, Math.sin(a) * rr);
-    const dir = new THREE.Vector3(-Math.cos(a) * 0.45 + (Math.random() - 0.5) * 0.3, -1, -Math.sin(a) * 0.45 + (Math.random() - 0.5) * 0.3).normalize();
-    st.to.copy(st.from).addScaledVector(dir, 230 + Math.random() * 170);
-    st.dur = 0.8 + Math.random() * 0.7;
+    const dir = new THREE.Vector3(
+      -Math.cos(a) * (meteorMode ? 0.56 : 0.45) + (Math.random() - 0.5) * (meteorMode ? 0.42 : 0.3),
+      meteorMode ? -0.86 : -1,
+      -Math.sin(a) * (meteorMode ? 0.56 : 0.45) + (Math.random() - 0.5) * (meteorMode ? 0.42 : 0.3),
+    ).normalize();
+    st.to.copy(st.from).addScaledVector(dir, (meteorMode ? 300 : 230) + Math.random() * (meteorMode ? 220 : 170));
+    st.dur = (meteorMode ? 0.66 : 0.8) + Math.random() * (meteorMode ? 0.55 : 0.7);
+    const cool = Math.random() > 0.35;
+    st.tint = cool ? [0.64 + Math.random() * 0.14, 0.86, 1.0] : [1.0, 0.76 + Math.random() * 0.15, 0.58];
+    st.flare = meteorMode ? 1.05 + Math.random() * 0.75 : 1;
   };
 
   useFrame((_, dt) => {
     state.current.forEach((st, mi) => {
-      const pts = refs.current[mi];
-      if (!pts) return;
+      const grp = refs.current[mi];
+      if (!grp) return;
       if (!st.init) { st.init = true; reroll(st); }
       st.t -= dt;
-      if (st.t <= -st.dur) { st.t = 1.0 + Math.random() * 4.5; reroll(st); }
+      if (st.t <= -st.dur) { st.t = (meteorMode ? 0.25 : 1.0) + Math.random() * (meteorMode ? 2.6 : 4.5); reroll(st); }
       const active = st.t <= 0;
-      pts.visible = active;
+      grp.visible = active;
       if (!active) return;
       const k = Math.min(1, -st.t / st.dur);
       const env = Math.sin(k * Math.PI); // 头尾渐隐
-      const arr = items[mi].g.attributes.position.array as Float32Array;
-      const col = items[mi].g.attributes.color.array as Float32Array;
-      for (let j = 0; j < items[mi].T; j++) {
-        const kk = Math.max(0, k - j * 0.02);
-        arr[j * 3] = st.from.x + (st.to.x - st.from.x) * kk;
-        arr[j * 3 + 1] = st.from.y + (st.to.y - st.from.y) * kk;
-        arr[j * 3 + 2] = st.from.z + (st.to.z - st.from.z) * kk;
-        const w = (1 - j / items[mi].T) * env;
-        col[j * 3] = w; col[j * 3 + 1] = 0.95 * w; col[j * 3 + 2] = 0.82 * w; // 暖白
+      const item = items[mi];
+      const headArr = item.headGeo.attributes.position.array as Float32Array;
+      const headCol = item.headGeo.attributes.color.array as Float32Array;
+      const lineArr = item.lineGeo.attributes.position.array as Float32Array;
+      const lineCol = item.lineGeo.attributes.color.array as Float32Array;
+      const sparkArr = item.sparkGeo.attributes.position.array as Float32Array;
+      const sparkCol = item.sparkGeo.attributes.color.array as Float32Array;
+      const tailSpan = meteorMode ? 0.44 : 0.26;
+
+      for (let j = 0; j < item.headCount; j++) {
+        const trail = j / Math.max(1, item.headCount - 1);
+        const kk = Math.max(0, k - j * (meteorMode ? 0.02 : 0.035));
+        const curl = meteorMode ? Math.sin(j * 0.72 + mi * 1.9) * trail * 2.1 * env : 0;
+        headArr[j * 3] = st.from.x + (st.to.x - st.from.x) * kk;
+        headArr[j * 3 + 1] = st.from.y + (st.to.y - st.from.y) * kk;
+        headArr[j * 3 + 2] = st.from.z + (st.to.z - st.from.z) * kk + curl;
+        const taper = Math.pow(1 - trail, meteorMode ? 1.55 : 1);
+        const twinkle = meteorMode ? 0.86 + 0.14 * Math.sin(k * 18 + mi * 2.7) : 1;
+        const w = taper * env * twinkle;
+        const core = Math.max(0, 1 - trail * (meteorMode ? 5.2 : 4.2)) * env * st.flare;
+        headCol[j * 3] = st.tint[0] * w + core;
+        headCol[j * 3 + 1] = st.tint[1] * w + core * 0.96;
+        headCol[j * 3 + 2] = st.tint[2] * w + core * 0.9;
       }
-      items[mi].g.attributes.position.needsUpdate = true;
-      items[mi].g.attributes.color.needsUpdate = true;
+
+      for (let j = 0; j < item.lineSegments; j++) {
+        const t0 = j / item.lineSegments;
+        const t1 = (j + 1) / item.lineSegments;
+        const kk0 = Math.max(0, k - t0 * tailSpan);
+        const kk1 = Math.max(0, k - t1 * tailSpan);
+        const curl0 = meteorMode ? Math.sin(j * 0.58 + mi * 1.9) * t0 * 3.2 * env : 0;
+        const curl1 = meteorMode ? Math.sin((j + 1) * 0.58 + mi * 1.9) * t1 * 3.2 * env : 0;
+        const base = j * 6;
+        lineArr[base] = st.from.x + (st.to.x - st.from.x) * kk0;
+        lineArr[base + 1] = st.from.y + (st.to.y - st.from.y) * kk0;
+        lineArr[base + 2] = st.from.z + (st.to.z - st.from.z) * kk0 + curl0;
+        lineArr[base + 3] = st.from.x + (st.to.x - st.from.x) * kk1;
+        lineArr[base + 4] = st.from.y + (st.to.y - st.from.y) * kk1;
+        lineArr[base + 5] = st.from.z + (st.to.z - st.from.z) * kk1 + curl1;
+        const a0 = (Math.pow(1 - t0, meteorMode ? 2.0 : 1.55) + (t0 < 0.08 ? 0.45 : 0)) * env;
+        const a1 = (Math.pow(1 - t1, meteorMode ? 2.0 : 1.55) + (t1 < 0.08 ? 0.45 : 0)) * env;
+        lineCol[base] = st.tint[0] * a0; lineCol[base + 1] = st.tint[1] * a0; lineCol[base + 2] = st.tint[2] * a0;
+        lineCol[base + 3] = st.tint[0] * a1; lineCol[base + 4] = st.tint[1] * a1; lineCol[base + 5] = st.tint[2] * a1;
+      }
+
+      for (let j = 0; j < item.sparkCount; j++) {
+        const trail = 0.16 + j * 0.07;
+        const kk = Math.max(0, k - trail);
+        const drift = (0.35 + j * 0.16) * env;
+        sparkArr[j * 3] = st.from.x + (st.to.x - st.from.x) * kk + Math.sin(mi * 2.1 + j * 1.7) * drift;
+        sparkArr[j * 3 + 1] = st.from.y + (st.to.y - st.from.y) * kk + Math.cos(mi * 1.6 + j * 1.3) * drift * 0.45;
+        sparkArr[j * 3 + 2] = st.from.z + (st.to.z - st.from.z) * kk + Math.cos(mi * 1.9 + j * 1.5) * drift;
+        const w = Math.pow(1 - j / Math.max(1, item.sparkCount), 1.4) * env * 0.72;
+        sparkCol[j * 3] = st.tint[0] * w;
+        sparkCol[j * 3 + 1] = st.tint[1] * w;
+        sparkCol[j * 3 + 2] = st.tint[2] * w;
+      }
+
+      item.headGeo.attributes.position.needsUpdate = true;
+      item.headGeo.attributes.color.needsUpdate = true;
+      item.lineGeo.attributes.position.needsUpdate = true;
+      item.lineGeo.attributes.color.needsUpdate = true;
+      item.sparkGeo.attributes.position.needsUpdate = true;
+      item.sparkGeo.attributes.color.needsUpdate = true;
     });
   });
 
   return (
     <>
       {items.map((it, i) => (
-        <points key={i} ref={(el) => { refs.current[i] = el; }} geometry={it.g} material={it.m} frustumCulled={false} visible={false} />
+        <group key={i} ref={(el) => { refs.current[i] = el; }} frustumCulled={false} visible={false}>
+          <lineSegments geometry={it.lineGeo} material={it.lineMat} frustumCulled={false} />
+          <points geometry={it.headGeo} material={it.headMat} frustumCulled={false} />
+          {it.sparkCount > 0 && <points geometry={it.sparkGeo} material={it.sparkMat} frustumCulled={false} />}
+        </group>
       ))}
     </>
   );

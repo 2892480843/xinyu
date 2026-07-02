@@ -32,7 +32,7 @@ export interface EggPlacement {
   x: number;
   z: number;
   y: number;
-  heading: number; // 该处道路朝向(rad),用于让彩蛋朝向/横跨公路
+  heading: number; // 该处道路朝向(rad),用于让彩蛋朝向路边视线
   kind: EggKind;
   seed: number; // 每个彩蛋的稳定随机种子(动画相位/配色用)
 }
@@ -192,16 +192,16 @@ export function makeTrack(): Track {
   };
 
   // 沿环线稀疏散布的「奇遇彩蛋」:卡通形象 + 惊喜小景,间隔足够远 → 每个都像一次奖励。
-  // side: -1 左 / +1 右(rainbow 横跨公路,以中线为准);off: 路肩外偏移米数。
+  // side: -1 左 / +1 右; off: 路肩外偏移米数。所有彩蛋都留在车道外,车开的路只保留路面和标线。
   const eggs = (): EggPlacement[] => {
     const spec: { frac: number; kind: EggKind; side: number; off: number }[] = [
-      { frac: 0.045, kind: "rainbow", side: 0, off: 0 },
+      { frac: 0.045, kind: "rainbow", side: -1, off: 20 },
       { frac: 0.12, kind: "deer", side: 1, off: 6 },
       { frac: 0.205, kind: "windmill", side: -1, off: 34 },
       { frac: 0.31, kind: "bunny", side: 1, off: 5 },
       { frac: 0.4, kind: "spirit", side: -1, off: 7 },
       { frac: 0.52, kind: "balloons", side: 1, off: 6 },
-      { frac: 0.63, kind: "rainbow", side: 0, off: 0 },
+      { frac: 0.63, kind: "rainbow", side: 1, off: 20 },
       { frac: 0.71, kind: "deer", side: -1, off: 7 },
       { frac: 0.8, kind: "windmill", side: 1, off: 40 },
       { frac: 0.88, kind: "spirit", side: 1, off: 7 },

@@ -1,7 +1,7 @@
 import type { SceneVisual } from "./sceneMap";
 
 export type ExploreTimeOfDay = "dawn" | "noon" | "sunset" | "night";
-export type ExploreWeather = "clear" | "rain";
+export type ExploreWeather = "clear" | "rain" | "meteor";
 
 export interface ExploreEnvironment {
   timeOfDay: ExploreTimeOfDay;
@@ -142,6 +142,22 @@ export function saveExploreEnvironment(storage: Storage | null | undefined, envi
 export function resolveExploreEnvironmentVisual(visual: SceneVisual, environment: ExploreEnvironment): ExploreEnvironmentVisual {
   const base = EXPLORE_TIME_VISUALS[environment.timeOfDay];
   if (environment.weather === "clear") return base;
+  if (environment.weather === "meteor") {
+    return {
+      ...EXPLORE_TIME_VISUALS.night,
+      skyTop: "#02040f",
+      skyMid: "#11153d",
+      skyBottom: "#322052",
+      celestial: "#f0f6ff",
+      directional: "#b9c9ff",
+      ambient: 0.38,
+      hemi: 0.36,
+      fog: "#161633",
+      fogNear: 255,
+      fogFar: 1220,
+      rainOpacity: 0,
+    };
+  }
   return {
     ...base,
     skyTop: "#435f73",

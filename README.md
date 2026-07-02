@@ -236,7 +236,7 @@ flowchart TD
 
 - 视觉：24 张本地预设场景图（8 情绪 × 3 强度）作为 2D 底图 + CSS/SVG 沉浸式叠加与天气粒子；之上可叠加 **react-three-fiber 真 3D 岛屿皮肤与自由探索模式**，弱设备 / 无 WebGL 自动降级回 2D。
 - 音频：三层声景——9 段情绪背景音乐（Kevin MacLeod，CC-BY 4.0）打底，叠加随情绪切换的**环境氛围底噪**（海浪 / 雨 / 夜虫 / 篝火 / 林风 / 溪流 / 晨鸟）与自由探索时随所在区域切换的**位置环境音**（洋 / 湾 / 溪 / 篝火 / 山 / 林 / 村）；交互音效**采样优先**（Wikimedia CC 素材），缺失或断网时回退 Web Audio 实时合成。「背景音乐」控件可一键静音覆盖全部声层。完整素材与署名见 `frontend/public/audio/CREDITS.md`。
-- 朗读：云端情感语音合成 TTS（可选，支持**阿里云 CosyVoice** 与**腾讯云**双通道、可选音色），未配置或失败时降级浏览器原生 `speechSynthesis`；自由探索中的专属精灵也用同一套 TTS「发声」。
+- 朗读：云端情感语音合成 TTS（可选，支持**阿里云 CosyVoice** 与**腾讯云**双通道、可选音色），前端优先通过 `/ws/tts` 边生成边播，流式不可用时降级整段 `/api/tts`，再失败则降级浏览器原生 `speechSynthesis`；自由探索中的专属精灵也用同一套 TTS「发声」。
 - 尊重 `prefers-reduced-motion`，提供静海模式；语音输入用浏览器 `SpeechRecognition`，不支持时降级为不可用。
 
 **隐私与韧性**
@@ -324,7 +324,8 @@ cp .env.example .env
 | `VECTOR_MEMORY_RESULTS` | 叙事生成前检索的相似记忆数量。 |
 | `TTS_PROVIDER` | 可选：显式指定云端 TTS 通道，`aliyun` / `tencent` / 留空；留空时自动选择已配置密钥的一方（两者都配优先 `aliyun`）。 |
 | `DASHSCOPE_API_KEY` | 可选：阿里云 DashScope（CosyVoice 语音合成）API Key；与腾讯云并存，由 `TTS_PROVIDER` 决定生效通道。 |
-| `TENCENT_TTS_SECRET_ID` / `TENCENT_TTS_SECRET_KEY` | 可选：腾讯云情感语音合成密钥；未配置时 `/api/tts` 返回不可用，前端自动降级浏览器朗读。 |
+| `DASHSCOPE_WORKSPACE_ID` / `DASHSCOPE_TTS_WS_URL` | 可选：阿里云流式 TTS WebSocket 工作空间或完整端点；不填时默认走 DashScope 公共 WebSocket 推理端点。 |
+| `TENCENT_TTS_SECRET_ID` / `TENCENT_TTS_SECRET_KEY` / `TENCENT_TTS_APP_ID` | 可选：腾讯云情感语音合成密钥；流式 `/ws/tts` 需要额外配置 `AppId`，未配置时前端自动降级整段 `/api/tts` 或浏览器朗读。 |
 | `TENCENT_TTS_REGION` / `TENCENT_TTS_VOICE_TYPE` / `TENCENT_TTS_TIMEOUT` | 可选：腾讯云 TTS 区域、音色与超时（默认 `ap-guangzhou` / `101016` 温柔女声 / 8s）。 |
 
 前端：
@@ -363,7 +364,8 @@ cp .env.example .env
 | `GET` | `/api/island/revision?user_id=&force=` | 岛屿修正信 |
 | `POST` | `/api/island/letter` | 岛屿年报 |
 | `GET` `POST` | `/api/phrases` · `DELETE /api/phrases/{id}` | 私房安慰话增删查 |
-| `POST` | `/api/tts` | 情感语音合成（阿里云 / 腾讯云，失败降级浏览器） |
+| `WS` | `/ws/tts` | 流式情感语音合成（阿里云 / 腾讯云，二进制 MP3 分片边生成边播） |
+| `POST` | `/api/tts` | 整段情感语音合成兜底（阿里云 / 腾讯云，失败降级浏览器） |
 | `GET` | `/api/tts/voices` | 当前 TTS 通道、是否已配置与可选音色清单 |
 | `POST` | `/api/identity/seed` | 为新身份注入种子记忆（幂等） |
 | `POST` | `/api/demo/timeline-seed` | 注入一段示例成长轨迹（`demo-timeline`，便于快速预览时光机 / 年报，不影响真实用户） |
@@ -520,9 +522,13 @@ DEEPSEEK_API_KEY=你的 DeepSeek API Key
 ```bash
 # 阿里云 CosyVoice（DashScope）
 DASHSCOPE_API_KEY=你的 DashScope API Key
+# 如使用阿里云工作空间专属 WebSocket 端点，可选其一
+DASHSCOPE_WORKSPACE_ID=你的 WorkspaceId
+DASHSCOPE_TTS_WS_URL=wss://你的完整 WebSocket 端点
 # 或腾讯云情感语音合成
 TENCENT_TTS_SECRET_ID=你的 SecretId
 TENCENT_TTS_SECRET_KEY=你的 SecretKey
+TENCENT_TTS_APP_ID=你的 AppId
 # 两者都配时可显式指定通道（留空自动选，默认优先 aliyun）
 TTS_PROVIDER=aliyun
 ```

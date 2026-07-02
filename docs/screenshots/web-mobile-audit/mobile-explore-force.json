@@ -1,0 +1,23 @@
+{
+  "modeVisible": true,
+  "canvasCount": 1,
+  "buttonCount": 6,
+  "hudText": "♡ 心愿 0/5🎐 跟着发光的风铃 ○ ○ ○ ○ ○",
+  "scrollWidth": 390,
+  "clientWidth": 390,
+  "logs": [
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134004d7200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134004e6200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+    },
+    {
+      "type": "warning",
+      "text": "[.WebGL-0x134004d6600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+    }
+  ],
+  "errors": []
+}

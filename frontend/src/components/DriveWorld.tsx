@@ -298,7 +298,7 @@ function buildWindmillBlades(): THREE.BufferGeometry {
   return mergeGeometries(parts)!;
 }
 
-// 彩虹:7 条同心半环(由外到内 红→紫),无光照、半透明、不受雾,横跨公路。
+// 彩虹:7 条同心半环(由外到内 红→紫),无光照、半透明、不受雾,立在路肩外。
 function buildRainbow(): THREE.BufferGeometry {
   const COLORS = ["#ff6b6b", "#ff9f43", "#ffd86b", "#7ed96b", "#5ec9e0", "#5b7fe0", "#a06be0"];
   const tube = 0.55;

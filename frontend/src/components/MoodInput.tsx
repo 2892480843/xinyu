@@ -11,6 +11,7 @@ interface Props {
   onSilent?: () => void;
   onGlyph?: () => void;
   loading: boolean;
+  variant?: "default" | "mobile-web";
 }
 
 const QUICK = ["今天有点焦虑", "一个人有点孤独", "累到不想动", "其实今天挺开心的"];
@@ -23,7 +24,7 @@ const DEMO_SCRIPT = [
   "我真的彻底撑不下去了，感觉没有希望。",
 ];
 
-export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Props) {
+export default function MoodInput({ onSubmit, onSilent, onGlyph, loading, variant = "default" }: Props) {
   const [text, setText] = useState("");
   const [demoIndex, setDemoIndex] = useState(0);
   const [ephemeral, setEphemeral] = useState(false);
@@ -31,6 +32,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
   const textControls = useAnimationControls();
   const isDev = import.meta.env.DEV;
   const isTouch = useIsTouch();
+  const showDesktopHint = !isTouch && variant !== "mobile-web";
 
   const submit = async () => {
     const t = text.trim();
@@ -60,13 +62,13 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
 
   return (
     <motion.div
-      className="w-full max-w-xl mx-auto"
+      className={`mood-input ${variant === "mobile-web" ? "mood-input--mobile-web" : ""} w-full max-w-xl mx-auto`}
       initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
     >
       <div
-        className={`relative overflow-hidden rounded-card-lg backdrop-blur-glass border p-4 transition-colors duration-500 ${
+        className={`mood-input__panel relative overflow-hidden rounded-card-lg backdrop-blur-glass border p-4 transition-colors duration-500 ${
           ephemeral
             ? "bg-ink-900/35 border-mist-600 border-dashed shadow-glass-1"
             : "bg-ink-900/25 border-mist-500 shadow-glass-2"
@@ -84,7 +86,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
           style={{ background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent)" }}
         />
 
-        <div className="flex justify-between items-center mb-1 gap-2">
+        <div className="mood-input__meta flex justify-between items-center mb-1 gap-2">
           <label
             className="flex items-center gap-2 text-caption text-mist-400 hover:text-mist-200 cursor-pointer select-none transition"
             title="勾选后岛屿走完整流程陪你说话，但不写记忆、不更新岛屿状态、不留物件。情绪陪伴 100% 给你，数据 0% 给产品。"
@@ -121,12 +123,12 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
             }}
             placeholder="岛屿正在聆听……把此刻的心情说给它听"
             disabled={loading || submitting}
-            className="w-full h-20 sm:h-24 bg-transparent text-mist-100 placeholder:text-mist-400 font-serif text-base leading-relaxed outline-none px-2 pt-1 disabled:opacity-60"
+            className="mood-input__textarea w-full h-20 sm:h-24 bg-transparent text-mist-100 placeholder:text-mist-400 font-serif text-base leading-relaxed outline-none px-2 pt-1 disabled:opacity-60"
           />
         </motion.div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 mt-1 px-1">
-          <div className="flex flex-wrap gap-1.5">
+        <div className="mood-input__submit-row flex flex-wrap items-center justify-between gap-2 mt-1 px-1">
+          <div className="mood-input__quick flex flex-wrap gap-1.5">
             {QUICK.map((q) => (
               <button
                 key={q}
@@ -152,7 +154,7 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
           </motion.button>
         </div>
 
-        <div className="mt-3 px-1">
+        <div className="mood-input__voice mt-3 px-1">
           <VoiceInputButton disabled={loading || submitting} baseText={text} onTranscript={setText} />
         </div>
 
@@ -185,10 +187,10 @@ export default function MoodInput({ onSubmit, onSilent, onGlyph, loading }: Prop
           transition={{ delay: 0.5 }}
         >
           {/* 快捷键提示仅桌面端显示——触屏有显式的「说给岛屿」按钮 */}
-          {!isTouch && <p className="text-caption text-mist-400">{ISLAND_HINTS.hotkey}</p>}
+          {showDesktopHint && <p className="text-caption text-mist-400">{ISLAND_HINTS.hotkey}</p>}
           {onGlyph && (
             <>
-              {!isTouch && <span className="text-mist-600 text-[10px]">·</span>}
+              {showDesktopHint && <span className="text-mist-600 text-[10px]">·</span>}
               <button
                 type="button"
                 onClick={onGlyph}

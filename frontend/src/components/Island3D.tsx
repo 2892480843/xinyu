@@ -41,7 +41,16 @@ function toonGradient(): THREE.DataTexture {
 const GLB_ISLAND_URL = "/models/xy_scene_island.glb";
 const GLB_SCALE = 0.23; // 原生半径 ~10 → 视觉半径 ~2.3，整岛（雪峰+辉光）尽收镜中
 const GLB_Y = 0.3; // 岛坐在海里：沙滩/草地清楚高出水线（不再被海面盖住），沙岩岛底没入水中
+const GLB_WATER_Y = -0.48; // 主页 GLB 岛专用水线：给沙滩台地留出明显干沙余量，避免反射海面把沙滩视觉上淹掉
+const TURTLE_SCALE = 0.62; // 背景生灵比例：比主岛低一个视觉层级，避免抢走中心输入区注意力
+const TURTLE_WATERLINE_OFFSET_Y = -0.09; // 相对主页水线半潜：腹部入水、龟壳仍露出
+const TURTLE_SWIM_CENTER_Z = 1.25; // 保持在中远景水面，不贴到近镜头底边
+const TURTLE_SWIM_RADIUS_Z = 0.9;
 const USE_GLB_ISLAND = typeof location === "undefined" || !location.search.includes("island=proc");
+const HOMEPAGE_DPR_RANGE: Record<PerfTier, [number, number]> = {
+  low: [1, 1.5],
+  high: [1, 1.75],
+};
 useGLTF.preload(GLB_ISLAND_URL);
 
 // 抖动噪声瓦片(模块级构建一次):以 overlay 低透叠在天色渐变上,打散 8-bit 量化造成的色带(banding)。
@@ -145,7 +154,7 @@ function createRippleDistortion() {
 
 // 反射水面 + 涟漪：保留 MeshReflectorMaterial 的镜面倒影，叠加缓动扰动让倒影荡漾。
 // 颜色由 EmotionTint 通过 waterRef 驱动（故 color 只给初值）。
-function RippleWater({ waterRef, initialSea, animate, tier }: { waterRef: React.RefObject<THREE.MeshStandardMaterial | null>; initialSea: string; animate: boolean; tier: PerfTier }) {
+function RippleWater({ waterRef, initialSea, animate, tier, waterY }: { waterRef: React.RefObject<THREE.MeshStandardMaterial | null>; initialSea: string; animate: boolean; tier: PerfTier; waterY: number }) {
   const ripple = useMemo(() => createRippleDistortion(), []);
   useEffect(() => () => ripple.dispose(), [ripple]);
   useFrame((_, delta) => {
@@ -153,7 +162,7 @@ function RippleWater({ waterRef, initialSea, animate, tier }: { waterRef: React.
   });
   const hi = tier === "high";
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, waterY, 0]}>
       <planeGeometry args={[80, 80]} />
       <MeshReflectorMaterial
         // 子类实例向上赋给 MeshStandardMaterial 类型 ref（只需 .color 做 lerp）
@@ -1166,23 +1175,25 @@ function Turtle({ animate }: { animate: boolean }) {
   const flipL = useMemo(() => obj.getObjectByName("FlipperL") as THREE.Object3D | undefined, [obj]);
   const flipR = useMemo(() => obj.getObjectByName("FlipperR") as THREE.Object3D | undefined, [obj]);
   const ref = useRef<THREE.Group>(null);
+  const turtleY = GLB_WATER_Y + TURTLE_WATERLINE_OFFSET_Y;
+  const turtleRestZ = TURTLE_SWIM_CENTER_Z + TURTLE_SWIM_RADIUS_Z;
   useFrame((state) => {
     const g = ref.current;
     if (!g) return;
     if (!animate) {
-      g.position.set(2.3, -0.32, 3.0);
+      g.position.set(2.3, turtleY, turtleRestZ);
       g.rotation.y = -1.1;
       return;
     }
     const t = state.clock.elapsedTime * 0.1;
-    g.position.set(Math.cos(t) * 2.6, -0.34 + Math.sin(t * 3) * 0.08, 2.0 + Math.sin(t) * 1.8);
+    g.position.set(Math.cos(t) * 2.6, turtleY + Math.sin(t * 3) * 0.04, TURTLE_SWIM_CENTER_Z + Math.sin(t) * TURTLE_SWIM_RADIUS_Z);
     g.rotation.y = -t - Math.PI / 2;
     const paddle = Math.sin(state.clock.elapsedTime * 1.5) * 0.45;
     if (flipL) flipL.rotation.z = paddle;
     if (flipR) flipR.rotation.z = -paddle;
   });
   return (
-    <group ref={ref} scale={0.92} position={[2.3, -0.32, 3.0]}>
+    <group ref={ref} scale={TURTLE_SCALE} position={[2.3, turtleY, turtleRestZ]}>
       <primitive object={obj} />
     </group>
   );
@@ -1340,7 +1351,7 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
       )}
 
       {/* 反射水面 + 涟漪（深海玻璃感核心）。颜色由 EmotionTint 驱动 */}
-      <RippleWater waterRef={waterRef} initialSea={initial.sea} animate={animate} tier={tier} />
+      <RippleWater waterRef={waterRef} initialSea={initial.sea} animate={animate} tier={tier} waterY={USE_GLB_ISLAND ? GLB_WATER_Y : -0.02} />
 
       {USE_GLB_ISLAND ? <GlbBirds count={hi ? 5 : 3} animate={animate} /> : <Birds count={hi ? 5 : 2} animate={animate} />}
       <WishLights count={hi ? 7 : 3} color={visual.accent} animate={animate} />
@@ -1387,7 +1398,7 @@ function SceneContents({ visual, features, animate, tier }: Props & { tier: Perf
 }
 
 export default function Island3D({ visual, features = [], animate }: Props) {
-  const tier = getPerfTier(); // 设备能力分档：弱设备降 dpr、去后期、降反射分辨率
+  const tier = getPerfTier(); // 设备能力分档：弱设备关后期、降反射分辨率；首页背景仍保留高分屏清晰度。
   // CSS 渐变天空作懒加载/首帧前兜底底色（Canvas 渲染出来后被不透明背景覆盖）
   const sky = `linear-gradient(to bottom, ${visual.skyTop} 0%, ${visual.skyMid} 48%, ${visual.skyBottom} 80%)`;
 
@@ -1395,7 +1406,7 @@ export default function Island3D({ visual, features = [], animate }: Props) {
     <div className="absolute inset-0 overflow-hidden" style={{ background: sky }}>
       <Canvas
         gl={{ antialias: tier === "high", alpha: false, powerPreference: "high-performance" }}
-        dpr={tier === "high" ? [1, 1.75] : [1, 1]}
+        dpr={HOMEPAGE_DPR_RANGE[tier]}
         camera={{ position: [0, 2.1, 7], fov: 46, near: 0.1, far: 100 }}
         frameloop={animate ? "always" : "demand"}
       >

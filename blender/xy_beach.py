@@ -211,6 +211,10 @@ def export(name):
 
 ROCK = ["#7d8694", "#646d7a", "#8a929e"]; SAND = "#e3cda0"; SANDD = "#d8be8f"
 SEAGLASS = "#7fd9d2"; CORAL = "#e8826a"; CREAM = "#f3ece0"
+BEACH_YELLOW = "#f0bb4f"
+JELLY_BELL = "#5fd8ff"; JELLY_BELL_GLOW = "#87efff"
+JELLY_TENT = "#b795ff"; JELLY_TENT_GLOW = "#d1b9ff"
+JELLY_GLOW_STRENGTH = 1.45
 
 # ============================ 装饰 dressing =============================== #
 def build_palm():
@@ -297,7 +301,7 @@ def build_sign():
 def build_bucket():
     reset(); mb = MB()
     BK = mb.add("Bucket", CORAL); BKR = mb.add("BucketRim", "#d46a52")
-    SP = mb.add("Spade", SEAGLASS); SPH = mb.add("SpadeH", CREAM); SD = mb.add("Sand", SAND); SDD = mb.add("SandDk", SANDD)
+    SP = mb.add("Spade", SEAGLASS); SPH = mb.add("SpadeH", BEACH_YELLOW); SD = mb.add("Sand", SAND); SDD = mb.add("SandDk", SANDD)
     V, F, M = [], [], []
     add_cyl(V, F, M, 0, 0, 0, 0.34, 0.5, BK, 12, r2=0.28)                  # tapered pail
     add_ring(V, F, M, 0, 0, 0.5, 0.28, 0.35, BKR, 16)                      # rim
@@ -325,8 +329,8 @@ def build_conch():
 
 def build_jelly():
     reset(); mb = MB()
-    BELL = mb.add("Emissive_Bell", "#bfa8f0", rough=0.2, emit="#c9b6ff", es=1.7, alpha=0.78)
-    TENT = mb.add("Emissive_Tent", "#f0a8d4", rough=0.2, emit="#ffb6e0", es=1.1, alpha=0.72)
+    BELL = mb.add("Emissive_Bell", JELLY_BELL, rough=0.2, emit=JELLY_BELL_GLOW, es=JELLY_GLOW_STRENGTH, alpha=0.78)
+    TENT = mb.add("Emissive_Tent", JELLY_TENT, rough=0.2, emit=JELLY_TENT_GLOW, es=JELLY_GLOW_STRENGTH, alpha=0.72)
     V, F, M = [], [], []
     add_ball(V, F, M, 0, 0, 0.0, 0.7, BELL, 12, 6, sz=0.72)               # rounded bell
     for k in range(8):                                                     # frilly rim lobes

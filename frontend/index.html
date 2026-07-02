@@ -17,6 +17,33 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet" />
     <title>心屿 · 一座会回应你的岛屿</title>
+    <script data-mobile-entry-redirect>
+      (() => {
+        const params = new URLSearchParams(window.location.search);
+        const requestedView = params.get("view");
+        if (requestedView === "desktop") return;
+
+        const matchesMedia = (query) => {
+          try {
+            return window.matchMedia?.(query)?.matches ?? false;
+          } catch {
+            return false;
+          }
+        };
+
+        const smallViewport = matchesMedia("(max-width: 767px)") || window.innerWidth <= 767;
+        const touchCapable = (navigator.maxTouchPoints ?? 0) > 0 || matchesMedia("(pointer: coarse)");
+        const tabletPortrait = touchCapable && (matchesMedia("(max-width: 900px)") || window.innerWidth <= 900);
+        const shouldOpenMobile = requestedView === "mobile" || smallViewport || tabletPortrait;
+
+        if (shouldOpenMobile) {
+          const mobileUrl = new URL("/mobile.html", window.location.origin);
+          mobileUrl.search = window.location.search;
+          mobileUrl.hash = window.location.hash;
+          window.location.replace(mobileUrl);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

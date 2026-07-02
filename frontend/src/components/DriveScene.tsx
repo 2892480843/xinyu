@@ -38,8 +38,8 @@ const ENGINE_ACCEL = 24; // 油门加速度 m/s²
 const BOOST_ACCEL = 40; // 加速键(Shift)下的增压油门 → 更猛的推背
 const BRAKE_DECEL = 46; // 刹车减速
 const REVERSE_ACCEL = 12; // 倒车加速
-const MAX_FWD = 26; // W 巡航最高速(放慢一点 ≈94km/h;按住 Shift 增压到 BOOST_FWD)
-const BOOST_FWD = 46; // 加速键(Shift / 触屏「»」)下的冲刺上限 ≈166km/h
+const MAX_FWD = 22; // W 巡航最高速(更慢一点 ≈79km/h;按住 Shift 增压到 BOOST_FWD)
+const BOOST_FWD = 38; // 加速键(Shift / 触屏「»」)下的冲刺上限 ≈137km/h
 const MAX_REV = 9;
 const LIN_DRAG = 0.5; // 线性阻力(决定自然限速与松油门滑行)
 const OFFROAD_DRAG = 4.5; // 压到草地的额外阻力(拖慢但不卡死)
@@ -116,6 +116,20 @@ function makeMeadowTexture() {
   t.repeat.set(80, 80);
   t.anisotropy = 8;
   return t;
+}
+
+function WebGLContextLossExit({ onExit }: { onExit: () => void }) {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      onExit();
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    return () => canvas.removeEventListener("webglcontextlost", handleContextLost);
+  }, [gl, onExit]);
+  return null;
 }
 
 // 8 种精致卡通植被(松/圆叶树/樱花/灌木/苔石/花丛/草丛/灯),各 merge 成单 geometry → instanced 渲染。
@@ -634,10 +648,17 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
       inputRef.current.boost = boost.current;
     }
   };
-  // 键盘:A/← 左,D/→ 右,W/↑ 油门,S/↓ 刹车·倒车;阻止方向键滚动页面。
+  // 键盘:A/← 左,D/→ 右,W/↑ 油门,S/↓ 刹车·倒车,E 下车回岛;阻止方向键滚动页面。
   useEffect(() => {
     const shared = inputRef.current;
     const keys = new Set<string>();
+    const resetInput = () => {
+      if (inputRef.current) {
+        inputRef.current.x = 0;
+        inputRef.current.y = 0;
+        inputRef.current.boost = false;
+      }
+    };
     const recompute = () => {
       let x = 0;
       let y = 0;
@@ -653,6 +674,13 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
     };
     const down = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
+      if (k === "e") {
+        e.preventDefault();
+        keys.clear();
+        resetInput();
+        onExit();
+        return;
+      }
       if (k === "arrowup" || k === "arrowdown" || k === "arrowleft" || k === "arrowright" || k === " ") e.preventDefault();
       keys.add(k);
       recompute();
@@ -672,11 +700,12 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
         shared.boost = false;
       }
     };
-  }, [inputRef]);
+  }, [inputRef, onExit]);
 
   return (
     <div className="fixed inset-0 z-40" style={{ background: "linear-gradient(to bottom,#bfe0ef,#e8f1ec)" }}>
       <Canvas camera={startCam} dpr={tier === "low" ? [1, 1.25] : [1, 1.7]} gl={{ antialias: true }}>
+        <WebGLContextLossExit onExit={onExit} />
         <fog attach="fog" args={["#cfe4ec", 90, 620]} />
         {/* 动态昼夜天色 + 灯光/雾 + 天空生灵 + 路边卡通彩蛋(替代原静态天穹与定光) */}
         <DriveWorld track={track} tier={tier} labelRef={phaseRef} />
@@ -709,7 +738,7 @@ export default function DriveScene({ inputRef, onExit }: { inputRef: RefObject<D
         ↩ 回到岛上
       </button>
       <div className="absolute z-10 panel-glass-1 rounded-full px-4 py-1.5 text-caption text-white/80" style={{ top: "calc(1.4rem + env(safe-area-inset-top))", left: "calc(1.4rem + env(safe-area-inset-left))" }}>
-        🚗 巡游公路 · {isTouch ? "左◄► 转向 · 右▲▼ 油门 · » 加速" : "W 油门 S 刹车 · A/D 转向 · Shift 加速"}
+        🚗 巡游公路 · {isTouch ? "左◄► 转向 · 右▲▼ 油门 · » 加速" : "W 油门 S 刹车 · A/D 转向 · Shift 加速 · E 下车"}
       </div>
 
       {/* 当前时段(随昼夜推进:日出→正午→黄昏→星夜) */}

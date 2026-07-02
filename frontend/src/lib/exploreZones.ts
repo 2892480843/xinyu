@@ -44,7 +44,7 @@ const R = EXPLORE_WALK_RADIUS;
 export const EXPLORE_ZONES: ExploreZone[] = [
   { key: "home", label: "家", icon: "⌂", kind: "home", x: -24, z: -20, radius: 24, color: "#ffd9a0", ambience: "meadow_day", dy: -12 },
   { key: "beach", label: "海滩", icon: "☂", kind: "beach", x: Math.cos(0.55) * R * 0.95, z: Math.sin(0.55) * R * 0.95, radius: 38, color: "#ffe7bf", ambience: "bay", dy: -12 },
-  { key: "rice", label: "稻田", icon: "▦", kind: "rice", x: 56, z: -82, radius: 30, color: "#cfe88a", ambience: "meadow_day", dy: -12 },
+  { key: "rice", label: "稻田", icon: "▦", kind: "rice", x: 48, z: -68, radius: 30, color: "#9dd6bf", ambience: "meadow_day", dy: -12 },
   { key: "mountain", label: "山", icon: "△", kind: "mountain", x: -70, z: 70, radius: 36, color: "#d8c0ff", ambience: "mountain", dy: -12 },
   { key: "forest", label: "森林", icon: "♣", kind: "forest", x: -118, z: 20, radius: 44, color: "#8ed08a", ambience: "forest", dy: -12 },
   { key: "town", label: "小镇", icon: "▥", kind: "town", x: -12, z: -54, radius: 28, color: "#e8c8a0", ambience: "meadow_day", dy: -12 },

@@ -5,14 +5,18 @@
 
 import asyncio
 import base64
+import json
 import logging
 import threading
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from app import config, db
@@ -69,6 +73,7 @@ from app.services.revision_service import RevisionService
 from app.services.phrase_service import PhraseService
 from app.services.tts_service import TTSService, tts_voice_options
 from app.services.aliyun_tts_service import AliyunTTSService, aliyun_voice_options
+from app.services.aliyun_asr_service import AliyunASRService
 from app.services.agent_evaluation_service import AgentEvaluationService
 from app.services.agent_telemetry_service import AgentTelemetryService
 from app.services.knowledge_base_service import KnowledgeBaseService
@@ -138,6 +143,7 @@ revision_service = RevisionService()
 phrase_service = PhraseService()
 tts_service = TTSService()
 aliyun_tts_service = AliyunTTSService()
+aliyun_asr_service = AliyunASRService()
 agent_evaluation_service = AgentEvaluationService()
 long_term_memory_service = LongTermMemoryService(memory_service)
 knowledge_base_service = KnowledgeBaseService()
@@ -159,6 +165,24 @@ def resolve_tts_provider() -> Optional[str]:
     if tts_service.configured():
         return "tencent"
     return None
+
+
+def resolve_tts_stream_provider() -> Optional[str]:
+    """返回当前可用的流式 TTS provider；不可用时前端回退整段 TTS。"""
+    pref = config.TTS_PROVIDER
+    if pref in {"aliyun", "tencent"}:
+        if pref == "aliyun" and aliyun_tts_service.streaming_configured():
+            return "aliyun"
+        if pref == "tencent" and tts_service.streaming_configured():
+            return "tencent"
+        return None
+    if aliyun_tts_service.streaming_configured():
+        return "aliyun"
+    if tts_service.streaming_configured():
+        return "tencent"
+    return None
+
+
 WS_STAGE_PAUSE_SECONDS = 0.12
 
 # 岛屿低语去重缓冲：每 user 保留最近 5 条已说过的话，传给 LLM 让它避免雷同
@@ -741,6 +765,21 @@ class TtsRequest(BaseModel):
     voice: Optional[str] = None  # 音色 id（腾讯云数字 / 阿里云字符串）；None 用默认
 
 
+class AsrRequest(BaseModel):
+    audio_base64: str
+    sample_rate: int = 16000
+    format: str = "pcm"
+
+
+class AsrStreamStart(BaseModel):
+    sample_rate: int = 16000
+    format: str = "pcm"
+
+
+_ASR_MAX_AUDIO_BYTES = 2_000_000
+_ASR_CHUNK_BYTES = 6400  # 16kHz * 16-bit mono * 0.2s
+
+
 @app.get("/api/tts/voices")
 def list_tts_voices() -> Dict[str, Any]:
     """可选音色清单 + 当前生效 provider + 是否已配置云端 TTS。
@@ -788,6 +827,175 @@ def synthesize_tts(req: TtsRequest) -> Dict[str, Any]:
         "mime": "audio/mp3",
         "audio_base64": base64.b64encode(audio).decode("ascii"),
     }
+
+
+@app.websocket("/ws/tts")
+async def tts_ws(websocket: WebSocket) -> None:
+    # 同源校验：CORSMiddleware 不管 WS，必须在 accept 前自行兜底
+    if not _origin_allowed(websocket.headers.get("origin")):
+        logger.warning("tts ws origin rejected: %s", websocket.headers.get("origin"))
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    try:
+        req = TtsRequest(**await websocket.receive_json())
+        text = (req.text or "").strip()
+        if not text:
+            await websocket.send_json({"event": "error", "message": "text 不能为空"})
+            await websocket.close(code=1008)
+            return
+        text = text[:500]
+        provider = resolve_tts_stream_provider()
+        if provider is None:
+            await websocket.send_json({"event": "error", "code": "streaming_unavailable", "message": "流式 TTS 未配置"})
+            await websocket.close(code=1011)
+            return
+
+        await websocket.send_json({"event": "started", "provider": provider, "mime": "audio/mpeg"})
+        if provider == "aliyun":
+            stream = aliyun_tts_service.stream(text, (req.emotion or "calm"), req.voice)
+        else:
+            voice_int = None
+            if req.voice:
+                try:
+                    voice_int = int(req.voice)
+                except (TypeError, ValueError):
+                    voice_int = None
+            stream = tts_service.stream(text, (req.emotion or "calm"), voice_int)
+
+        sent = 0
+        async for chunk in stream:
+            if not chunk:
+                continue
+            sent += len(chunk)
+            await websocket.send_bytes(chunk)
+        if sent <= 0:
+            await websocket.send_json({"event": "error", "code": "streaming_failed", "message": "流式 TTS 未返回音频"})
+            await websocket.close(code=1011)
+            return
+        await websocket.send_json({"event": "done", "bytes": sent})
+        await websocket.close()
+    except WebSocketDisconnect:
+        logger.info("tts websocket disconnected")
+    except (ValidationError, HTTPException) as e:
+        detail = e.detail if isinstance(e, HTTPException) else "请求格式不正确"
+        await _safe_ws_error(websocket, detail, 1008)
+    except Exception:
+        logger.exception("tts websocket failed")
+        await _safe_ws_error(websocket, "流式 TTS 失败，请稍后重试", 1011)
+
+
+@app.post("/api/asr")
+async def transcribe_asr(req: AsrRequest) -> Dict[str, Any]:
+    """短语音输入兜底：前端录制 16k PCM，后端用阿里云 Paraformer 转文字。
+    未配置或识别失败时返回 ok=false，前端继续保留文字输入，不阻断主流程。"""
+    if (req.format or "").lower() != "pcm":
+        raise HTTPException(status_code=400, detail="仅支持 pcm 音频")
+    if req.sample_rate < 8000 or req.sample_rate > 48000:
+        raise HTTPException(status_code=400, detail="sample_rate 超出支持范围")
+    raw_b64 = (req.audio_base64 or "").strip()
+    if not raw_b64:
+        raise HTTPException(status_code=400, detail="audio_base64 不能为空")
+    if not aliyun_asr_service.configured():
+        return {"configured": False, "ok": False, "provider": None, "transcript": ""}
+    try:
+        audio = base64.b64decode(raw_b64, validate=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="audio_base64 格式不正确") from e
+    if not audio:
+        raise HTTPException(status_code=400, detail="音频为空")
+    if len(audio) > _ASR_MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="音频过长，请缩短到 60 秒内")
+    chunks = [audio[i:i + _ASR_CHUNK_BYTES] for i in range(0, len(audio), _ASR_CHUNK_BYTES)]
+    transcript = await aliyun_asr_service.transcribe_pcm(chunks, sample_rate=req.sample_rate)
+    return {
+        "configured": True,
+        "ok": bool(transcript),
+        "provider": "aliyun",
+        "transcript": transcript or "",
+    }
+
+
+@app.websocket("/ws/asr")
+async def asr_ws(websocket: WebSocket) -> None:
+    """实时语音输入兜底：浏览器持续推 PCM，后端转发给 Paraformer 并回推转写文本。"""
+    if not _origin_allowed(websocket.headers.get("origin")):
+        logger.warning("asr ws origin rejected: %s", websocket.headers.get("origin"))
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    receiver: Optional[asyncio.Task[None]] = None
+    try:
+        req = AsrStreamStart(**await websocket.receive_json())
+        if (req.format or "").lower() != "pcm":
+            await websocket.send_json({"event": "error", "code": "bad_format", "message": "仅支持 pcm 音频"})
+            await websocket.close(code=1008)
+            return
+        if req.sample_rate < 8000 or req.sample_rate > 48000:
+            await websocket.send_json({"event": "error", "code": "bad_sample_rate", "message": "sample_rate 超出支持范围"})
+            await websocket.close(code=1008)
+            return
+        if not aliyun_asr_service.configured():
+            await websocket.send_json({"event": "error", "code": "asr_unconfigured", "message": "语音识别未配置"})
+            await websocket.close(code=1011)
+            return
+
+        queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+
+        async def receive_client_audio() -> None:
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        break
+                    data = message.get("bytes")
+                    if data is not None:
+                        if data:
+                            await queue.put(bytes(data))
+                        continue
+                    text = message.get("text")
+                    if text is None:
+                        continue
+                    try:
+                        client_event = json.loads(text)
+                    except json.JSONDecodeError:
+                        continue
+                    if (client_event.get("event") or client_event.get("action")) in {"stop", "finish", "done"}:
+                        break
+            except WebSocketDisconnect:
+                pass
+            finally:
+                await queue.put(None)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+
+        receiver = asyncio.create_task(receive_client_audio())
+        async for event in aliyun_asr_service.stream_pcm(chunks(), sample_rate=req.sample_rate):
+            await websocket.send_json(event)
+            if event.get("event") in {"done", "error"}:
+                break
+        await websocket.close()
+    except WebSocketDisconnect:
+        logger.info("asr websocket disconnected")
+    except (ValidationError, HTTPException) as e:
+        detail = e.detail if isinstance(e, HTTPException) else "请求格式不正确"
+        await _safe_ws_error(websocket, detail, 1008)
+    except Exception:
+        logger.exception("asr websocket failed")
+        await _safe_ws_error(websocket, "实时语音识别失败，请稍后重试", 1011)
+    finally:
+        if receiver and not receiver.done():
+            receiver.cancel()
+            try:
+                await receiver
+            except asyncio.CancelledError:
+                pass
 
 
 @app.get("/api/artifacts")
@@ -1436,3 +1644,45 @@ async def _safe_ws_error(websocket: WebSocket, message: str, code: int) -> None:
         await websocket.close(code=code)
     except Exception:
         logger.info("reflect websocket already closed when reporting error")
+
+
+def _path_in_dir(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _mount_frontend_static() -> None:
+    """可选地让后端同源托管前端生产包，避免服务器部署时 /models/*.glb 404。"""
+    if not config.FRONTEND_DIST_DIR:
+        return
+    dist_dir = Path(config.FRONTEND_DIST_DIR).expanduser().resolve()
+    index_file = dist_dir / "index.html"
+    if not index_file.is_file():
+        logger.info("frontend dist not mounted: index.html missing at %s", dist_dir)
+        return
+
+    for public_dir in ("assets", "models", "audio", "scenes"):
+        static_dir = dist_dir / public_dir
+        if static_dir.is_dir():
+            app.mount(f"/{public_dir}", StaticFiles(directory=str(static_dir)), name=f"frontend-{public_dir}")
+
+    @app.get("/", include_in_schema=False)
+    def frontend_index() -> FileResponse:
+        return FileResponse(index_file)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def frontend_fallback(full_path: str) -> FileResponse:
+        if full_path.startswith(("api/", "ws/")):
+            raise HTTPException(status_code=404, detail="Not Found")
+        target = (dist_dir / full_path).resolve()
+        if _path_in_dir(target, dist_dir) and target.is_file():
+            return FileResponse(target)
+        return FileResponse(index_file)
+
+    logger.info("frontend dist mounted: %s", dist_dir)
+
+
+_mount_frontend_static()

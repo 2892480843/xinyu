@@ -15,12 +15,11 @@ import SilentMode from "../../components/SilentMode";
 import GlyphCanvas from "../../components/GlyphCanvas";
 import TimeMachine from "../../components/TimeMachine";
 import IslandMap from "../../components/IslandMap";
-import IslandPhrases from "../../components/IslandPhrases";
-import IslandLetter from "../../components/IslandLetter";
 import MindMap from "../../components/MindMap";
 import MusicControl from "../../components/MusicControl";
 import IslandAssistant from "../../components/IslandAssistant";
 import IslandHushCard from "../../components/IslandHushCard";
+import UserBadge from "../../components/UserBadge";
 import { NightWatchBanner, GoodnightScreen } from "../../components/NightWatch";
 // —— 复用桌面 lib / hooks ——
 import { useKeyboardInset } from "../../hooks/useKeyboardInset";
@@ -32,20 +31,15 @@ import {
 } from "../../lib/api";
 import { clearIdentity, loadIdentity, type LocalIdentity } from "../../lib/localIdentity";
 import { resolveScene, DEFAULT_VISUAL, EMOTION_META } from "../../lib/sceneMap";
-import { TREND_META } from "../../lib/islandMeta";
 import { useNightWatch } from "../../lib/useNightWatch";
 import { useImmersion } from "../../hooks/useImmersion";
 import { useSkin3d } from "../../hooks/useSkin3d";
 // —— 移动端专属外壳 ——
 import { useReflectFlow } from "../hooks/useReflectFlow";
-import MobileTabBar, { type MobileTab } from "../components/MobileTabBar";
-import BottomSheet from "../components/BottomSheet";
 import MobileInbox from "../components/MobileInbox";
-import MemoryTab from "../components/MemoryTab";
-import SelfTab from "../components/SelfTab";
 import MobileBrand from "../components/MobileBrand";
 
-// 重 chunk 懒加载（与桌面 Home 同款，避免移动端首屏拉近百 glTF；prefetch 在空闲/按下时预热）。
+// 重 chunk 懒加载（与桌面 Home 同款）：首页空闲时提前预热，用户靠近入口时再兜底补触发。
 const Island3D = lazy(() => import("../../components/Island3D"));
 const importExplore = () => import("../../components/ExploreMode");
 const ExploreMode = lazy(importExplore);
@@ -54,6 +48,39 @@ function prefetchExplore() {
   if (explorePrefetched) return;
   explorePrefetched = true;
   importExplore().then((m) => { try { m.prefetchExploreAssets?.(); } catch { /* ignore */ } });
+}
+
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+};
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
+async function requestExploreLandscape() {
+  if (typeof document === "undefined" || typeof screen === "undefined") return;
+  const doc = document as FullscreenDocument;
+  const root = document.documentElement as FullscreenElement;
+  try {
+    if (!document.fullscreenElement && !doc.webkitFullscreenElement) {
+      if (root.requestFullscreen) await root.requestFullscreen();
+      else if (root.webkitRequestFullscreen) await root.webkitRequestFullscreen();
+    }
+  } catch { /* 浏览器不支持或用户代理拒绝时，保留自然旋转兜底 */ }
+  try {
+    await screen.orientation?.lock?.("landscape");
+  } catch { /* iOS Safari 等不支持 lock；manifest any 仍允许用户手动横屏 */ }
+}
+
+function releaseExploreLandscape() {
+  if (typeof document === "undefined" || typeof screen === "undefined") return;
+  const doc = document as FullscreenDocument;
+  try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
+  try {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else if (doc.webkitFullscreenElement && doc.webkitExitFullscreen) void doc.webkitExitFullscreen();
+  } catch { /* ignore */ }
 }
 
 // 全屏态：居中（loading / breathing）。
@@ -89,8 +116,6 @@ function FullScreenScroll({ children }: { children: ReactNode }) {
 export default function HomeMobile() {
   useKeyboardInset();
   const [identity, setIdentity] = useState<LocalIdentity | null>(() => loadIdentity());
-  const [tab, setTab] = useState<MobileTab>("island");
-  const [composeOpen, setComposeOpen] = useState(false);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   // 非语言入口 + 足迹覆盖层 + 夜间守望
@@ -99,8 +124,6 @@ export default function HomeMobile() {
   const [mindOpen, setMindOpen] = useState(false);
   const [tmOpen, setTmOpen] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
-  const [phrasesOpen, setPhrasesOpen] = useState(false);
-  const [letterOpen, setLetterOpen] = useState(false);
   const nightWatch = useNightWatch();
   const [bedtime, setBedtime] = useState(false);
   const [exploreOpen, setExploreOpen] = useState(false);
@@ -148,16 +171,6 @@ export default function HomeMobile() {
     } catch { /* sessionStorage 不可用 */ }
   }, [identity]);
 
-  // 首页空闲时预取「上岛」重 chunk + 模型（与桌面 Home 同款；省流量/弱网跳过）。
-  useEffect(() => {
-    const conn = (navigator as unknown as { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
-    if (conn?.saveData || /2g/.test(conn?.effectiveType ?? "")) return;
-    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
-    if (ric) { ric(prefetchExplore, { timeout: 3000 }); return; }
-    const t = window.setTimeout(prefetchExplore, 1800);
-    return () => window.clearTimeout(t);
-  }, []);
-
   // 场景视觉：最终结果 > 流式 scene > 默认（与桌面 Home.tsx:278-290 一致）。
   const activeScene = flow.result?.scene ?? flow.liveScene;
   const visual = activeScene ? resolveScene(activeScene.palette) : DEFAULT_VISUAL;
@@ -171,11 +184,6 @@ export default function HomeMobile() {
     restless: { peak: 0.9,  base: 0.5,  dur: 1.9, scale: 1.1,  breathe: 1.04, ringOpacity: 0.55, ringScale: 1.5, ringDur: 1.8 },
     heavy:    { peak: 0.5,  base: 0.26, dur: 5.0, scale: 1.04, breathe: 1.02, ringOpacity: 0.34, ringScale: 1.4, ringDur: 4.6 },
   }[visual.motion];
-
-  // 主页顶部是否已有内容（岛屿留言 / 成长态 / 错误）——决定布局走向：
-  // 有 → 顶部堆内容、CTA 锚到下三分之一（拇指区）；无 → 品牌+引导作为一个居中英雄整体，消除中段真空。
-  const hasInbox = !!(revision?.show || welcomeBack?.show || whisper?.show);
-  const islandHasTop = hasInbox || !!activeIsland || !!flow.error;
 
   // 上岛探索的素材：历史记忆 → 漂流瓶字条 + 心灵印记（与桌面 Home.tsx:294-345 同源）。
   const [nowMs] = useState(() => Date.now());
@@ -220,11 +228,18 @@ export default function HomeMobile() {
   const handleClearIdentity = () => {
     clearIdentity();
     setIdentity(null);
-    setMemories([]); setArtifacts([]);
-    setWelcomeBack(null); setWhisper(null); setRevision(null);
+    setMemories([]);
+    setArtifacts([]);
+    setWelcomeBack(null);
+    setWhisper(null);
+    setRevision(null);
     setFlowIsland(null);
     resetFlow();
-    setTab("island"); setComposeOpen(false);
+    setSilentOpen(false);
+    setGlyphOpen(false);
+    setMindOpen(false);
+    setTmOpen(false);
+    setMapOpen(false);
   };
 
   const handleDeleteData = async () => {
@@ -236,7 +251,6 @@ export default function HomeMobile() {
   };
 
   const onSubmit = (text: string, ephemeral: boolean) => {
-    setComposeOpen(false);
     void flow.submit(text, ephemeral);
   };
 
@@ -248,66 +262,32 @@ export default function HomeMobile() {
     fetchArtifacts(uid).then(setArtifacts).catch(() => {});
     fetchIslandState(uid).then(setFlowIsland).catch(() => {});
   }, [identity, setFlowIsland]);
-  const openSilent = () => { setComposeOpen(false); setSilentOpen(true); };
-  const openGlyph = () => { setComposeOpen(false); setGlyphOpen(true); };
-
-  // 品牌区：空态保留副标题（更有仪式感），有内容时收起副标题让顶部紧凑。
-  const islandBrand = (
-    <div className="text-center">
-      <MobileBrand subtitle={!islandHasTop} />
-    </div>
-  );
-  // 倾诉引导 + 主次 CTA：两种布局分支共用，集中维护避免重复。
-  const islandHeroCta = (
-    <div className="flex flex-col items-center gap-3.5 text-center">
-      <p className="font-serif text-[14px] leading-relaxed text-white/70">把今天的心情，说给岛屿听。<br />说一个字、或什么都不说坐一会儿，也可以。</p>
-      {/* 主 CTA：说给岛屿 —— 唯一的高亮渐变药丸，视觉重心明确 */}
-      <motion.button
-        type="button"
-        onClick={() => setComposeOpen(true)}
-        className="island-cta"
-        style={{ background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)` }}
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0, scale: [1, ctaGlow.breathe, 1] }}
-        transition={{
-          opacity: { delay: 0.2, duration: 0.5 },
-          y: { delay: 0.2, duration: 0.5 },
-          scale: { delay: 0.8, duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" },
-        }}
-        whileTap={{ scale: 0.96 }}
-      >
-        <motion.span
-          className="island-cta__glow"
-          style={{ background: `radial-gradient(ellipse at center, ${visual.accent} 0%, ${visual.accent}55 45%, transparent 72%)` }}
-          animate={{ opacity: [ctaGlow.base, ctaGlow.peak, ctaGlow.base], scale: [1, ctaGlow.scale, 1] }}
-          transition={{ duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <span className="island-cta__shine" aria-hidden />
-        说给岛屿
-      </motion.button>
-      {/* 次 CTA：上岛走走 —— 玻璃描边幽灵按钮，与主 CTA 拉开主次，不抢视觉重心 */}
-      <motion.button
-        type="button"
-        onClick={() => setExploreOpen(true)}
-        onPointerEnter={prefetchExplore}
-        onPointerDown={prefetchExplore}
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.35, duration: 0.5 }}
-        whileTap={{ scale: 0.96 }}
-        className="mobile-cta-ghost"
-      >
-        上岛走走
-        <span className="mobile-cta-ghost__arrow" aria-hidden>›</span>
-      </motion.button>
-    </div>
-  );
+  const openSilent = () => setSilentOpen(true);
+  const openGlyph = () => setGlyphOpen(true);
+  const openExploreMode = useCallback(() => {
+    prefetchExplore();
+    setExploreOpen(true);
+    void requestExploreLandscape();
+  }, []);
+  const closeExploreMode = useCallback(() => {
+    setExploreOpen(false);
+    releaseExploreLandscape();
+  }, []);
+  // 首页就绪后空闲时预取「上岛」重 chunk + 模型，降低首次进入全岛地图时的等待。
+  useEffect(() => {
+    const conn = (navigator as unknown as { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+    if (conn?.saveData || /2g/.test(conn?.effectiveType ?? "")) return;
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+    if (ric) { ric(prefetchExplore, { timeout: 3000 }); return; }
+    const t = window.setTimeout(prefetchExplore, 1800);
+    return () => window.clearTimeout(t);
+  }, []);
 
   return (
-    <div className="relative min-h-[100dvh] overflow-x-hidden overflow-y-hidden">
-      {/* 常驻岛屿背景：默认 2D；「我」Tab 开启真 3D 旗舰皮且支持 WebGL + 沉浸态时接管，崩溃回退 2D */}
+    <div className="relative min-h-[100dvh] overflow-x-hidden overflow-y-auto overscroll-contain">
+      {/* 常驻岛屿背景：移动端与 Web 同款，WebGL 支持时默认用真 3D；不再受手动 3D 开关限制，崩溃回退 2D。 */}
       <div className="fixed inset-0" style={{ zIndex: 0 }} aria-hidden>
-        {skin3d.active && immersive ? (
+        {skin3d.supported ? (
           <ErrorBoundary fallback={<IslandScene visual={visual} features={activeIsland?.features ?? []} />} resetKey={visual}>
             <Suspense fallback={<IslandScene visual={visual} features={activeIsland?.features ?? []} />}>
               <Island3D visual={visual} features={activeIsland?.features ?? []} animate={immersive} />
@@ -386,128 +366,121 @@ export default function HomeMobile() {
           )}
 
           {flow.phase === "input" && (
-            <>
-              <div
-                className="mobile-app-shell mobile-bottom-buffer relative z-20 mx-auto flex w-full max-w-[34rem] flex-col"
-                style={{ paddingTop: "calc(1rem + env(safe-area-inset-top))" }}
-              >
-                {tab === "island" && (
-                  islandHasTop ? (
-                    // 有内容态：品牌+留言+成长态顶部堆叠，CTA 锚到下三分之一（拇指区）。
-                    <div className="flex flex-1 flex-col">
-                      <div className="flex flex-col gap-4 pt-1">
-                        {islandBrand}
+            <div className="mobile-web-shell relative z-20 mx-auto flex w-full max-w-[42rem] flex-col overflow-y-auto">
+              <header className="mobile-web-header">
+                <div className="mobile-web-brand">
+                  <MobileBrand subtitle />
+                </div>
 
-                        {/* 错误反馈：提交失败时岛屿轻声告知（与桌面 Home.tsx:641 同源） */}
-                        {flow.error && (
-                          <IslandHushCard
-                            kind={flow.errorKind}
-                            onRetry={flow.retry}
-                            onDismiss={flow.dismissError}
-                          />
-                        )}
-
-                        {/* 岛屿留言 */}
-                        <MobileInbox revision={revision} welcomeBack={welcomeBack} whisper={whisper} />
-
-                        {/* 岛屿成长摘要：材质与桌面 IslandStatePanel 同源（rounded-3xl + shadow-2xl + 成长圆点 + 趋势） */}
-                        {activeIsland && (
-                          <div className="mx-auto w-full max-w-[30rem] rounded-3xl border border-white/15 bg-white/9 p-4 shadow-2xl backdrop-blur-md">
-                            <div className="mb-2.5 flex items-center justify-between gap-2">
-                              <p className="text-[11px] tracking-[0.28em] text-white/45">心象岛屿</p>
-                              <div className="flex items-center gap-2">
-                                {activeIsland.trend && (
-                                  <span className="text-[11px] text-white/55">{(TREND_META[activeIsland.trend] ?? { label: activeIsland.trend }).label}</span>
-                                )}
-                                {/* 成长圆点：与桌面 GrowthDots 一致 */}
-                                <span className="flex items-center gap-1" title={`岛屿成长等级 ${activeIsland.growth_level}/5`}>
-                                  {[0, 1, 2, 3, 4].map((i) => (
-                                    <span
-                                      key={i}
-                                      className="h-1.5 w-1.5 rounded-full"
-                                      style={{ background: i < activeIsland.growth_level ? visual.accent : "rgba(255,255,255,0.18)" }}
-                                    />
-                                  ))}
-                                </span>
-                              </div>
-                            </div>
-                            <p className="text-[13px] leading-relaxed text-white/82">{activeIsland.summary}</p>
-                            {activeIsland.chapter && (
-                              <p className="mt-1.5 font-serif italic text-[12px] leading-relaxed text-white/50">{activeIsland.chapter}</p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 弹性留白：上 2 : 下 1，让 CTA 沉到视觉下三分之一而非夹在正中 */}
-                      <div className="flex-1" />
-                      {islandHeroCta}
-                      <div className="flex-[0.5]" />
-                    </div>
-                  ) : (
-                    // 空态/新用户：品牌 + 引导作为一个居中英雄整体，消除中段真空。
-                    <div className="flex flex-1 flex-col items-center justify-center gap-8">
-                      {islandBrand}
-                      {islandHeroCta}
-                    </div>
-                  )
-                )}
-
-                {tab === "memory" && (
-                  <MemoryTab
-                    memoryCount={memories.length}
-                    accent={visual.accent}
-                    onMindMap={() => setMindOpen(true)}
-                    onTimeMachine={() => setTmOpen(true)}
-                    onIslandMap={() => setMapOpen(true)}
-                    onPhrases={() => setPhrasesOpen(true)}
-                    onLetter={() => setLetterOpen(true)}
-                    assistant={
-                      <IslandAssistant
-                        userId={identity.user_id}
-                        zIndexClass="z-[85]"
-                        trigger={
-                          <span className="shrink-0 text-white/55 text-[18px] leading-none touch-target" aria-hidden>›</span>
-                        }
-                      />
-                    }
-                  />
-                )}
-
-                {tab === "self" && (
-                  <SelfTab
+                <div className="mobile-web-top-actions" aria-label="身份与心象入口">
+                  <UserBadge
                     identity={identity}
                     onClear={handleClearIdentity}
                     onDeleteData={handleDeleteData}
-                    extra={skin3d.supported ? (
-                      <button
-                        type="button"
-                        onClick={() => skin3d.setSkin3d(!skin3d.wanted)}
-                        aria-pressed={skin3d.wanted}
-                        className="panel-glass-1 flex min-h-[52px] w-full items-center gap-3 rounded-card px-4 py-3 text-left transition active:scale-[0.98]"
-                      >
-                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/10 text-[16px]" aria-hidden />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[14px] text-white/85">真 3D 岛屿背景</span>
-                          <span className="block text-[11px] text-white/40">{skin3d.wanted ? "已开启 · 更耗电" : "实验功能 · 更耗电"}</span>
-                        </span>
-                        <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${skin3d.wanted ? "bg-white/55" : "bg-white/15"}`}>
-                          <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-[#0a0e1f] transition-all ${skin3d.wanted ? "left-3.5" : "left-0.5"}`} />
-                        </span>
-                      </button>
-                    ) : undefined}
                   />
-                )}
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => setMindOpen(true)}
+                    className="mobile-web-map-button"
+                  >
+                    心象地图
+                  </button>
+                </div>
+              </header>
 
-              <MobileTabBar active={tab} onSelect={setTab} onCompose={() => setComposeOpen(true)} accent={visual.accent} />
-            </>
+              <main className="mobile-web-main">
+                <div className="mobile-web-stage">
+                  {flow.error && (
+                    <IslandHushCard
+                      kind={flow.errorKind}
+                      onRetry={flow.retry}
+                      onDismiss={flow.dismissError}
+                    />
+                  )}
+
+                  <MobileInbox revision={revision} welcomeBack={welcomeBack} whisper={whisper} />
+
+                  {nightWatch && !bedtime && (
+                    <div className="mobile-web-nightwatch">
+                      <NightWatchBanner onBedtime={() => setBedtime(true)} />
+                    </div>
+                  )}
+
+                  <section className="mobile-web-input" aria-label="说给岛屿">
+                    <MoodInput onSubmit={onSubmit} onSilent={openSilent} onGlyph={openGlyph} loading={false} variant="mobile-web" />
+                    {memories.length > 0 && (
+                      <motion.p
+                        className="mobile-web-memory-line"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.35 }}
+                      >
+                        岛屿记得你上次的 {EMOTION_META[memories[0].emotion]?.label ?? "心事"}，欢迎回来
+                      </motion.p>
+                    )}
+                  </section>
+
+                  <section className="mobile-web-primary-action" aria-label="上岛探索">
+                    <motion.button
+                      type="button"
+                      onClick={() => { void openExploreMode(); }}
+                      onPointerEnter={prefetchExplore}
+                      onPointerDown={prefetchExplore}
+                      onFocus={prefetchExplore}
+                      className="island-cta"
+                      style={{
+                        background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)`,
+                        boxShadow: `0 16px 42px -10px ${visual.accent}, 0 3px 12px -3px ${visual.accent}cc, inset 0 1px 0 rgba(255,255,255,0.75)`,
+                      }}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0, scale: [1, ctaGlow.breathe, 1] }}
+                      transition={{
+                        opacity: { delay: 0.2, duration: 0.5 },
+                        y: { delay: 0.2, duration: 0.5 },
+                        scale: { delay: 0.8, duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" },
+                      }}
+                      whileTap={{ scale: 0.96 }}
+                    >
+                      <motion.span
+                        className="island-cta__glow"
+                        style={{ background: `radial-gradient(ellipse at center, ${visual.accent} 0%, ${visual.accent}55 45%, transparent 72%)` }}
+                        animate={{ opacity: [ctaGlow.base, ctaGlow.peak, ctaGlow.base], scale: [1, ctaGlow.scale, 1] }}
+                        transition={{ duration: ctaGlow.dur, repeat: Infinity, ease: "easeInOut" }}
+                      />
+                      <motion.span
+                        className="island-cta__ring"
+                        animate={{ scale: [1, ctaGlow.ringScale], opacity: [ctaGlow.ringOpacity, 0] }}
+                        transition={{ duration: ctaGlow.ringDur, repeat: Infinity, ease: "easeOut" }}
+                      />
+                      <span className="island-cta__shine" aria-hidden />
+                      上岛走走
+                      <span className="island-cta__arrow" aria-hidden>›</span>
+                    </motion.button>
+                  </section>
+
+                  <section className="mobile-web-secondary-actions" aria-label="更多入口">
+                    {memories.length > 0 && (
+                      <button type="button" onClick={() => setTmOpen(true)} className="btn-link">
+                        回望这些天 ›
+                      </button>
+                    )}
+                    {memories.length > 0 && (
+                      <IslandAssistant userId={identity.user_id} zIndexClass="z-[85]" />
+                    )}
+                    {(memories.length > 0 || artifacts.length > 0) && (
+                      <button type="button" onClick={() => setMapOpen(true)} className="btn-link">
+                        登高望岛 ›
+                      </button>
+                    )}
+                  </section>
+                </div>
+              </main>
+
+              <footer className="mobile-web-footer">
+                <p>《心屿》提供情感陪伴，并非心理咨询或医疗服务 · 如处于危机请联系专业热线</p>
+              </footer>
+            </div>
           )}
-
-          {/* 倾诉 Sheet：从底升起，键盘友好 */}
-          <BottomSheet open={composeOpen} onClose={() => setComposeOpen(false)} label="说给岛屿" accent={visual.accent}>
-            <MoodInput onSubmit={onSubmit} onSilent={openSilent} onGlyph={openGlyph} loading={false} />
-          </BottomSheet>
 
           {/* 首次登岛过场 */}
           {arrival && (
@@ -543,12 +516,6 @@ export default function HomeMobile() {
           )}
           {tmOpen && <TimeMachine userId={identity.user_id} demo={memories.length === 0} onClose={() => setTmOpen(false)} />}
           {mapOpen && <IslandMap island={activeIsland} artifacts={artifacts} onClose={() => setMapOpen(false)} />}
-          <BottomSheet open={phrasesOpen} onClose={() => setPhrasesOpen(false)} label="私房安慰话" accent={visual.accent}>
-            <IslandPhrases userId={identity.user_id} />
-          </BottomSheet>
-          <BottomSheet open={letterOpen} onClose={() => setLetterOpen(false)} label="岛屿年报" accent={visual.accent}>
-            <IslandLetter userId={identity.user_id} memoryCount={memories.length} />
-          </BottomSheet>
 
           {/* —— 非语言入口（全屏）—— */}
           {silentOpen && (
@@ -562,13 +529,6 @@ export default function HomeMobile() {
           {nightWatch && !bedtime && (
             <div className="pointer-events-none fixed inset-0 z-10 bg-slate-950/45" aria-hidden />
           )}
-          {nightWatch && !bedtime && flow.phase === "input" && (
-            <div className="fixed inset-x-0 z-40 px-4" style={{ top: "calc(0.75rem + env(safe-area-inset-top))" }}>
-              <div className="mx-auto max-w-[30rem]">
-                <NightWatchBanner onBedtime={() => setBedtime(true)} />
-              </div>
-            </div>
-          )}
           {bedtime && <GoodnightScreen onWake={() => setBedtime(false)} />}
 
           {/* —— 上岛自由探索（全屏 3D，复用 ExploreMode）—— */}
@@ -576,7 +536,7 @@ export default function HomeMobile() {
             <Suspense fallback={<div className="fixed inset-0 z-[70] grid place-items-center bg-ink-950 text-white/60">正在登岛……</div>}>
               <ExploreMode
                 visual={visual}
-                onExit={() => setExploreOpen(false)}
+                onExit={closeExploreMode}
                 emotion={flow.result?.emotion}
                 bottleNotes={bottleNotes}
                 imprints={imprints}

@@ -1,4 +1,5 @@
 const STORAGE_KEY = "xinyu.localIdentity";
+export const DEFAULT_NICKNAME = "岛屿访客";
 
 export interface LocalIdentity {
   user_id: string;
@@ -34,7 +35,7 @@ export function loadIdentity(): LocalIdentity | null {
 export function createIdentity(nickname: string): LocalIdentity {
   const identity = {
     user_id: createUserId(),
-    nickname: cleanNickname(nickname) || "岛屿访客",
+    nickname: cleanNickname(nickname) || DEFAULT_NICKNAME,
   };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
   return identity;
@@ -43,4 +44,3 @@ export function createIdentity(nickname: string): LocalIdentity {
 export function clearIdentity() {
   localStorage.removeItem(STORAGE_KEY);
 }
-

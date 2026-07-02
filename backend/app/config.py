@@ -37,7 +37,12 @@ CHAT_API_KEY = DEEPSEEK_API_KEY or OPENAI_API_KEY
 CHAT_BASE_URL = DEEPSEEK_BASE_URL if DEEPSEEK_API_KEY else OPENAI_BASE_URL
 CHAT_MODEL = DEEPSEEK_MODEL if DEEPSEEK_API_KEY else OPENAI_MODEL
 
-CORS_ORIGINS = _csv_env("CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
+_DEFAULT_DEV_CORS_ORIGINS = ",".join(
+    f"http://{host}:{port}"
+    for port in range(5173, 5186)
+    for host in ("127.0.0.1", "localhost")
+)
+CORS_ORIGINS = _csv_env("CORS_ORIGINS", _DEFAULT_DEV_CORS_ORIGINS)
 
 # —— 观测 / 日志 ——
 # LOG_FORMAT=json 输出结构化 JSON 行日志（生产接入集中式日志友好）；默认 console 为人类可读。
@@ -49,17 +54,27 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 # 未配置或调用失败时，前端自动降级为浏览器原生合成（断网/无密钥也能读）。
 TENCENT_TTS_SECRET_ID = os.getenv("TENCENT_TTS_SECRET_ID", "").strip()
 TENCENT_TTS_SECRET_KEY = os.getenv("TENCENT_TTS_SECRET_KEY", "").strip()
+TENCENT_TTS_APP_ID = os.getenv("TENCENT_TTS_APP_ID", "").strip()
 TENCENT_TTS_REGION = os.getenv("TENCENT_TTS_REGION", "ap-guangzhou").strip()
 TENCENT_TTS_VOICE_TYPE = int(os.getenv("TENCENT_TTS_VOICE_TYPE", "101016"))  # 默认温柔女声，可按需替换
 TENCENT_TTS_TIMEOUT = float(os.getenv("TENCENT_TTS_TIMEOUT", "8"))
 
-# 阿里云 CosyVoice 语音合成（DashScope 非实时 HTTP）。与腾讯云并存，
+# 阿里云 CosyVoice 语音合成（DashScope HTTP + WebSocket 流式）。与腾讯云并存，
 # 用 TTS_PROVIDER 选择走哪个；留空时自动挑配了密钥的那一个（都配了优先 aliyun）。
 # 密钥请写进 backend/.env（已被 .gitignore 忽略），不要进代码 / git。
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
+DASHSCOPE_WORKSPACE_ID = os.getenv("DASHSCOPE_WORKSPACE_ID", "").strip()
+DASHSCOPE_TTS_WS_URL = os.getenv("DASHSCOPE_TTS_WS_URL", "").strip()
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "").strip().lower()  # "" | "tencent" | "aliyun"
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+# —— 前端静态资源托管（可选）——
+# 当前后端可作为纯 API 部署；若同一服务需要同时托管前端生产包，则构建 frontend 后保留 dist，
+# FastAPI 会从该目录暴露 /models、/assets、/audio、/scenes 等静态资源与 SPA 入口。
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(_BACKEND_DIR)
+FRONTEND_DIST_DIR = os.getenv("FRONTEND_DIST_DIR", os.path.join(_REPO_ROOT, "frontend", "dist")).strip()
 
 # —— PostgreSQL 持久化 ——
 # memories / artifacts / phrases 三张关系表 + pgvector 语义索引的唯一 source of truth。

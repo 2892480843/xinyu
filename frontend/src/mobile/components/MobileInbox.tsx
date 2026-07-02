@@ -18,7 +18,7 @@ export default function MobileInbox({ revision, welcomeBack, whisper }: Props) {
     : null;
   if (!msg || dismissed) return null;
   return (
-    <div className="panel-glass-1 mx-auto w-full max-w-[30rem] rounded-card px-4 py-3">
+    <div className="mobile-inbox-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-caption tracking-[0.2em] text-white/40">{msg.kind}</p>

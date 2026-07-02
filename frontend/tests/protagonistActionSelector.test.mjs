@@ -47,3 +47,12 @@ test("selectCharacterAction keeps expressive and physics-critical priorities sta
   assert.equal(selectCharacterAction({ ...busy, airborne: false, cheerActive: false, fluteActive: false, waveActive: false }), "Sit");
   assert.equal(selectCharacterAction({ ...busy, airborne: false, cheerActive: false, fluteActive: false, waveActive: false, sitAmount: 0 }), "RunLoop");
 });
+
+test("selectCharacterAction keeps jump pose during landing recovery", async () => {
+  const { selectCharacterAction } = await importProtagonistAction();
+
+  const base = { moving: false, running: false, airborne: false, landingActive: false, cheerActive: false, waveActive: false, fluteActive: false, sitAmount: 0 };
+  assert.equal(selectCharacterAction({ ...base, landingActive: true }), "Jump");
+  assert.equal(selectCharacterAction({ ...base, moving: true, running: true, landingActive: true }), "Jump");
+  assert.equal(selectCharacterAction({ ...base, landingActive: true, waveActive: true }), "Jump");
+});

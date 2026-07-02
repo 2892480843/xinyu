@@ -13,8 +13,10 @@
 """
 
 import base64
+import json
 import logging
-from typing import Optional
+import uuid
+from typing import Any, AsyncIterator, Callable, Optional
 
 import httpx
 
@@ -23,7 +25,9 @@ from app import config
 logger = logging.getLogger("xinyu.aliyun_tts")
 
 _HOST = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+_WS_HOST = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
 _MODEL = "cosyvoice-v2"  # 音色丰富、稳定；社交陪伴/有声书/语音助手/童声均有
+WsConnect = Callable[[str, dict[str, str]], Any]
 
 # 精选音色：从 cosyvoice-v2 系统音色里挑贴合「小精灵陪伴」调性的一批。
 # 每款含 id(voice 参数取值) / label / desc / gender；default=True 的在用户未选时使用。
@@ -80,11 +84,15 @@ def default_aliyun_voice() -> str:
 class AliyunTTSService:
     """阿里云 CosyVoice 封装。configured() 为假时整体降级（前端走浏览器原生）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, ws_connect: Optional[WsConnect] = None) -> None:
         self._client = httpx.Client(timeout=config.TENCENT_TTS_TIMEOUT)
+        self._ws_connect = ws_connect or _default_ws_connect
 
     def configured(self) -> bool:
         return bool(config.DASHSCOPE_API_KEY)
+
+    def streaming_configured(self) -> bool:
+        return self.configured()
 
     def synthesize(self, text: str, emotion: str = "calm", voice: Optional[str] = None) -> Optional[bytes]:
         """合成音频字节（mp3）。未配置或任何失败均返回 None，交由前端降级。
@@ -99,6 +107,17 @@ class AliyunTTSService:
         except Exception as e:  # 任何异常都降级，绝不影响主体验
             logger.warning("阿里云 CosyVoice 调用失败，降级浏览器原生: %s", e)
             return None
+
+    async def stream(self, text: str, emotion: str = "calm", voice: Optional[str] = None) -> AsyncIterator[bytes]:
+        """逐帧合成 mp3 音频。调用失败时结束迭代，由前端回退整段 TTS / 浏览器朗读。"""
+        if not self.streaming_configured() or not (text or "").strip():
+            return
+        try:
+            async for chunk in self._stream_call(text.strip()[:500], emotion, voice):
+                yield chunk
+        except Exception as e:  # 任何异常都降级，绝不影响主体验
+            logger.warning("阿里云 CosyVoice 流式调用失败，降级整段 TTS: %s", e)
+            return
 
     def _call(self, text: str, emotion: str, voice: Optional[str]) -> Optional[bytes]:
         api_key = config.DASHSCOPE_API_KEY
@@ -144,3 +163,80 @@ class AliyunTTSService:
         if isinstance(audio, str) and audio.strip():
             return base64.b64decode(audio.strip())
         return None
+
+    async def _stream_call(self, text: str, emotion: str, voice: Optional[str]) -> AsyncIterator[bytes]:
+        task_id = uuid.uuid4().hex
+        voice_id = voice if voice else default_aliyun_voice()
+        rate, pitch = _EMOTION_PROSODY.get(emotion, _DEFAULT_PROSODY)
+        headers = {"Authorization": f"Bearer {config.DASHSCOPE_API_KEY}"}
+        async with self._ws_connect(_stream_url(), headers) as ws:
+            await ws.send(json.dumps({
+                "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
+                "payload": {
+                    "task_group": "audio",
+                    "task": "tts",
+                    "function": "SpeechSynthesizer",
+                    "model": _MODEL,
+                    "parameters": {
+                        "text_type": "PlainText",
+                        "voice": voice_id,
+                        "format": "mp3",
+                        "sample_rate": 16000,
+                        "rate": rate,
+                        "pitch": pitch,
+                    },
+                    "input": {},
+                },
+            }, ensure_ascii=False))
+
+            text_sent = False
+            async for message in ws:
+                if isinstance(message, (bytes, bytearray)):
+                    chunk = bytes(message)
+                    if chunk:
+                        yield chunk
+                    continue
+
+                event = _parse_event(message)
+                header = event.get("header") or {}
+                if event.get("code") or header.get("event") == "task-failed":
+                    raise RuntimeError(str(event.get("message") or header.get("error_message") or event))
+                if header.get("event") == "task-started" and not text_sent:
+                    await ws.send(json.dumps({
+                        "header": {"action": "continue-task", "task_id": task_id, "streaming": "duplex"},
+                        "payload": {"input": {"text": text}},
+                    }, ensure_ascii=False))
+                    await ws.send(json.dumps({
+                        "header": {"action": "finish-task", "task_id": task_id, "streaming": "duplex"},
+                        "payload": {"input": {}},
+                    }, ensure_ascii=False))
+                    text_sent = True
+                    continue
+                if header.get("event") == "task-finished":
+                    break
+
+
+def _stream_url() -> str:
+    if config.DASHSCOPE_TTS_WS_URL:
+        return config.DASHSCOPE_TTS_WS_URL
+    if config.DASHSCOPE_WORKSPACE_ID:
+        return f"wss://{config.DASHSCOPE_WORKSPACE_ID}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
+    return _WS_HOST
+
+
+def _parse_event(message: Any) -> dict:
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="ignore")
+    if not isinstance(message, str) or not message.strip():
+        return {}
+    try:
+        data = json.loads(message)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _default_ws_connect(url: str, headers: dict[str, str]) -> Any:
+    import websockets  # pylint: disable=import-outside-toplevel
+
+    return websockets.connect(url, additional_headers=headers)

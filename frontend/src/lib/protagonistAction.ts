@@ -1,17 +1,30 @@
-export type CharacterActionClip = "Idle" | "WalkLoop" | "RunLoop" | "Jump" | "Wave" | "Flute" | "Sit" | "Cheer";
+export type FishingActionClip = "FishingAim" | "FishingCast" | "FishingHook" | "FishingFight" | "FishingReel" | "FishingResult";
+export type CharacterActionClip =
+  | "Idle"
+  | "WalkLoop"
+  | "RunLoop"
+  | "Jump"
+  | "Wave"
+  | "Flute"
+  | "Sit"
+  | "Cheer"
+  | FishingActionClip;
 
 interface CharacterActionState {
   moving: boolean;
   running?: boolean;
   airborne: boolean;
+  landingActive?: boolean;
   cheerActive: boolean;
   waveActive: boolean;
   fluteActive: boolean;
   sitAmount: number;
+  fishingAction?: FishingActionClip | null;
 }
 
 export function selectCharacterAction(state: CharacterActionState): CharacterActionClip {
-  if (state.airborne) return "Jump";
+  if (state.airborne || state.landingActive) return "Jump";
+  if (state.fishingAction) return state.fishingAction;
   if (state.cheerActive) return "Cheer";
   if (state.fluteActive) return "Flute";
   if (state.waveActive) return "Wave";

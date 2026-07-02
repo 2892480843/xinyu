@@ -192,6 +192,10 @@ function resolveWsUrl(path: string): string {
   return url.toString();
 }
 
+export function resolveAsrWsUrl(): string {
+  return resolveWsUrl("/ws/asr");
+}
+
 export async function reflect(
   user_id: string, text: string, ephemeral = false, request_id?: string,
 ): Promise<ReflectResponse> {
@@ -397,6 +401,237 @@ export async function synthesizeSpeech(text: string, emotion: string, voice?: st
   } catch {
     return null;
   }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+/** 语音输入兜底：浏览器 SpeechRecognition 不可达时，发送短 PCM 片段给后端 ASR。 */
+export async function transcribeSpeech(pcm: ArrayBuffer, sampleRate = 16000): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE}/api/asr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audio_base64: arrayBufferToBase64(pcm),
+        sample_rate: sampleRate,
+        format: "pcm",
+      }),
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.ok && d.transcript ? String(d.transcript) : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface StreamingSpeechPlayback {
+  audio: HTMLAudioElement;
+  done: Promise<void>;
+  stop: () => void;
+}
+
+const TTS_STREAM_FIRST_CHUNK_TIMEOUT_MS = 10000;
+
+/** 真流式情感 TTS：后端 WebSocket 推送 mp3 二进制分片，前端用 MediaSource 边收边播。
+ * 返回 null 时调用方继续走旧的整段 /api/tts 或浏览器 speechSynthesis 降级。 */
+export async function playStreamingSpeech(text: string, emotion: string, voice?: string): Promise<StreamingSpeechPlayback | null> {
+  if (typeof window === "undefined" || !("MediaSource" in window)) return null;
+  if (!MediaSource.isTypeSupported("audio/mpeg")) return null;
+  if (!text.trim()) return null;
+
+  return new Promise((resolve) => {
+    const mediaSource = new MediaSource();
+    const audio = new Audio();
+    const objectUrl = URL.createObjectURL(mediaSource);
+    let objectUrlActive = true;
+    const queue: ArrayBuffer[] = [];
+    let socket: WebSocket | null = null;
+    let sourceBuffer: SourceBuffer | null = null;
+    let resolved = false;
+    let stopped = false;
+    let streamEnded = false;
+    let playbackStarted = false;
+    let doneResolve: () => void = () => undefined;
+    const done = new Promise<void>((r) => { doneResolve = r; });
+
+    audio.src = objectUrl;
+
+    const releaseObjectUrl = () => {
+      if (!objectUrlActive) return;
+      objectUrlActive = false;
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      try {
+        audio.removeAttribute("src");
+        audio.load();
+      } catch {
+        /* Some browsers may reject load() during teardown; the URL still needs releasing. */
+      }
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
+      releaseObjectUrl();
+    };
+
+    const settleNull = () => {
+      if (resolved) return;
+      resolved = true;
+      stopped = true;
+      cleanup();
+      doneResolve();
+      resolve(null);
+    };
+
+    const playback: StreamingSpeechPlayback = {
+      audio,
+      done,
+      stop: () => {
+        stopped = true;
+        cleanup();
+        doneResolve();
+      },
+    };
+
+    const settlePlayback = () => {
+      if (resolved) return;
+      resolved = true;
+      window.clearTimeout(timer);
+      resolve(playback);
+    };
+
+    const finishMediaIfReady = () => {
+      if (!streamEnded || !sourceBuffer || sourceBuffer.updating || queue.length > 0) return;
+      if (mediaSource.readyState === "open") {
+        try {
+          mediaSource.endOfStream();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const startPlayback = () => {
+      if (playbackStarted || stopped) return;
+      playbackStarted = true;
+      audio.play().then(settlePlayback).catch(settleNull);
+    };
+
+    const appendNext = () => {
+      if (stopped || !sourceBuffer || sourceBuffer.updating) return;
+      const next = queue.shift();
+      if (!next) {
+        finishMediaIfReady();
+        return;
+      }
+      try {
+        sourceBuffer.appendBuffer(next);
+        startPlayback();
+      } catch {
+        settleNull();
+      }
+    };
+
+    const timer = window.setTimeout(settleNull, TTS_STREAM_FIRST_CHUNK_TIMEOUT_MS);
+
+    audio.onended = () => {
+      cleanup();
+      doneResolve();
+    };
+    audio.onerror = () => {
+      if (!resolved) settleNull();
+      else doneResolve();
+    };
+
+    mediaSource.addEventListener("sourceopen", () => {
+      try {
+        sourceBuffer = mediaSource.addSourceBuffer("audio/mpeg");
+        try {
+          sourceBuffer.mode = "sequence";
+        } catch {
+          /* Safari may keep the default mode for audio/mpeg. */
+        }
+        sourceBuffer.addEventListener("updateend", () => {
+          appendNext();
+          finishMediaIfReady();
+        });
+        appendNext();
+      } catch {
+        settleNull();
+      }
+    }, { once: true });
+
+    try {
+      socket = new WebSocket(resolveWsUrl("/ws/tts"));
+      socket.binaryType = "arraybuffer";
+    } catch {
+      settleNull();
+      return;
+    }
+
+    socket.onopen = () => {
+      socket?.send(JSON.stringify({ text, emotion, voice }));
+    };
+
+    socket.onmessage = (message) => {
+      if (stopped) return;
+      if (typeof message.data === "string") {
+        try {
+          const event = JSON.parse(message.data) as { event?: string; message?: string };
+          if (event.event === "error") {
+            if (!resolved) settleNull();
+            else {
+              streamEnded = true;
+              finishMediaIfReady();
+            }
+          }
+          if (event.event === "done") {
+            streamEnded = true;
+            finishMediaIfReady();
+          }
+        } catch {
+          settleNull();
+        }
+        return;
+      }
+      if (message.data instanceof ArrayBuffer) {
+        queue.push(message.data);
+        appendNext();
+        return;
+      }
+      settleNull();
+    };
+
+    socket.onerror = () => {
+      if (!resolved) settleNull();
+      else {
+        streamEnded = true;
+        finishMediaIfReady();
+      }
+    };
+
+    socket.onclose = () => {
+      if (!resolved) {
+        settleNull();
+        return;
+      }
+      streamEnded = true;
+      finishMediaIfReady();
+    };
+  });
 }
 
 export interface TtsVoice {

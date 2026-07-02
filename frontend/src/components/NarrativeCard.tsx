@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { motion, useMotionTemplate, useMotionValue } from "framer-motion";
-import { synthesizeSpeech, type ReflectResponse, type IslandActResponse } from "../lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useMotionTemplate, useMotionValue } from "framer-motion";
+import { playStreamingSpeech, synthesizeSpeech, type ReflectResponse, type IslandActResponse, type StreamingSpeechPlayback } from "../lib/api";
 import { useImmersion } from "../hooks/useImmersion";
 import { EMOTION_META } from "../lib/sceneMap";
 import IslandStatePanel from "./IslandStatePanel";
@@ -62,6 +62,217 @@ function drawWrappedText(ctx: CanvasRenderingContext2D, text: string, x: number,
   }
 }
 
+function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+
+function createTicketNo(emotionLabel: string) {
+  const date = new Date();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hash = Array.from(`${emotionLabel}-${date.toDateString()}`).reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return `${mm}${dd}-${String(hash % 10000).padStart(4, "0")}`;
+}
+
+function createImprintTicketBlob({ imprint, emotionLabel }: { imprint: string; emotionLabel: string }): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const scale = window.devicePixelRatio || 1;
+    const width = 960;
+    const height = 540;
+    const canvas = document.createElement("canvas");
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      reject(new Error("Canvas unavailable"));
+      return;
+    }
+
+    ctx.scale(scale, scale);
+    ctx.clearRect(0, 0, width, height);
+
+    const bg = ctx.createLinearGradient(0, 0, width, height);
+    bg.addColorStop(0, "#0d1727");
+    bg.addColorStop(0.42, "#243340");
+    bg.addColorStop(0.72, "#594332");
+    bg.addColorStop(1, "#9a6f3f");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, height);
+
+    const halo = ctx.createRadialGradient(246, 96, 16, 246, 96, 460);
+    halo.addColorStop(0, "rgba(173, 220, 218, 0.36)");
+    halo.addColorStop(0.36, "rgba(173, 220, 218, 0.12)");
+    halo.addColorStop(1, "rgba(173, 220, 218, 0)");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, width, height);
+
+    const ember = ctx.createRadialGradient(802, 424, 24, 802, 424, 360);
+    ember.addColorStop(0, "rgba(246, 194, 116, 0.32)");
+    ember.addColorStop(0.52, "rgba(246, 194, 116, 0.10)");
+    ember.addColorStop(1, "rgba(246, 194, 116, 0)");
+    ctx.fillStyle = ember;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = "#ffffff";
+    for (let i = 0; i < 90; i += 1) {
+      const x = (i * 67 + 31) % width;
+      const y = (i * 43 + 19) % height;
+      const size = i % 5 === 0 ? 1.6 : 0.8;
+      ctx.fillRect(x, y, size, size);
+    }
+    ctx.restore();
+
+    const ticketX = 46;
+    const ticketY = 48;
+    const ticketW = 868;
+    const ticketH = 444;
+    const splitX = 704;
+    const ticketNo = createTicketNo(emotionLabel);
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.42)";
+    ctx.shadowBlur = 34;
+    ctx.shadowOffsetY = 24;
+    roundedRectPath(ctx, ticketX, ticketY, ticketW, ticketH, 30);
+    const ticketGradient = ctx.createLinearGradient(ticketX, ticketY, ticketX + ticketW, ticketY + ticketH);
+    ticketGradient.addColorStop(0, "rgba(22, 34, 48, 0.95)");
+    ticketGradient.addColorStop(0.58, "rgba(31, 42, 50, 0.90)");
+    ticketGradient.addColorStop(1, "rgba(86, 62, 42, 0.92)");
+    ctx.fillStyle = ticketGradient;
+    ctx.fill();
+    ctx.restore();
+
+    roundedRectPath(ctx, ticketX + 10, ticketY + 10, ticketW - 20, ticketH - 20, 24);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    roundedRectPath(ctx, ticketX + 28, ticketY + 28, ticketW - 56, ticketH - 56, 18);
+    ctx.strokeStyle = "rgba(221, 236, 227, 0.16)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.save();
+    ctx.setLineDash([10, 12]);
+    ctx.strokeStyle = "rgba(239, 229, 205, 0.34)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(splitX, ticketY + 46);
+    ctx.lineTo(splitX, ticketY + ticketH - 46);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = "rgba(8, 13, 22, 0.62)";
+    [ticketY + 72, ticketY + ticketH - 72].forEach((y) => {
+      ctx.beginPath();
+      ctx.arc(splitX, y, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+    ctx.restore();
+
+    ctx.fillStyle = "rgba(245, 242, 230, 0.60)";
+    ctx.font = '17px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.letterSpacing = "4px";
+    ctx.fillText("ISLAND KEEPSAKE", 92, 116);
+    ctx.letterSpacing = "0px";
+
+    ctx.fillStyle = "rgba(255, 250, 235, 0.95)";
+    ctx.font = '34px "Songti SC", "Noto Serif SC", "PingFang SC", serif';
+    ctx.fillText("心灵印记", 92, 168);
+
+    ctx.strokeStyle = "rgba(240, 232, 211, 0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(92, 190);
+    ctx.lineTo(626, 190);
+    ctx.stroke();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(92, 214, 552, 160);
+    ctx.clip();
+    ctx.fillStyle = "rgba(255, 253, 244, 0.92)";
+    const bodyFontSize = imprint.length > 32 ? 34 : 38;
+    const bodyLineHeight = imprint.length > 32 ? 54 : 60;
+    ctx.font = `${bodyFontSize}px "Songti SC", "Noto Serif SC", "PingFang SC", serif`;
+    drawWrappedText(ctx, imprint, 92, 260, 540, bodyLineHeight);
+    ctx.restore();
+
+    ctx.fillStyle = "rgba(232, 223, 202, 0.74)";
+    ctx.font = '20px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(`心屿 · ${emotionLabel}`, 92, 422);
+    ctx.fillStyle = "rgba(232, 223, 202, 0.42)";
+    ctx.font = '15px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText("把这一刻收进岛屿的口袋", 92, 452);
+
+    ctx.save();
+    ctx.translate(538, 128);
+    ctx.rotate(-0.16);
+    ctx.strokeStyle = "rgba(219, 232, 224, 0.24)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 58, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, 45, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(219, 232, 224, 0.28)";
+    ctx.font = '19px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText("XINYU", 0, -6);
+    ctx.font = '22px "Songti SC", "Noto Serif SC", "PingFang SC", serif';
+    ctx.fillText("心屿", 0, 24);
+    ctx.restore();
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(244, 239, 224, 0.64)";
+    ctx.font = '14px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText("ADMIT ONE MEMORY", 808, 110);
+    ctx.fillStyle = "rgba(255, 253, 244, 0.94)";
+    ctx.font = '22px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(`NO. ${ticketNo}`, 808, 164);
+    ctx.fillStyle = "rgba(232, 223, 202, 0.54)";
+    ctx.font = '15px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText("COLLECTIBLE", 808, 218);
+    ctx.fillText(emotionLabel, 808, 248);
+    ctx.strokeStyle = "rgba(244, 239, 224, 0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(750, 300);
+    ctx.lineTo(866, 300);
+    ctx.stroke();
+    ctx.font = '16px "Songti SC", "Noto Serif SC", "PingFang SC", serif';
+    ctx.fillStyle = "rgba(255, 253, 244, 0.84)";
+    ctx.fillText("岛上留存", 808, 356);
+    ctx.fillText("因你发光", 808, 386);
+    ctx.restore();
+
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("PNG export failed"));
+        return;
+      }
+      resolve(blob);
+    }, "image/png");
+  });
+}
+
 // 情绪 → 浏览器原生合成的语速/音高微调，让降级朗读也带情绪温度（疲惫更慢更轻、愉悦更明快）
 const VOICE_TUNING: Record<string, { rate: number; pitch: number }> = {
   tired: { rate: 0.82, pitch: 0.92 },
@@ -111,12 +322,27 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
   }, [immersive, glowX, glowY]);
   const [speaking, setSpeaking] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [savingPreview, setSavingPreview] = useState(false);
+  const speakSeqRef = useRef(0);
+  const streamRef = useRef<StreamingSpeechPlayback | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speechSupported = typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+
+  const closeImprintPreview = useCallback(() => {
+    setPreviewOpen(false);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    setPreviewBlob(null);
+  }, [previewUrl]);
 
   useEffect(() => {
     return () => {
       if (speechSupported) window.speechSynthesis.cancel();
+      streamRef.current?.stop();
+      streamRef.current = null;
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -124,8 +350,26 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
     };
   }, [speechSupported]);
 
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeImprintPreview();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewOpen, closeImprintPreview]);
+
   const stopSpeaking = () => {
+    speakSeqRef.current += 1;
     if (speechSupported) window.speechSynthesis.cancel();
+    streamRef.current?.stop();
+    streamRef.current = null;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -160,8 +404,27 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
       return;
     }
     setSpeaking(true);
-    // 优先腾讯云情感 TTS；未配置/失败则无缝降级浏览器原生（情绪调音）
+    const my = ++speakSeqRef.current;
+    // 优先真流式云端 TTS；不可用时回退整段云端音频，再回退浏览器原生（情绪调音）。
+    const stream = await playStreamingSpeech(result.narrative, result.emotion);
+    if (my !== speakSeqRef.current) {
+      stream?.stop();
+      return;
+    }
+    if (stream) {
+      streamRef.current = stream;
+      audioRef.current = stream.audio;
+      stream.done.finally(() => {
+        if (streamRef.current === stream) {
+          streamRef.current = null;
+          audioRef.current = null;
+          setSpeaking(false);
+        }
+      });
+      return;
+    }
     const dataUrl = await synthesizeSpeech(result.narrative, result.emotion);
+    if (my !== speakSeqRef.current) return;
     if (dataUrl) {
       const audio = new Audio(dataUrl);
       audioRef.current = audio;
@@ -183,63 +446,32 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
     browserSpeak();
   };
 
-  const saveImprintAsPng = () => {
-    if (!result.imprint) return;
+  const saveImprintAsPng = async () => {
+    if (!result.imprint || savingPreview) return;
+    setSavingPreview(true);
+    setSaveMessage(null);
 
     try {
-      const scale = window.devicePixelRatio || 1;
-      const width = 960;
-      const height = 540;
-      const canvas = document.createElement("canvas");
-      canvas.width = width * scale;
-      canvas.height = height * scale;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Canvas unavailable");
-      }
-
-      ctx.scale(scale, scale);
-
-      const gradient = ctx.createLinearGradient(0, 0, width, height);
-      gradient.addColorStop(0, "#f7fbff");
-      gradient.addColorStop(0.48, "#eef6f1");
-      gradient.addColorStop(1, "#f9f2e8");
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
-
-      ctx.strokeStyle = "rgba(53, 70, 87, 0.16)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(36, 36, width - 72, height - 72);
-
-      ctx.fillStyle = "rgba(38, 48, 61, 0.52)";
-      ctx.font = '26px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText("心灵印记", 96, 128);
-
-      ctx.fillStyle = "#26303d";
-      ctx.font = '42px "PingFang SC", "Microsoft YaHei", sans-serif';
-      drawWrappedText(ctx, result.imprint, 96, 238, width - 192, 66);
-
-      ctx.fillStyle = "rgba(38, 48, 61, 0.44)";
-      ctx.font = '22px "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.fillText(`心屿 · ${meta.label}`, 96, 446);
-
-      canvas.toBlob((blob) => {
-        if (!blob) {
-          setSaveMessage("保存失败，请稍后再试");
-          return;
-        }
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "xinyu-imprint.png";
-        link.click();
-        URL.revokeObjectURL(url);
-        setSaveMessage("已生成 PNG");
-      }, "image/png");
+      const blob = await createImprintTicketBlob({ imprint: result.imprint, emotionLabel: meta.label });
+      const url = URL.createObjectURL(blob);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewBlob(blob);
+      setPreviewUrl(url);
+      setPreviewOpen(true);
     } catch {
-      setSaveMessage("保存失败，请稍后再试");
+      setSaveMessage("预览生成失败，请稍后再试");
+    } finally {
+      setSavingPreview(false);
     }
+  };
+
+  const downloadPreviewPng = () => {
+    if (!previewUrl || !previewBlob) return;
+    const link = document.createElement("a");
+    link.href = previewUrl;
+    link.download = "xinyu-imprint.png";
+    link.click();
+    setSaveMessage("已生成 PNG");
   };
 
   return (
@@ -351,28 +583,141 @@ export default function NarrativeCard({ result, userId, seedMood, onReset, onAct
 
       {result.imprint && done && (
         <motion.div
-          className="panel-glass-2 mt-4 rounded-card-lg p-5"
+          className="panel-glass-2 group mt-4 overflow-hidden rounded-[34px] p-0"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8 }}
         >
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <p className="text-caption text-mist-400 tracking-[0.28em]">心灵印记</p>
-            <motion.button
-              type="button"
-              onClick={saveImprintAsPng}
-              whileHover={{ y: -1 }}
-              whileTap={{ scale: 0.96 }}
-              transition={SPRING_TAP}
-              className="btn-ghost text-[12px] px-3.5 py-1.5"
-            >
-              保存为 PNG
-            </motion.button>
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_14%_8%,rgba(255,255,255,0.16),transparent_27%),radial-gradient(circle_at_82%_72%,rgba(255,216,157,0.14),transparent_31%),linear-gradient(135deg,rgba(255,255,255,0.055),transparent_46%)]" />
+          <div className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-white/50 to-transparent" />
+          <div className="pointer-events-none absolute bottom-0 left-12 right-12 h-px bg-gradient-to-r from-transparent via-white/14 to-transparent" />
+
+          <div className="relative grid gap-6 p-5 sm:min-h-[14.5rem] sm:grid-cols-[minmax(0,1fr)_15.25rem] sm:items-stretch sm:p-7">
+            <div className="flex min-w-0 flex-col py-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-caption tracking-[0.30em] text-mist-400">心灵印记</p>
+                <span className="rounded-full border border-white/16 bg-white/[0.06] px-3 py-1 text-[11px] tracking-[0.18em] text-mist-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.10)]">
+                  收藏票根
+                </span>
+              </div>
+              <p className="mt-8 max-w-[10.5em] font-serif text-mist-100 text-[clamp(1.7rem,4.6vw,2.45rem)] leading-[1.34] [text-wrap:balance] sm:mt-10">
+                {result.imprint}
+              </p>
+              <div className="mt-auto flex flex-wrap items-center gap-3 pt-6 text-[11px] tracking-[0.18em] text-mist-500">
+                <span className="h-px w-10 bg-white/24" />
+                <span>心屿留存</span>
+                {saveMessage && <span className="tracking-[0.12em] text-mist-400">{saveMessage}</span>}
+              </div>
+            </div>
+
+            <div className="relative overflow-hidden rounded-[28px] border border-white/16 bg-ink-950/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.13),0_20px_48px_rgba(10,14,22,0.16)]">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_72%_12%,rgba(255,255,255,0.13),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.015))]" />
+              <span className="pointer-events-none absolute -left-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-ink-950/62 ring-1 ring-white/18" />
+              <span className="pointer-events-none absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-ink-950/62 ring-1 ring-white/18" />
+              <span className="pointer-events-none absolute inset-y-5 left-6 border-l border-dashed border-white/24" />
+              <div className="relative flex h-full min-h-[11.5rem] flex-col pl-7">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.20em] text-mist-400">ADMIT ONE MEMORY</p>
+                  <p className="mt-1 text-[10px] tracking-[0.18em] text-mist-500">NO. XINYU-PNG</p>
+                </div>
+                <div className="mt-7">
+                  <p className="font-serif text-[22px] leading-snug text-mist-100">把这一刻收好</p>
+                  <p className="mt-2 text-[12px] leading-relaxed text-mist-400">确认后保存 PNG</p>
+                </div>
+                <motion.button
+                  type="button"
+                  onClick={saveImprintAsPng}
+                  disabled={savingPreview}
+                  aria-label="生成收藏票根预览"
+                  whileHover={{ y: -2 }}
+                  whileTap={{ scale: 0.97 }}
+                  transition={SPRING_TAP}
+                  className="mt-auto flex min-h-12 w-full items-center justify-between gap-3 rounded-full border border-white/18 bg-ink-950/42 px-4 text-left text-mist-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_14px_34px_rgba(0,0,0,0.18)] transition hover:border-white/30 hover:bg-ink-950/52 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <span className="text-[14px] font-medium tracking-[0.04em]">
+                    {savingPreview ? "生成中" : "生成预览"}
+                  </span>
+                  <span
+                    aria-hidden
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-mist-100 text-ink-900"
+                  >
+                    ›
+                  </span>
+                </motion.button>
+                <div className="mt-3 flex items-center justify-between text-[10px] tracking-[0.18em] text-mist-500">
+                  <span>PNG KEEPSAKE</span>
+                  <span>01</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <p className="font-serif text-mist-200 text-reading">{result.imprint}</p>
-          {saveMessage && <p className="mt-3 text-caption text-mist-400">{saveMessage}</p>}
         </motion.div>
       )}
+
+      <AnimatePresence>
+        {previewOpen && previewUrl && (
+          <motion.div
+            className="fixed inset-0 z-[95] grid place-items-center px-4 py-6"
+            role="presentation"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <button
+              type="button"
+              className="absolute inset-0 cursor-default bg-slate-950/72 backdrop-blur-md"
+              aria-label="关闭预览"
+              onClick={closeImprintPreview}
+            />
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="imprint-preview-title"
+              className="panel-glass-3 relative z-10 w-full max-w-[780px] overflow-hidden rounded-[28px] p-4 sm:p-6"
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="absolute inset-0 bg-[#10131f]/86" />
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(255,255,255,0.16),transparent_34%),radial-gradient(circle_at_78%_100%,rgba(246,194,116,0.10),transparent_32%)]" />
+              <div className="relative">
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-caption text-mist-400 tracking-[0.22em]">PNG PREVIEW</p>
+                    <h2 id="imprint-preview-title" className="mt-2 font-serif text-2xl text-mist-100">保存前预览</h2>
+                    <p className="mt-1 text-sm text-mist-300">这张岛屿票根会保存为 PNG。</p>
+                  </div>
+                  <button type="button" className="btn-ghost min-h-11 px-4 text-sm" onClick={closeImprintPreview}>
+                    关闭
+                  </button>
+                </div>
+
+                <div className="rounded-[22px] border border-white/16 bg-black/20 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_24px_70px_rgba(0,0,0,0.32)]">
+                  <img src={previewUrl} alt="心灵印记 PNG 预览" className="block w-full rounded-[16px]" />
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
+                  <button type="button" className="btn-ghost" onClick={closeImprintPreview}>
+                    取消
+                  </button>
+                  <motion.button
+                    type="button"
+                    className="btn-primary"
+                    onClick={downloadPreviewPng}
+                    whileTap={{ scale: 0.97 }}
+                    transition={SPRING_TAP}
+                  >
+                    下载 PNG
+                  </motion.button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {done && (
         <motion.div

@@ -54,7 +54,15 @@ def _load_app(tmpdir: Any = None, cors_origins: str = "http://127.0.0.1:5173") -
     # 会污染「未配置时降级」类断言(load_dotenv() 会在 config 重载时把这些值写回 os.environ,
     # 故仅在重载前 pop 不够)。先清环境变量,再在重载后直接置空 config 模块属性,
     # 使 configured() 恒返回假、TTS 恒为未配置,测试不依赖本机真实密钥。
-    for _k in ("TENCENT_TTS_SECRET_ID", "TENCENT_TTS_SECRET_KEY", "DASHSCOPE_API_KEY", "TTS_PROVIDER"):
+    for _k in (
+        "TENCENT_TTS_SECRET_ID",
+        "TENCENT_TTS_SECRET_KEY",
+        "TENCENT_TTS_APP_ID",
+        "DASHSCOPE_API_KEY",
+        "DASHSCOPE_WORKSPACE_ID",
+        "DASHSCOPE_TTS_WS_URL",
+        "TTS_PROVIDER",
+    ):
         os.environ.pop(_k, None)
     _reset_db()
     _purge_app_modules()
@@ -64,8 +72,11 @@ def _load_app(tmpdir: Any = None, cors_origins: str = "http://127.0.0.1:5173") -
 
     # config 已被 load_dotenv() 用 .env 覆盖;这里把 TTS 相关属性强制置空,与服务实际读取口径一致。
     _config.DASHSCOPE_API_KEY = ""
+    _config.DASHSCOPE_WORKSPACE_ID = ""
+    _config.DASHSCOPE_TTS_WS_URL = ""
     _config.TENCENT_TTS_SECRET_ID = ""
     _config.TENCENT_TTS_SECRET_KEY = ""
+    _config.TENCENT_TTS_APP_ID = ""
     _config.TTS_PROVIDER = ""
 
     return app, memory_service

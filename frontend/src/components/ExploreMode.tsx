@@ -17,15 +17,16 @@ import { Aurora, MeteorShower, NightMotes, MilkyWay } from "./SkyFx";
 import { play as playSfx, chimeNote, startEngine, stopEngine, setEngineSpeed, playAccelRev, playJump, playLand, playFluteNote, playCompanionSong, playLanternRelease, playLanternMelody, playFireworkLaunch, playFireworkBurst } from "../lib/sfx";
 import { emitCompanionEvent, pickChatterLine, subscribeCompanionEvents, type CompanionChatterEvent } from "../lib/companionChatter";
 import { playSample } from "../lib/samples";
-import { playLanternCue, prewarmLanternCues } from "../lib/lanternMusic";
+import { playLanternCue } from "../lib/lanternMusic";
 import { setLocationZone, setWeatherAmbience, stopLocationAmbience, type LocationZone } from "../lib/locationAmbience";
 import { getPerfTier } from "../lib/perfTier";
 import type { PerfTier } from "../lib/perfTier";
 import { useIsTouch } from "../lib/device";
-import { selectCharacterAction, type CharacterActionClip } from "../lib/protagonistAction";
+import { selectCharacterAction, type CharacterActionClip, type FishingActionClip } from "../lib/protagonistAction";
 import { EXPLORE_SCALE, EXPLORE_HEIGHT_SCALE, EXPLORE_HILLS, EXPLORE_WALK_RADIUS } from "../lib/exploreWorld";
 import { HEALING_DISTRICT_PRESENTATION, HEALING_RAIN_PRESENTATION, HEALING_WALK_CAMERA } from "../lib/explorePresentation";
 import { EXPLORE_MAP_POIS, exploreZoneAmbience, findExploreZone, type ExplorePoiKind, type ExploreZone } from "../lib/exploreZones";
+import { mergeToonGeometries, tinted } from "../lib/toonGeo";
 import {
   DEFAULT_EXPLORE_ENVIRONMENT,
   EXPLORE_TIME_OPTIONS,
@@ -36,14 +37,37 @@ import {
   type ExploreEnvironment,
 } from "../lib/exploreEnvironment";
 import {
-  FISHING_RHYTHM_DURATION_MS,
-  fishingMissReason,
-  fishingRhythmProgress,
-  isFishingRhythmHit,
-  pickFishingWaitMs,
-  type FishingMissReason,
-  type FishingState,
-} from "../lib/fishing";
+  makeAnimeShoreBreaks,
+  resolveAnimeSeaPalette,
+  type AnimeSeaPalette,
+  type AnimeShoreBreakSpec,
+} from "../lib/animeBayVisuals";
+import {
+  INITIAL_FISHING_FIGHT,
+  INITIAL_FISHING_SESSION,
+  type FishingEnvironment,
+  type FishingPhase,
+  type FishingSession,
+  type FishingTimeOfDay,
+  type FishingWeather,
+} from "../lib/fishingSystem";
+import { resolveFishingLoadout, type FishingLoadout } from "../lib/fishingGear";
+import { buildFishingPool, chooseWeightedSpecies, getFishingSpecies } from "../lib/fishingSpecies";
+import {
+  calculateCastDistance,
+  castPowerToWaterLayer,
+  isCastValid,
+  nextFishingFightState,
+  resolveHookResult,
+} from "../lib/fishingSimulation";
+import {
+  createDefaultFishingSave,
+  loadFishingSave,
+  recordFishingCatch,
+  recordFishingRelease,
+  saveFishingSave,
+  type FishingSaveV1,
+} from "../lib/fishingStorage";
 import {
   createCompanionVoice,
   getCompanionLevel,
@@ -81,6 +105,23 @@ import {
 const EXS = EXPLORE_SCALE; // 水平放大(极巨大岛)
 const EYS = EXPLORE_HEIGHT_SCALE; // 整体岛形高度系数
 const HILLS = EXPLORE_HILLS; // 世界尺度丘陵幅度(让岛明显起伏,不是平盘子)
+const EXPLORE_DPR_RANGE: Record<PerfTier, [number, number]> = {
+  low: [0.75, 1],
+  high: [0.85, 1.15],
+};
+const EXPLORE_GRASS_COUNT: Record<PerfTier, number> = {
+  low: 8000,
+  high: 28000,
+};
+const EXPLORE_TERRAIN_SEGMENTS: Record<PerfTier, number> = {
+  low: 160,
+  high: 280,
+};
+const EXPLORE_PERF_SAMPLE_SECONDS = 0.6;
+const EXPLORE_PERF_MILD_FPS = 54;
+const EXPLORE_PERF_HARD_FPS = 36;
+const EXPLORE_DPR_STAGE_ONE = 0.95;
+const EXPLORE_DPR_STAGE_TWO = 0.78;
 // 地表高度:大岛盘形(含海岸) + 世界频率多倍频丘陵。村落中心保持平整(密集小屋不卡坡),
 // 丘陵在村外中环隆起、近海岸渐隐(岛仍干净沉入海)。
 function exGroundY(wx: number, wz: number): number {
@@ -221,6 +262,13 @@ const ROAD_CTRL_PTS: [number, number][] = [
 ];
 const ROAD_HALF_W = 3.0; // 路面半宽(整路宽 6,容得下车碰撞 1.35×2 + 余量)
 const ROAD_SURFACE_RAISE = 0.14; // 柏油 ribbon 高出地形网格的薄层;车/人贴地时按路权重加上 → 正好站/压在路面上,不陷进路里。略加厚(0.08→0.14)给地形网格(格宽~2.1m)的线性插值留余量,坡段也不被草地三角顶穿
+const DRIVE_ROAD_CLEARANCE = 2.4; // 车道净空:路肩外再留一圈缓冲,防止树/草/道具压到柏油路边。
+const DRIVE_ROAD_GRASS_CHECK_MIN_RADIUS = 90; // 草丛只在外圈可能靠近环岛路,先用半径粗筛减少距离采样。
+
+function isInDriveRoadClearance(x: number, z: number, footprintRadius = 0): boolean {
+  return distToRoadCenter(x, z) < ROAD_HALF_W + DRIVE_ROAD_CLEARANCE + footprintRadius;
+}
+
 // 用控制点 + 闭合 CatmullRom 样条生成中心线采样,并赋予「平滑高度」:
 // 只跟岛屿大盘基底(低频) + 沿弧长的宏观缓起伏(2 个长波,坡度<4%)→ 有上下坡但不颠。
 // 在模块加载时立即算好并写入 roadGround.pts,保证 buildExploreTerrain / 车辆 / 路面贴图三处拿到的都是同一份。
@@ -344,9 +392,9 @@ function landmarkGrassColor(wx: number, wz: number, target: THREE.Color): THREE.
 }
 
 // 建好的地形:按高度分区配色(草地 / 沙滩 / 水下),顶点色 + toon → 海岸自然过渡。
-function buildExploreTerrain(): THREE.BufferGeometry {
+function buildExploreTerrain(tier: PerfTier): THREE.BufferGeometry {
   const S = ISLAND_SIZE * EXS;
-  const SEG = 340;
+  const SEG = EXPLORE_TERRAIN_SEGMENTS[tier];
   const geo = new THREE.PlaneGeometry(S, S, SEG, SEG);
   const pos = geo.attributes.position;
   const colors: number[] = [];
@@ -442,9 +490,34 @@ const WALK_RADIUS = EXPLORE_WALK_RADIUS; // 可走范围(留出海岸,随大岛�
 const FENCE_RADIUS = WALK_RADIUS + 0.6; // 护栏所在半径,岸边入口与玩家边界共用
 const NEAR_SHORE_WALK_MARGIN = 2.8; // 允许走到护栏外一点点,够进入沙滩/浅滩,但不会远离岛屿
 const BEACH_FENCE_GATE_HALF_WIDTH = 0.34; // 海湾护栏留口半角,视觉上就是沙滩入口
+const FENCE_COLLIDER_RADIUS = 0.42; // 护栏柱距约 1.6,加上玩家半径后形成连续阻挡
+const SHORE_FOAM_INNER_RADIUS = ISLAND_RADIUS * EXS * 0.84; // 真实水线内缘; WALK_RADIUS 仍是干沙可走半径
+const BAY_WATERLINE_RADIUS = SHORE_FOAM_INNER_RADIUS;
+const BAY_WADE_RADIUS = BAY_WATERLINE_RADIUS + 3.6; // 海湾入口允许走到真实水线里一点点,刚好够踩进可见浅海
+const BAY_SHALLOW_WATER_RADIUS = 44;
+const BAY_SHALLOW_WATER_CENTER_RADIUS = BAY_WATERLINE_RADIUS + BAY_SHALLOW_WATER_RADIUS * 0.28;
+const POND_COLLISION_CENTER = { x: WALK_RADIUS * 0.3, z: WALK_RADIUS * 0.3 } as const;
+const POND_COLLISION_RX = 7.2;
+const POND_COLLISION_RZ = 5.8;
+const POND_COLLIDER_COUNT = 18;
+const POND_BRIDGE_PASSAGE = { x: POND_COLLISION_CENTER.x, z: POND_COLLISION_CENTER.z - 5.1, halfW: 2.2, halfD: 2.6 } as const;
+const POND_STEPSTONE_PASSAGE = { x: POND_COLLISION_CENTER.x - 5, z: POND_COLLISION_CENTER.z + 3, r: 2.05 } as const;
 // 中心村落 / 岛上的固定设施与地标(坐标须与 Town/Village 的 GltfProp 摆放一致)。
 // 散落树木与民居都避开它们 → 杜绝「树穿过凉亭/神社/灯塔、房子叠在水井上」之类的穿模。
+const C1_DISTRICT_CLEARINGS: { x: number; z: number; r: number }[] = [
+  { x: HEALING_DISTRICT_PRESENTATION.home.x, z: HEALING_DISTRICT_PRESENTATION.home.z, r: 28 },
+  { x: HEALING_DISTRICT_PRESENTATION.beach.x, z: HEALING_DISTRICT_PRESENTATION.beach.z, r: 34 },
+  { x: HEALING_DISTRICT_PRESENTATION.rice.x, z: HEALING_DISTRICT_PRESENTATION.rice.z, r: 34 },
+  { x: HEALING_DISTRICT_PRESENTATION.mountain.x, z: HEALING_DISTRICT_PRESENTATION.mountain.z, r: 38 },
+  { x: HEALING_DISTRICT_PRESENTATION.forest.x, z: HEALING_DISTRICT_PRESENTATION.forest.z, r: 46 },
+  { x: HEALING_DISTRICT_PRESENTATION.town.x, z: HEALING_DISTRICT_PRESENTATION.town.z, r: 34 },
+  { x: HEALING_DISTRICT_PRESENTATION.farm.x, z: HEALING_DISTRICT_PRESENTATION.farm.z, r: 31 },
+  { x: HEALING_DISTRICT_PRESENTATION.zoo.x, z: HEALING_DISTRICT_PRESENTATION.zoo.z, r: 32 },
+  { x: HEALING_DISTRICT_PRESENTATION.swamp.x, z: HEALING_DISTRICT_PRESENTATION.swamp.z, r: 39 },
+  { x: HEALING_DISTRICT_PRESENTATION.scenic.x, z: HEALING_DISTRICT_PRESENTATION.scenic.z, r: 30 },
+];
 const ISLE_PROPS: { x: number; z: number; r: number }[] = [
+  ...C1_DISTRICT_CLEARINGS,
   { x: 7, z: -7, r: 3.2 },      // 神社
   { x: -4.0, z: 0.6, r: 2.2 },  // 售货机
   { x: -7, z: 6, r: 3.4 },      // 凉亭
@@ -456,7 +529,7 @@ const ISLE_PROPS: { x: number; z: number; r: number }[] = [
   { x: -5, z: -8, r: 2.8 },     // 秋千
   { x: 9, z: -4, r: 2.4 },      // 风铃
   { x: 8, z: 9.5, r: 3.4 },     // 石阶(阶梯实体:树/灌木/花/蘑菇/石块都别长穿过它)
-  { x: WALK_RADIUS * 0.3, z: WALK_RADIUS * 0.3, r: 7.0 },            // 池塘
+  { x: POND_COLLISION_CENTER.x, z: POND_COLLISION_CENTER.z, r: 7.0 }, // 池塘
   { x: -WALK_RADIUS * 0.35, z: WALK_RADIUS * 0.45, r: 4.0 },         // 风车
   { x: -WALK_RADIUS * 0.92, z: -WALK_RADIUS * 0.3, r: 4.2 },         // 灯塔
   { x: -WALK_RADIUS * 0.92 + 8, z: -WALK_RADIUS * 0.3 + 6, r: 3.0 }, // 灯塔看守屋
@@ -465,6 +538,74 @@ const ISLE_PROPS: { x: number; z: number; r: number }[] = [
 function nearIsleProp(x: number, z: number, margin = 0): boolean {
   for (const p of ISLE_PROPS) { const dx = p.x - x, dz = p.z - z, rr = p.r + margin; if (dx * dx + dz * dz < rr * rr) return true; }
   return false;
+}
+
+type TownBuildingFootprint = { x: number; z: number; rot: number; w: number; d: number; h: number };
+
+function buildTownBuildingFootprints(): TownBuildingFootprint[] {
+  const out: TownBuildingFootprint[] = [];
+  const spacer = makeSpacer(7); // 网格边长 ≥ 最大最小间距(7),房子之间留巷子、绝不互穿
+  const VILLAGE = 26; // 中央村落
+  const cluster = Math.min(34, WALK_RADIUS * 0.2);
+  for (let i = 0; i < VILLAGE; i++) {
+    const a = hash2(i, 1.1) * Math.PI * 2;
+    const r = 4 + Math.sqrt(hash2(i, 2.2)) * cluster;
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    if (isBeachOrWater(x, z)) continue; // 村落房子也不落在沙滩 / 水里
+    if (nearIsleProp(x, z, 1.0)) continue; // 不叠在神社 / 水井 / 凉亭等设施上
+    if (!spacer(x, z, 6.5)) continue; // 房子互不重叠
+    out.push({
+      x,
+      z,
+      rot: hash2(i, 3.3) * Math.PI * 2,
+      w: 1.8 + hash2(i, 4.4) * 1.0,
+      d: 1.8 + hash2(i, 5.5) * 0.8,
+      h: 1.5 + hash2(i, 6.6) * 1.0,
+    });
+  }
+  const COTTAGES = 16; // 岛上零星独立小屋
+  for (let i = 0; i < COTTAGES; i++) {
+    const a = (i / COTTAGES) * Math.PI * 2 + hash2(i + 50, 1.7) * 1.2;
+    const r = WALK_RADIUS * (0.28 + hash2(i + 50, 2.3) * 0.58);
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    // 清掉落在环岛柏油路上的独立小屋(房子有碰撞,不清则车穿模撞墙)。
+    if (isInDriveRoadClearance(x, z, 2.6)) continue;
+    if (isBeachOrWater(x, z)) continue; // 小屋不建在沙滩 / 水里
+    if (onLandmarkPad(x, z)) continue; // 小屋不压地标地坪/裙边
+    if (nearIsleProp(x, z, 1.0)) continue;
+    if (!spacer(x, z, 7)) continue; // 与村落 / 彼此都不重叠
+    out.push({
+      x,
+      z,
+      rot: hash2(i + 50, 3.1) * Math.PI * 2,
+      w: 1.7 + hash2(i + 50, 4.2) * 0.7,
+      d: 1.7 + hash2(i + 50, 5.1) * 0.6,
+      h: 1.4 + hash2(i + 50, 6.3) * 0.7,
+    });
+  }
+  return out;
+}
+
+function nearTownBuildingFootprint(x: number, z: number, buildings: readonly TownBuildingFootprint[], margin: number): boolean {
+  for (const b of buildings) {
+    const rr = Math.max(b.w, b.d) * 0.7 + margin;
+    const dx = x - b.x, dz = z - b.z;
+    if (dx * dx + dz * dz < rr * rr) return true;
+  }
+  return false;
+}
+
+const MOUNTAIN_SNOW_MIN_HEIGHT = 11.5;
+const MOUNTAIN_SNOW_RADIUS = HEALING_DISTRICT_PRESENTATION.mountain.radius + 18;
+
+function isMountainSnowSpot(x: number, z: number, h: number): boolean {
+  if (h < MOUNTAIN_SNOW_MIN_HEIGHT) return false;
+  const p = HEALING_DISTRICT_PRESENTATION.mountain;
+  const dx = x - p.x, dz = z - p.z;
+  if (dx * dx + dz * dz > MOUNTAIN_SNOW_RADIUS * MOUNTAIN_SNOW_RADIUS) return false;
+  return true;
 }
 const PLAYER_SPEED = 10.4; // 移动速度(慢行探索步速,长按后再过渡到小跑)
 const JUMP_V = 11.0; // 起跳初速度
@@ -493,24 +634,51 @@ type ExploreRevealDelay = {
   town: number;
   village: number;
   coastline: number;
+  districts: number;
   interactions: number;
   companion: number;
-  car: number;
   lanterns: number;
   townblock: number;
   rhododendron: number;
   manor: number;
   bath: number;
 };
+
+function getExploreRevealDelay(tier: PerfTier): ExploreRevealDelay {
+  return {
+    // 模型已由 ExploreModelGate 预热；这里仅错开 clone / instancing 开销，让完整地图在入场后迅速补齐。
+    town: tier === "low" ? 120 : 0,
+    village: tier === "low" ? 260 : 120,
+    coastline: tier === "low" ? 420 : 220,
+    districts: tier === "low" ? 560 : 320,
+    companion: tier === "low" ? 700 : 360,
+    interactions: tier === "low" ? 900 : 520,
+    lanterns: tier === "low" ? 980 : 580,
+    townblock: tier === "low" ? 1050 : 620,
+    rhododendron: tier === "low" ? 1250 : 760,
+    manor: tier === "low" ? 1450 : 900,
+    bath: tier === "low" ? 1700 : 1100,
+  };
+}
 const COL_CELL = 8; // 网格边长,须 ≥ 最大(障碍半径 + 车/人半径);车体多点采样 r≈1.3、最大障碍 r≈4.5 → 8 足够覆盖
+const MAX_COLLISION_QUERY_RADIUS = Math.max(HEALING_WALK_CAMERA.collisionRadius, 1.35);
 const colKey = (gx: number, gz: number): string => gx + "|" + gz;
 function buildColliderGrid(list: Collider[]): Map<string, Collider[]> {
   const grid = new Map<string, Collider[]>();
   for (const c of list) {
-    const k = colKey(Math.floor(c.x / COL_CELL), Math.floor(c.z / COL_CELL));
-    const cell = grid.get(k);
-    if (cell) cell.push(c);
-    else grid.set(k, [c]);
+    const reach = c.r + MAX_COLLISION_QUERY_RADIUS;
+    const minX = Math.floor((c.x - reach) / COL_CELL);
+    const maxX = Math.floor((c.x + reach) / COL_CELL);
+    const minZ = Math.floor((c.z - reach) / COL_CELL);
+    const maxZ = Math.floor((c.z + reach) / COL_CELL);
+    for (let gx = minX; gx <= maxX; gx++) {
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        const k = colKey(gx, gz);
+        const cell = grid.get(k);
+        if (cell) cell.push(c);
+        else grid.set(k, [c]);
+      }
+    }
   }
   return grid;
 }
@@ -519,30 +687,176 @@ function resolveCollisions(grid: Map<string, Collider[]> | null, pos: THREE.Vect
   if (!grid) return;
   const cgx = Math.floor(pos.x / COL_CELL);
   const cgz = Math.floor(pos.z / COL_CELL);
-  for (let ax = cgx - 1; ax <= cgx + 1; ax++) {
-    for (let az = cgz - 1; az <= cgz + 1; az++) {
-      const cell = grid.get(colKey(ax, az));
-      if (!cell) continue;
-      for (let i = 0; i < cell.length; i++) {
-        const c = cell[i];
-        const dx = pos.x - c.x;
-        const dz = pos.z - c.z;
-        const minD = c.r + pr;
-        const d2 = dx * dx + dz * dz;
-        if (d2 < minD * minD && d2 > 1e-6) {
-          const d = Math.sqrt(d2);
-          const nx = dx / d;
-          const nz = dz / d;
-          pos.x = c.x + nx * minD; // 推到障碍外缘
-          pos.z = c.z + nz * minD;
-          const vn = vel.x * nx + vel.z * nz; // 速度在法线上的分量
-          if (vn < 0) { vel.x -= vn * nx; vel.z -= vn * nz; } // 去掉「撞进去」的那一份,保留切向 → 滑行
-        }
-      }
+  const cell = grid.get(colKey(cgx, cgz));
+  if (!cell) return;
+  for (let i = 0; i < cell.length; i++) {
+    const c = cell[i];
+    const dx = pos.x - c.x;
+    const dz = pos.z - c.z;
+    const minD = c.r + pr;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < minD * minD && d2 > 1e-6) {
+      const d = Math.sqrt(d2);
+      const nx = dx / d;
+      const nz = dz / d;
+      pos.x = c.x + nx * minD; // 推到障碍外缘
+      pos.z = c.z + nz * minD;
+      const vn = vel.x * nx + vel.z * nz; // 速度在法线上的分量
+      if (vn < 0) { vel.x -= vn * nx; vel.z -= vn * nz; } // 去掉「撞进去」的那一份,保留切向 → 滑行
     }
   }
 }
 const PLAYER_COL_R = 0.45; // 玩家碰撞半径
+const PLAYER_COLLISION_STEP_MAX = PLAYER_COL_R * 0.65;
+const PLAYER_COLLISION_STEP_LIMIT = 4;
+
+function clampToWalkableRadius(pos: THREE.Vector3, vel: { x: number; z: number }) {
+  const maxR = walkableRadius(pos.x, pos.z);
+  const r2 = pos.x * pos.x + pos.z * pos.z;
+  if (r2 <= maxR * maxR) return;
+  const r = Math.sqrt(r2);
+  pos.x *= maxR / r;
+  pos.z *= maxR / r;
+  vel.x *= 0.3;
+  vel.z *= 0.3;
+}
+
+function resolveParkedCarCollision(pos: THREE.Vector3, vel: { x: number; z: number }, pr: number) {
+  if (carState.driving) return;
+  const cdx = pos.x - carState.x;
+  const cdz = pos.z - carState.z;
+  const cmd = 2.4 + pr;
+  const cd2 = cdx * cdx + cdz * cdz;
+  if (cd2 >= cmd * cmd || cd2 <= 1e-6) return;
+  const cd = Math.sqrt(cd2);
+  const cnx = cdx / cd;
+  const cnz = cdz / cd;
+  pos.x = carState.x + cnx * cmd;
+  pos.z = carState.z + cnz * cmd;
+  const cvn = vel.x * cnx + vel.z * cnz;
+  if (cvn < 0) {
+    vel.x -= cvn * cnx;
+    vel.z -= cvn * cnz;
+  }
+}
+
+function advanceWithCollisions(grid: Map<string, Collider[]> | null, pos: THREE.Vector3, vel: { x: number; z: number }, dt: number, pr: number) {
+  const dx = vel.x * dt;
+  const dz = vel.z * dt;
+  const steps = Math.min(PLAYER_COLLISION_STEP_LIMIT, Math.max(1, Math.ceil(Math.hypot(dx, dz) / PLAYER_COLLISION_STEP_MAX)));
+  const stepX = dx / steps;
+  const stepZ = dz / steps;
+  for (let i = 0; i < steps; i++) {
+    pos.x += stepX;
+    pos.z += stepZ;
+    resolveCollisions(grid, pos, vel, pr);
+    resolveParkedCarCollision(pos, vel, pr);
+    clampToWalkableRadius(pos, vel);
+  }
+}
+
+type DistrictPresentationKey = keyof typeof HEALING_DISTRICT_PRESENTATION;
+type DistrictCollider = Collider & { district: DistrictPresentationKey };
+const MIN_DISTRICT_COLLIDER_RADIUS = 0.45;
+
+function districtCollider(district: DistrictPresentationKey, dx: number, dz: number, r: number): DistrictCollider {
+  const p = HEALING_DISTRICT_PRESENTATION[district];
+  return { district, x: p.x + dx, z: p.z + dz, r: Math.max(MIN_DISTRICT_COLLIDER_RADIUS, r) };
+}
+
+// C1 十区里的大件实物统一入碰撞网格:玩家/车/相机共用 resolveCollisions,避免新地图道具可穿过。
+const C1_DISTRICT_COLLIDERS: DistrictCollider[] = [
+  districtCollider("home", -15, -8, 3.1), districtCollider("home", 15, 9, 2.5),
+  districtCollider("home", -7, 11, 0.5), districtCollider("home", 1, 7, 0.8),
+  districtCollider("home", 5, -7, 1.1), districtCollider("home", 13, -4, 0.65),
+
+  districtCollider("beach", -18, 4, 0.9), districtCollider("beach", -7, -9, 0.7),
+  districtCollider("beach", -23, -11, 0.55), districtCollider("beach", 22, 11, 0.8),
+  districtCollider("beach", 3, 14, 1.0), districtCollider("beach", -18, 13, 0.9),
+  districtCollider("beach", 15, 10, 0.75), districtCollider("beach", 24, -9, 0.45),
+
+  districtCollider("rice", -24, -2, 0.85), districtCollider("rice", -3, 2, 0.75),
+  districtCollider("rice", 18, 10, 0.7), districtCollider("rice", -31, 24, 2.3),
+  districtCollider("rice", 11, -12, 1.1), districtCollider("rice", -22, 22, 0.55),
+  districtCollider("rice", 31, 17, 1.0), districtCollider("rice", -35, 10, 0.9),
+
+  districtCollider("farm", -26, 15, 2.4), districtCollider("farm", 25, -16, 2.7),
+  districtCollider("farm", -3, -14, 1.05), districtCollider("farm", -1, -3, 0.55),
+  districtCollider("farm", 8, -14, 1.2), districtCollider("farm", -15, -2, 1.05),
+  districtCollider("farm", 3, -16, 0.7), districtCollider("farm", -21, 7, 0.55),
+  districtCollider("farm", 22, 5, 2.2), districtCollider("farm", -17, -16, 0.65),
+  districtCollider("farm", 18, -6, 0.65),
+
+  districtCollider("town", -24, -13, 2.3), districtCollider("town", 24, -14, 2.3),
+  districtCollider("town", -22, 16, 2.1), districtCollider("town", 22, 17, 2.1),
+  districtCollider("town", -8, 3, 1.2), districtCollider("town", 6, 7, 0.9),
+  districtCollider("town", -14, 10, 0.85), districtCollider("town", 15, -1, 0.75),
+  districtCollider("town", -1, -19, 0.55), districtCollider("town", 2, 21, 0.55),
+  districtCollider("town", -4, -5.5, 1.0),
+
+  districtCollider("mountain", 2, 2, 2.1), districtCollider("mountain", -15, -9, 1.7),
+  districtCollider("mountain", 18, -17, 1.7), districtCollider("mountain", -5, 15, 0.9),
+  districtCollider("mountain", 9, 20, 0.75), districtCollider("mountain", 23, 17, 1.3),
+  districtCollider("mountain", 2, -25, 0.55),
+  districtCollider("mountain", -18, -8, 1.0), districtCollider("mountain", 16, 6, 0.95),
+
+  districtCollider("forest", -13, -8, 0.8), districtCollider("forest", -4, -12, 0.7),
+  districtCollider("forest", 3, -9, 0.8), districtCollider("forest", -8, -6, 1.0),
+  districtCollider("forest", -25, 23, 1.2), districtCollider("forest", 15, 4, 1.4),
+  districtCollider("forest", -5, -2, 1.0), districtCollider("forest", -36, -22, 1.1),
+  districtCollider("forest", -30, 18, 1.0), districtCollider("forest", 29, -12, 1.0),
+  districtCollider("forest", 35, 18, 0.9),
+
+  districtCollider("zoo", -24, -20, 0.65), districtCollider("zoo", -24, -1, 0.65),
+  districtCollider("zoo", 22, -1, 0.65), districtCollider("zoo", -2, -22, 0.65),
+  districtCollider("zoo", -2, 19, 0.65), districtCollider("zoo", -11, 15, 0.8),
+  districtCollider("zoo", -1, 15, 0.85), districtCollider("zoo", 14, -14, 0.75),
+  districtCollider("zoo", -7, -1, 0.75), districtCollider("zoo", 5, -6, 0.7),
+  districtCollider("zoo", -3, 9, 0.65), districtCollider("zoo", 13, 3, 1.4),
+  districtCollider("zoo", 22, 16, 0.9),
+
+  districtCollider("swamp", -15, -12, 0.75),
+  districtCollider("swamp", 9, -14, 0.8), districtCollider("swamp", 17, -7, 0.85),
+  districtCollider("swamp", 3, 12, 0.65), districtCollider("swamp", -20, -12, 0.55),
+  districtCollider("swamp", 0, -11, 0.55), districtCollider("swamp", -17, -19, 0.55),
+  districtCollider("swamp", 17, 8, 0.65),
+
+  districtCollider("scenic", -10, -5, 0.5), districtCollider("scenic", -3, 0, 0.5),
+  districtCollider("scenic", 2, -2, 0.5), districtCollider("scenic", 7, -7.5, 0.5),
+  districtCollider("scenic", 14, -6, 0.5),
+  districtCollider("scenic", 7, -2, 1.2), districtCollider("scenic", -16, -3, 0.75),
+  districtCollider("scenic", 14, -3, 0.75), districtCollider("scenic", -1, -9, 0.65),
+];
+
+function pondPassageAt(x: number, z: number): boolean {
+  const bridge =
+    Math.abs(x - POND_BRIDGE_PASSAGE.x) < POND_BRIDGE_PASSAGE.halfW &&
+    Math.abs(z - POND_BRIDGE_PASSAGE.z) < POND_BRIDGE_PASSAGE.halfD;
+  const stepstones = dist2(x, z, POND_STEPSTONE_PASSAGE.x, POND_STEPSTONE_PASSAGE.z) < POND_STEPSTONE_PASSAGE.r * POND_STEPSTONE_PASSAGE.r;
+  return bridge || stepstones;
+}
+
+function pondWaterColliders(): Collider[] {
+  const out: Collider[] = [];
+  if (!pondPassageAt(POND_COLLISION_CENTER.x, POND_COLLISION_CENTER.z)) {
+    out.push({ x: POND_COLLISION_CENTER.x, z: POND_COLLISION_CENTER.z, r: 2.35 });
+  }
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    const x = POND_COLLISION_CENTER.x + Math.cos(a) * POND_COLLISION_RX * 0.48;
+    const z = POND_COLLISION_CENTER.z + Math.sin(a) * POND_COLLISION_RZ * 0.48;
+    if (pondPassageAt(x, z)) continue;
+    out.push({ x, z, r: 1.52 });
+  }
+  for (let i = 0; i < POND_COLLIDER_COUNT; i++) {
+    const a = (i / POND_COLLIDER_COUNT) * Math.PI * 2;
+    const x = POND_COLLISION_CENTER.x + Math.cos(a) * POND_COLLISION_RX * 0.82;
+    const z = POND_COLLISION_CENTER.z + Math.sin(a) * POND_COLLISION_RZ * 0.82;
+    if (pondPassageAt(x, z)) continue;
+    out.push({ x, z, r: 1.38 });
+  }
+  return out;
+}
 
 function beachAngleDelta(wx: number, wz: number): number {
   let d = Math.atan2(wz, wx) - BAY_ANGLE;
@@ -556,9 +870,25 @@ function isBeachFenceGap(wx: number, wz: number): boolean {
   return bayMask(wx, wz) > 0.72 && Math.abs(d) < BEACH_FENCE_GATE_HALF_WIDTH;
 }
 
+function beachFenceColliders(): Collider[] {
+  const out: Collider[] = [];
+  const fr = FENCE_RADIUS;
+  const n = Math.round((2 * Math.PI * fr) / 1.6);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const x = Math.cos(a) * fr;
+    const z = Math.sin(a) * fr;
+    if (isBeachFenceGap(x, z)) continue;
+    out.push({ x, z, r: FENCE_COLLIDER_RADIUS });
+  }
+  return out;
+}
+
 function walkableRadius(wx: number, wz: number): number {
   const bay = bayMask(wx, wz);
-  return FENCE_RADIUS + NEAR_SHORE_WALK_MARGIN * bay;
+  const nearShoreR = FENCE_RADIUS + NEAR_SHORE_WALK_MARGIN * bay;
+  const bayWadeR = FENCE_RADIUS + (BAY_WADE_RADIUS - FENCE_RADIUS) * bay;
+  return Math.max(nearShoreR, bayWadeR);
 }
 
 // 汽车摆放:直接停在环路起点 (0,118) 的路面上,朝向沿路切线(指向下一个控制点 (70,98))。
@@ -570,9 +900,17 @@ const CAR_Y_OFFSET = 15.47 * CAR_SCALE; // 轮底在原点下 15.47 → 抬起�
 // 偏出逻辑坐标 carState 约 2.95(>上车判定半径 3.6)→ 走到看得见的车旁也按不了 E、碰不到。反向平移回正。
 const CAR_FIT_X = -59.1 * CAR_SCALE; // ≈ -2.955
 const CAR_FIT_Z = -9.45 * CAR_SCALE; // ≈ -0.473
-const CAR_MAX_SPEED = 28; // W 巡航速度(放慢一点,从容兜风;按住 Shift 增压到 CAR_BOOST_SPEED)
-const CAR_BOOST_SPEED = 48; // 加速键(Shift / 触屏「»」)下的冲刺上限
+const CAR_MAX_SPEED = 22; // W 巡航速度(更慢一点,从容兜风;按住 Shift 增压到 CAR_BOOST_SPEED)
+const CAR_BOOST_SPEED = 38; // 加速键(Shift / 触屏「»」)下的冲刺上限
 const CAR_TURN = 2.1; // 转向速率(低速更灵活)
+const CAR_MAX_STEER_VIS = 0.5; // 前轮最大视觉转角(rad),与巡游公路车辆一致
+const CAR_WHEEL_ROLL_R = 0.38; // 轮胎滚动半径:wheelRoll += speed / radius * dt
+const CAR_WHEELS: { x: number; y: number; z: number; r: number; front: boolean }[] = [
+  { x: -0.852, y: 0.372 - CAR_Y_OFFSET, z: 1.343, r: 0.37, front: true },
+  { x: 0.852, y: 0.372 - CAR_Y_OFFSET, z: 1.343, r: 0.37, front: true },
+  { x: -0.832, y: 0.391 - CAR_Y_OFFSET, z: -1.314, r: 0.39, front: false },
+  { x: 0.832, y: 0.391 - CAR_Y_OFFSET, z: -1.314, r: 0.39, front: false },
+];
 // 可开的汽车状态(模块单例:DrivableCar 读、Player 写)。driving 时玩家坐车里、用输入开车
 const carState = { x: CAR_POS.x, z: CAR_POS.z, heading: CAR_POS.rot, speed: 0, turn: 0, driving: false, throttle: 0, boost: false };
 const sceneEnv = { night: false }; // 夜间标记(ExploreScene 写,DrivableCar 读 → 车灯只在夜里亮)
@@ -585,9 +923,20 @@ function lanternRise(t: number): number {
 const lanternCam = { x: 0, z: 0, gy: 0, t: 0, on: false };
 // 「放飞一片」万灯齐放信号:UI 按钮写 v++ 与发射中心,SkyLanterns 据此一次性放出一整片天灯
 const lanternFlock = { v: 0, x: 0, z: 0 };
-// 天灯模型(kmd.glb 2.9M)是否已加载进缓存:SkyLanterns 进岛即顶层预加载,载完置 true。
-// 放飞前据此判断——没好就先等(见 ensureLantern),避免「点了放飞才加载解析」的卡顿尖峰。
-let _lanternModelReady = false;
+const LANTERN_SINGLE_COOLDOWN_MS = 900;
+const LANTERN_FLOCK_COOLDOWN_MS = 2200;
+function lanternFlockSize(tier: PerfTier): number {
+  return tier === "low" ? 5 : 9;
+}
+function lanternCap(tier: PerfTier): number {
+  return tier === "low" ? 8 : 18;
+}
+function lanternBatchSize(tier: PerfTier): number {
+  return tier === "low" ? 1 : 2;
+}
+function lanternFireworkRounds(tier: PerfTier): number {
+  return tier === "low" ? 1 : 2;
+}
 const _carTmp = new THREE.Vector3();
 // 精灵防穿模:目标点碰撞推出复用(回调内同步用,不跨组件共享)
 const _compTmp = new THREE.Vector3();
@@ -606,8 +955,14 @@ const RHODOS: { x: number; z: number; s: number }[] = [
   { x: 4, z: 17, s: 1.2 }, { x: -4, z: 17, s: 1.0 }, { x: 7, z: 12, s: 1.3 },
   { x: -6, z: 12, s: 1.05 }, { x: 2.5, z: 21, s: 1.1 }, { x: -9, z: 9, s: 1.15 },
 ];
+type LandmarkFoundation = { width: number; depth: number; height: number; sink: number; color: string };
+
 // 两座写实大地标(村外开阔空地,周围清树避免穿模);base = native 底在原点下的深度,落地偏移 = base*scale
-const BATH = { x: 5.4, z: 51.7, rot: 0.4, scale: 15, base: 0.03, clear: 12 }; // 罗马浴场
+// Bathhouse GLB measured bounds: minY=-0.02623401977279237; its ground mesh is only ~0.001 thick,
+// so a small buried foundation plug seals the low-angle hollow edge without bringing back an exposed pad mesh.
+const BATH_MODEL_FLOOR_DEPTH = 0.02623401977279237;
+const BATH_FOUNDATION: LandmarkFoundation = { width: 14.4, depth: 16.4, height: 0.52, sink: 0.44, color: "#8f9694" };
+const BATH = { x: 5.4, z: 51.7, rot: 0.4, scale: 15, base: BATH_MODEL_FLOOR_DEPTH, clear: 12, foundation: BATH_FOUNDATION }; // 罗马浴场
 // 注:此模型是「漂浮岛」式资产 —— 建筑坐在一块向下收窄的岩石上,岩石根尖一直拖到原点下 17.5。
 // base 须取「建筑地坪」深度(Platform/ground 底 ≈ 原点下 0.65),让地坪落在地坪台上、岩石根埋进台下;
 // 若按整体包围盒底(17.5)落地,会把岩石尖当脚 → 建筑被顶到半空(悬空)。
@@ -796,6 +1151,7 @@ const MODELS = {
   critterOwl: "/models/xy_critter_owl.glb",
   critterFish: "/models/xy_critter_fish.glb",
   critterBell: "/models/xy_critter_bell.glb",
+  bgBird: "/models/xy_bg_bird.glb",
   // Batch 6 · 海水(发光/可情绪 tint)
   waterWave: "/models/xy_water_wave.glb",
   waterFoam: "/models/xy_water_foam.glb",
@@ -842,49 +1198,61 @@ const MODELS = {
   townblock: "/models/688215b008dc48e8a47295ef1211afb6.glb", // 建筑街区(原生约 35×38×42,底在原点下 17.5)
   skyLantern: "/models/kmd.glb", // 天灯(放飞升空)
 } as const;
-// 桌面端在首页空闲 / CTA 意图阶段分批预热整张探索地图的模型。
-// 这样远景开场时能尽量直接展示完整岛貌；触摸/低配仍跳过,把解析压力留到场景内。
-const EXPLORE_PREFETCH_MODELS = Object.values(MODELS);
+// 首页空闲 / CTA 意图阶段预热完整探索模型表。
+// 仍通过 queueExplorePreload 分批调度,避免几十个 GLB 同时解析把首屏主线程打满。
+const EXPLORE_PREFETCH_MODELS: string[] = [
+  ...new Set([
+    ...Object.values(MODELS),
+    ...Object.values(IMPRINT_3D_REGISTRY).map((entry) => entry.url),
+  ]),
+];
 
-// 触摸设备跳过后台预热:移动端最容易在点按、横屏、Canvas 挂载时与 GLB 解析撞车。
-// 写实地标/车/天灯/灯塔精灵等重模型交给场景内独立 Suspense 按需加载。
+// 移动端也按 Web 完整体验预热，但仍走队列和 idle 调度，避免几十个 GLB 同时解析。
+// 写实地标/车/天灯/灯塔精灵等重模型同时由场景内独立 Suspense 兜底按需加载。
 // 这个工具导出与默认组件同文件是有意的(依赖本模块的 MODELS 表),HMR fast-refresh 的告警在此豁免。
 let _prefetchStarted = false;
-let _exploreActive = false;            // 用户已进岛 → 停掉后台预热队列,把 CPU/带宽全让给进岛自身的加载
 let _prefetchTimers: number[] = [];
+let _prefetchIdleTimers: number[] = [];
 
-// ExploreMode 进/出岛时调用:进岛即停后台轻量预热——否则解析会与进岛时的场景挂载
-// (草丛 + 地形几何 + 模型解析)抢资源,反而让进岛更卡。
 function setExploreActive(active: boolean): void {
-  _exploreActive = active;
-  if (active) clearExplorePreloadQueue();
-}
-
-function isCoarsePointerDevice(): boolean {
-  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent || "";
-  return Boolean(
-    window.matchMedia?.("(pointer: coarse)").matches ||
-    navigator.maxTouchPoints > 0 ||
-    /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(ua),
-  );
+  if (!active) clearExplorePreloadQueue();
 }
 
 function clearExplorePreloadQueue(): void {
   if (typeof window === "undefined") return;
   for (const id of _prefetchTimers) window.clearTimeout(id);
+  const w = window as Window & { cancelIdleCallback?: (id: number) => void };
+  if (w.cancelIdleCallback) {
+    for (const id of _prefetchIdleTimers) w.cancelIdleCallback(id);
+  }
   _prefetchTimers = [];
+  _prefetchIdleTimers = [];
 }
 
 function queueExplorePreload(urls: readonly string[]): void {
   if (typeof window === "undefined") return;
   clearExplorePreloadQueue();
+  if (urls.length === 0) return;
+  const w = window as Window & {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    cancelIdleCallback?: (id: number) => void;
+  };
   urls.forEach((url, index) => {
     const id = window.setTimeout(() => {
       _prefetchTimers = _prefetchTimers.filter((timer) => timer !== id);
-      if (_exploreActive) return;
-      useGLTF.preload(url);
-    }, 80 + index * 90);
+      const warm = () => {
+        useGLTF.preload(url);
+      };
+      if (w.requestIdleCallback) {
+        const idleId = w.requestIdleCallback(() => {
+          _prefetchIdleTimers = _prefetchIdleTimers.filter((timer) => timer !== idleId);
+          warm();
+        }, { timeout: 1600 });
+        _prefetchIdleTimers.push(idleId);
+      } else {
+        warm();
+      }
+    }, 120 + index * 110);
     _prefetchTimers.push(id);
   });
 }
@@ -893,7 +1261,6 @@ function queueExplorePreload(urls: readonly string[]): void {
 export function prefetchExploreAssets(): void {
   if (_prefetchStarted) return; // 幂等:hover/点按可能各调一次
   _prefetchStarted = true;
-  if (isCoarsePointerDevice()) return;
   queueExplorePreload(EXPLORE_PREFETCH_MODELS);
 }
 
@@ -1277,6 +1644,23 @@ function glbInstanceGeo(scene: THREE.Object3D, grad: THREE.Texture, modelScale =
   return { geometry: geo, material };
 }
 
+function placeableGroundY(x: number, z: number): number {
+  const road = groundYWithRoad(x, z);
+  return Math.max(
+    road.y + road.roadW * ROAD_SURFACE_RAISE,
+    landmarkGroundLift(x, z),
+    stairsGroundLift(x, z),
+  );
+}
+
+function modelGroundLift(object: THREE.Object3D): number {
+  const box = new THREE.Box3().setFromObject(object);
+  if (!Number.isFinite(box.min.y) || !Number.isFinite(box.max.y)) return 0;
+  return -box.min.y;
+}
+
+type GltfSpin = { node: string; speed: number; axis?: "x" | "y" | "z" };
+
 function GltfProp({
   url,
   grad,
@@ -1286,6 +1670,7 @@ function GltfProp({
   tint,
   spin,
   raw,
+  grounded = false,
 }: {
   url: string;
   grad?: THREE.Texture;
@@ -1293,12 +1678,14 @@ function GltfProp({
   rotation?: [number, number, number];
   scale?: number | [number, number, number];
   tint?: ToonTint;
-  spin?: { node: string; speed: number; axis?: "x" | "y" | "z" }; // 让某个子节点绕自身局部轴自转(如风车 Blades)
+  spin?: GltfSpin; // 让某个子节点绕自身局部轴自转(如风车 Blades)
   raw?: boolean; // 保留 glb 原始写实材质(不 toon 化)——给写实精模用(汽车/植物/建筑)
+  grounded?: boolean; // true 时按模型包围盒底部自动抬升,避免 GLB 原点在中心导致插进地面
 }) {
   const { scene } = useGLTF(url);
   const obj = useMemo(() => (raw ? rawClone(scene) : toonifyScene(scene, grad, tint)), [scene, grad, tint, raw]);
   const spinNode = useMemo(() => (spin ? obj.getObjectByName(spin.node) : undefined), [obj, spin]);
+  const groundLift = useMemo(() => (grounded ? modelGroundLift(obj) : 0), [obj, grounded]);
   useFrame((_, delta) => {
     if (!spinNode || !spin) return;
     const amount = delta * spin.speed;
@@ -1306,10 +1693,14 @@ function GltfProp({
     else if (spin.axis === "y") spinNode.rotateY(amount);
     else spinNode.rotateZ(amount);
   });
-  return <primitive object={obj} position={position} rotation={rotation} scale={scale} />;
+  return (
+    <group position={position} rotation={rotation} scale={scale}>
+      <primitive object={obj} position={[0, groundLift, 0]} />
+    </group>
+  );
 }
 
-function GroundProp({ url, grad, x, z, scale = 1, rot = 0, yOffset = 0, tint }: {
+function GroundProp({ url, grad, x, z, scale = 1, rot = 0, yOffset = 0, tint, spin }: {
   url: string;
   grad: THREE.Texture;
   x: number;
@@ -1318,8 +1709,9 @@ function GroundProp({ url, grad, x, z, scale = 1, rot = 0, yOffset = 0, tint }: 
   rot?: number;
   yOffset?: number;
   tint?: string;
+  spin?: GltfSpin;
 }) {
-  return <GltfProp url={url} grad={grad} tint={tint} position={[x, exGroundY(x, z) + yOffset, z]} rotation={[0, rot, 0]} scale={scale} />;
+  return <GltfProp url={url} grad={grad} tint={tint} position={[x, placeableGroundY(x, z) + yOffset, z]} rotation={[0, rot, 0]} scale={scale} grounded spin={spin} />;
 }
 
 type RitualArtifactKey = keyof typeof ARTIFACT_3D_REGISTRY;
@@ -1349,13 +1741,117 @@ function RitualArtifactProp({ item, grad }: { item: RitualArtifactPlacement; gra
   );
 }
 
+function buildDrivableWheel(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    tinted(new THREE.CylinderGeometry(1, 1, 0.72, 24).rotateZ(Math.PI / 2), "#18181c"),
+    tinted(new THREE.CylinderGeometry(0.62, 0.62, 0.8, 24).rotateZ(Math.PI / 2), "#b7bac2"),
+    tinted(new THREE.CylinderGeometry(0.17, 0.17, 0.84, 14).rotateZ(Math.PI / 2), "#7f828b"),
+  ];
+  for (let i = 0; i < 5; i++) {
+    parts.push(tinted(new THREE.BoxGeometry(0.84, 0.66, 0.14).translate(0, 0.5, 0).rotateX((i / 5) * Math.PI * 2), "#d8dbe2"));
+  }
+  return mergeToonGeometries(parts);
+}
+
+function buildDrivableCarBody(scene: THREE.Object3D, grad: THREE.Texture): { geometry: THREE.BufferGeometry; material: THREE.Material } {
+  const root = scene.clone(true);
+  root.updateMatrixWorld(true);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const colors: number[] = [];
+  const tmp = new THREE.Color();
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const mat = (Array.isArray(m.material) ? m.material[0] : m.material) as THREE.MeshStandardMaterial;
+    if (/wheel|rim|calipe|tyre|tire/i.test(mat?.name || "")) return;
+    let g = m.geometry.clone();
+    g.applyMatrix4(m.matrixWorld);
+    if (g.index) g = g.toNonIndexed();
+    const pos = g.getAttribute("position") as THREE.BufferAttribute;
+    const nor = g.getAttribute("normal") as THREE.BufferAttribute | undefined;
+    tmp.copy(mat?.color ?? new THREE.Color("#cccccc"));
+    for (let i = 0; i < pos.count; i++) {
+      positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+      if (nor) normals.push(nor.getX(i), nor.getY(i), nor.getZ(i));
+      colors.push(tmp.r, tmp.g, tmp.b);
+    }
+    g.dispose();
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if (normals.length === positions.length) geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  if (normals.length !== positions.length) geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return { geometry: geo, material: new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: grad }) };
+}
+
+function ParkedCarFallback({ grad }: { grad: THREE.Texture }) {
+  const g = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const o = g.current;
+    if (!o) return;
+    o.position.set(carState.x, groundYWithRoad(carState.x, carState.z).y + CAR_Y_OFFSET, carState.z);
+    o.rotation.y = carState.heading;
+  });
+  return (
+    <group ref={g} position={[carState.x, groundYWithRoad(carState.x, carState.z).y + CAR_Y_OFFSET, carState.z]} rotation={[0, carState.heading, 0]}>
+      <mesh position={[0, 0.08, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[2.5, 28]} />
+        <meshBasicMaterial color="#061018" transparent opacity={0.18} depthWrite={false} />
+      </mesh>
+      <mesh position={[0, 0.55, 0]} scale={[3.55, 0.55, 1.65]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#53b9c8" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.1, 1.05, 0.08]} scale={[1.7, 0.7, 1.16]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#9ee1eb" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.02, 1.12, 0.16]} scale={[1.28, 0.42, 1.2]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color="#d9fbff" transparent opacity={0.72} />
+      </mesh>
+      {[-1, 1].map((sx) =>
+        [-1, 1].map((sz) => (
+          <mesh key={`${sx}-${sz}`} position={[sx * 1.32, 0.28, sz * 0.72]} rotation={[0, 0, Math.PI / 2]}>
+            <cylinderGeometry args={[0.34, 0.34, 0.3, 18]} />
+            <meshToonMaterial color="#17202a" gradientMap={grad} />
+          </mesh>
+        )),
+      )}
+      <mesh position={[0.78, 0.62, 0.88]}>
+        <sphereGeometry args={[0.11, 10, 8]} />
+        <meshBasicMaterial color="#fff0bc" />
+      </mesh>
+      <mesh position={[-0.78, 0.62, 0.88]}>
+        <sphereGeometry args={[0.11, 10, 8]} />
+        <meshBasicMaterial color="#fff0bc" />
+      </mesh>
+    </group>
+  );
+}
+
 // 可开的汽车:读模块级 carState,逐帧更新位置/朝向;toon 材质(传 grad,不再 raw)
 function DrivableCar({ grad }: { grad: THREE.Texture }) {
+  const { scene } = useGLTF(MODELS.qiche);
+  const { geometry: bodyGeo, material: bodyMat } = useMemo(() => buildDrivableCarBody(scene, grad), [scene, grad]);
+  const wheelGeo = useMemo(() => buildDrivableWheel(), []);
+  const wheelMat = useMemo(() => new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: grad }), [grad]);
   const g = useRef<THREE.Group>(null);
   const lights = useRef<THREE.Group>(null);
   const headSpot = useRef<THREE.SpotLight>(null); // 远光灯:朝前下方的前照 SpotLight
   const headSpotTarget = useRef<THREE.Object3D>(null);
+  const sFL = useRef<THREE.Group>(null);
+  const sFR = useRef<THREE.Group>(null);
+  const wFL = useRef<THREE.Mesh>(null);
+  const wFR = useRef<THREE.Mesh>(null);
+  const wRL = useRef<THREE.Mesh>(null);
+  const wRR = useRef<THREE.Mesh>(null);
   const roll = useRef(0);
+  const steerVis = useRef(0);
+  const wheelRoll = useRef(0);
   const clk = useRef(0);
   const gy = useRef(0); // 平滑后的车身贴地高度(跨帧阻尼,消除地形抖动)
   // —— 车尾尾焰(与林间土路 DriveScene 同款):3 层火焰 + 脉动暖光 + 迸射火星 + 起步/增压爆燃 ——
@@ -1400,6 +1896,7 @@ function DrivableCar({ grad }: { grad: THREE.Texture }) {
   const sparkGeo = useMemo(() => new THREE.SphereGeometry(1, 6, 5), []);
   const sparkMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#ffc24a", transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }), []);
   const sparkMtx = useMemo(() => new THREE.Matrix4(), []);
+  useEffect(() => () => { bodyGeo.dispose(); bodyMat.dispose(); wheelGeo.dispose(); wheelMat.dispose(); }, [bodyGeo, bodyMat, wheelGeo, wheelMat]);
   useEffect(() => () => { flameHaloGeo.dispose(); flameOuterGeo.dispose(); flameInnerGeo.dispose(); flameHaloMat.dispose(); flameOuterMat.dispose(); flameInnerMat.dispose(); sparkGeo.dispose(); sparkMat.dispose(); beamGeo.dispose(); beamMat.dispose(); bulbGeo.dispose(); bulbMat.dispose(); haloGeo.dispose(); haloMat.dispose(); }, [flameHaloGeo, flameOuterGeo, flameInnerGeo, flameHaloMat, flameOuterMat, flameInnerMat, sparkGeo, sparkMat, beamGeo, beamMat, bulbGeo, bulbMat, haloGeo, haloMat]);
   useEffect(() => { if (headSpot.current && headSpotTarget.current) headSpot.current.target = headSpotTarget.current; }, []); // 远光灯朝向锚到前下方目标点
   useFrame((_, dt) => {
@@ -1425,6 +1922,15 @@ function DrivableCar({ grad }: { grad: THREE.Texture }) {
     q.multiply(_carQ2.setFromAxisAngle(_CAR_ROLL_AXIS, roll.current));
     o.quaternion.slerp(q, Math.min(1, dt * 8)); // 姿态阻尼,过弯/起伏不突兀
     if (lights.current) lights.current.visible = carState.driving && sceneEnv.night; // 车头灯:只在夜里亮
+    steerVis.current += (carState.turn - steerVis.current) * Math.min(1, dt * 8);
+    wheelRoll.current = (wheelRoll.current + (carState.speed / CAR_WHEEL_ROLL_R) * dt) % (Math.PI * 2);
+    if (wFL.current) wFL.current.rotation.x = wheelRoll.current;
+    if (wFR.current) wFR.current.rotation.x = wheelRoll.current;
+    if (wRL.current) wRL.current.rotation.x = wheelRoll.current;
+    if (wRR.current) wRR.current.rotation.x = wheelRoll.current;
+    const steerY = -steerVis.current * CAR_MAX_STEER_VIS;
+    if (sFL.current) sFL.current.rotation.y = steerY;
+    if (sFR.current) sFR.current.rotation.y = steerY;
 
     // —— 车尾尾焰:踩油门(carState.throttle<0=前进给油)迸发 + 起步/增压爆燃 + 迸射火星 ——
     const driving = carState.driving;
@@ -1494,7 +2000,17 @@ function DrivableCar({ grad }: { grad: THREE.Texture }) {
   return (
     <>
       <group ref={g} position={[carState.x, groundYWithRoad(carState.x, carState.z).y + CAR_Y_OFFSET, carState.z]} rotation={[0, carState.heading, 0]}>
-        <GltfProp url={MODELS.qiche} grad={grad} position={[CAR_FIT_X, 0, CAR_FIT_Z]} scale={CAR_SCALE} />
+        <group position={[CAR_FIT_X, 0, CAR_FIT_Z]}>
+          <mesh geometry={bodyGeo} material={bodyMat} scale={CAR_SCALE} />
+        </group>
+        <group ref={sFL} position={[CAR_WHEELS[0].x, CAR_WHEELS[0].y, CAR_WHEELS[0].z]}>
+          <mesh ref={wFL} geometry={wheelGeo} material={wheelMat} scale={CAR_WHEELS[0].r} />
+        </group>
+        <group ref={sFR} position={[CAR_WHEELS[1].x, CAR_WHEELS[1].y, CAR_WHEELS[1].z]}>
+          <mesh ref={wFR} geometry={wheelGeo} material={wheelMat} scale={CAR_WHEELS[1].r} />
+        </group>
+        <mesh ref={wRL} geometry={wheelGeo} material={wheelMat} position={[CAR_WHEELS[2].x, CAR_WHEELS[2].y, CAR_WHEELS[2].z]} scale={CAR_WHEELS[2].r} />
+        <mesh ref={wRR} geometry={wheelGeo} material={wheelMat} position={[CAR_WHEELS[3].x, CAR_WHEELS[3].y, CAR_WHEELS[3].z]} scale={CAR_WHEELS[3].r} />
         <group ref={lights} visible={false}>
           {/* 灯泡:发光球 + additive 柔光晕 */}
           <mesh geometry={bulbGeo} material={bulbMat} position={[0.62, 0.6, 2.28]} />
@@ -1585,7 +2101,7 @@ const LANDMARK_PADS = [
 // 玩家/车贴地用:在任一地标地坪(+裙边)范围内,把地表高度抬到 padTop → 走上去稳稳落地,不陷下去。
 // 越靠中心权重越高(到 padR 外缘 SKIRT 距离内线性过渡到 0),与裙边 mesh 的可见坡度一致。
 function landmarkGroundLift(wx: number, wz: number): number {
-  let lift = 0;
+  let lift = -Infinity;
   for (const p of LANDMARK_PADS) {
     const dx = wx - p.x, dz = wz - p.z;
     const d = Math.sqrt(dx * dx + dz * dz);
@@ -1619,8 +2135,20 @@ function DelayedMount({ ms, children }: { ms: number; children: React.ReactNode 
       return;
     }
     setShow(false);
-    const t = window.setTimeout(() => setShow(true), ms);
-    return () => window.clearTimeout(t);
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    let idle = 0;
+    const t = window.setTimeout(() => {
+      const reveal = () => setShow(true);
+      if (w.requestIdleCallback) idle = w.requestIdleCallback(reveal, { timeout: 800 });
+      else reveal();
+    }, ms);
+    return () => {
+      window.clearTimeout(t);
+      if (idle && w.cancelIdleCallback) w.cancelIdleCallback(idle);
+    };
   }, [ms]);
   return show ? <>{children}</> : null;
 }
@@ -1639,16 +2167,16 @@ function PerfWatch({ tier, onDegrade }: { tier: PerfTier; onDegrade: () => void 
     const a = acc.current;
     a.t += dt;
     a.n += 1;
-    if (a.t >= 1) { // 每秒评估一次平均帧率
+    if (a.t >= EXPLORE_PERF_SAMPLE_SECONDS) { // 更短窗口评估平均帧率,先降像素再关后期
       const fps = a.n / a.t;
-      a.mild = fps < 46 ? a.mild + 1 : 0;
-      a.hard = fps < 28 ? a.hard + 1 : 0;
-      if (stage.current < 1 && a.mild >= 2) { stage.current = 1; setDpr(1); }   // 连续 2s 轻度卡 → 降 dpr
-      if (a.hard >= 2) {
+      a.mild = fps < EXPLORE_PERF_MILD_FPS ? a.mild + 1 : 0;
+      a.hard = fps < EXPLORE_PERF_HARD_FPS ? a.hard + 1 : 0;
+      if (stage.current < 1 && a.mild >= 1) { stage.current = 1; setDpr(EXPLORE_DPR_STAGE_ONE); }
+      if (a.hard >= 1 || a.mild >= 3) {
         stage.current = 2;
-        setDpr(tier === "low" ? 0.75 : 0.85);
+        setDpr(tier === "low" ? 0.65 : EXPLORE_DPR_STAGE_TWO);
         onDegrade();
-      } // 连续 2s 重度卡 → 再关 Sobel/低档继续降像素
+      }
       a.t = 0;
       a.n = 0;
     }
@@ -1656,16 +2184,37 @@ function PerfWatch({ tier, onDegrade }: { tier: PerfTier; onDegrade: () => void 
   return null;
 }
 
+function WebGLContextLossExit({ onExit }: { onExit: () => void }) {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      onExit();
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    return () => canvas.removeEventListener("webglcontextlost", handleContextLost);
+  }, [gl, onExit]);
+  return null;
+}
+
 function LandmarkOnPad({ cfg, url, padR, grad, raw = true }: {
-  cfg: { x: number; z: number; rot: number; scale: number; base: number };
+  cfg: { x: number; z: number; rot: number; scale: number; base: number; foundation?: LandmarkFoundation };
   url: string;
   padR: number;
   grad: THREE.Texture;
   raw?: boolean; // 默认保留写实材质(浴场/街区);raw={false} 走 toon 卡通化(山庄复用村屋精模)
 }) {
   const padTop = useMemo(() => landmarkPadTop(cfg.x, cfg.z, padR), [cfg, padR]);
+  const foundation = cfg.foundation;
   return (
     <group>
+      {foundation ? (
+        <mesh position={[cfg.x, padTop + foundation.height / 2 - foundation.sink, cfg.z]} rotation={[0, cfg.rot, 0]} castShadow receiveShadow>
+          <boxGeometry args={[foundation.width, foundation.height, foundation.depth]} />
+          <meshStandardMaterial color={foundation.color} roughness={0.86} metalness={0} />
+        </mesh>
+      ) : null}
       <GltfProp url={url} raw={raw} grad={grad} position={[cfg.x, padTop + cfg.base * cfg.scale, cfg.z]} rotation={[0, cfg.rot, 0]} scale={cfg.scale} />
     </group>
   );
@@ -1841,13 +2390,23 @@ function PreviewSpin({ children }: { children: React.ReactNode }) {
     </group>
   );
 }
-function AvatarPreview({ avatar }: { avatar: Avatar }) {
+function AvatarPreview({ avatar, character }: { avatar: Avatar; character: CharKind }) {
   return (
     <Canvas dpr={[1, 2]} camera={{ position: [0, 0.08, 1.55], fov: 34 }} gl={{ alpha: true }} style={{ width: "100%", height: "100%" }}>
       <ambientLight intensity={0.9} />
       <directionalLight position={[2, 3, 2]} intensity={1.1} />
       <PreviewSpin>
-        <CharacterModel avatar={avatar} />
+        <Suspense fallback={<CharacterModel avatar={avatar} />}>
+          {character === "hero" ? (
+            <GltfHero />
+          ) : character === "guardian" ? (
+            <GltfGuardian />
+          ) : character === "pocoyo" ? (
+            <GltfPocoyo />
+          ) : (
+            <CharacterModel avatar={avatar} />
+          )}
+        </Suspense>
       </PreviewSpin>
     </Canvas>
   );
@@ -1954,15 +2513,126 @@ function GltfAvatar({ avatar, legL, legR, armL, armR }: {
 // xyshz 新默认主角:Blender 重新绑骨骼后的 GLB；动作全部优先播放模型内作者动画。
 // GLTFLoader 实测包围盒约 36.9 × 99.9 × 67.2，Y 轴已经竖直；缩放到探索模式角色量级后补足落脚点。
 const XYSHZ_MODEL_SCALE = 0.0145;
+const XYSHZ_MODEL_BODY_SCALE: [number, number, number] = [XYSHZ_MODEL_SCALE * 1.045, XYSHZ_MODEL_SCALE, XYSHZ_MODEL_SCALE * 1.02];
 const XYSHZ_FOOT_OFFSET_Y = 49.9846 * XYSHZ_MODEL_SCALE;
 const XYSHZ_MODEL_ROTATION: [number, number, number] = [0, -Math.PI / 2, 0];
-const XYSHZ_WALK_TIMESCALE = 1.22;
-const XYSHZ_RUN_HOLD_SECONDS = 0.45;
-const XYSHZ_RUN_TIMESCALE = 1.18;
+const XYSHZ_WALK_TIMESCALE = 1.3;
+const XYSHZ_WALK_PHASE_BOOST = 0.26;
+const XYSHZ_WALK_BODY_BOB_HEIGHT = 0.165;
+const XYSHZ_WALK_BODY_BOB_BOOST = 0.52;
+const XYSHZ_WALK_FORWARD_LEAN = 0.04;
+const XYSHZ_WALK_STEP_PITCH_BOOST = 0.052;
+const XYSHZ_WALK_BODY_SWAY_BOOST = 0.085;
+const XYSHZ_RUN_HOLD_SECONDS = 0.82;
+const XYSHZ_RUN_BLEND_SECONDS = 0.28;
+const XYSHZ_RUN_INPUT_THRESHOLD = 0.72;
+const XYSHZ_WALK_SPEED_FACTOR = 0.74;
+const XYSHZ_RUN_SPEED_FACTOR = 1.18;
+const XYSHZ_RUN_TIMESCALE = 1.16;
+const XYSHZ_RUN_BODY_BOB_BOOST = 0.44;
+const XYSHZ_RUN_FORWARD_LEAN = 0.085;
+const XYSHZ_RUN_BODY_SWAY_BOOST = 0.045;
+const XYSHZ_RUN_STEP_INTERVAL_DROP = 0.13;
+const XYSHZ_RUN_PHASE_BOOST = 0.28;
+const XYSHZ_LAND_ACTION_SECONDS = 0.18;
+const XYSHZ_GLTF_LOCOMOTION_BOB_FACTOR = 0.78;
+const XYSHZ_HERO_LOCOMOTION_ROOT_DAMPING = 0.42;
+const XYSHZ_HERO_JUMP_ROOT_DAMPING = 0.34;
+const XYSHZ_HERO_LANDING_SQUASH_DAMPING = 0.45;
+const XYSHZ_CAMERA_VERTICAL_GROUND_LERP = 8;
+const XYSHZ_CAMERA_VERTICAL_JUMP_LERP = 3.2;
+const XYSHZ_MOVE_INPUT_DEADZONE = 0.08;
+const XYSHZ_LOCOMOTION_SWITCH_FADE = 0.18;
+const XYSHZ_JUMP_RECOVERY_FADE = 0.24;
+const XYSHZ_HERO_TURN_BANK_DAMPING = 0.55;
+const XYSHZ_HERO_MAX_TURN_BANK = 0.11;
 const XYSHZ_ACTION_CLIPS = ["Idle", "WalkLoop", "RunLoop", "Jump", "Wave", "Flute", "Sit", "Cheer"] as const;
+const XYSHZ_ACTION_FADE_IN: Record<(typeof XYSHZ_ACTION_CLIPS)[number], number> = {
+  Idle: 0.18,
+  WalkLoop: 0.22,
+  RunLoop: 0.16,
+  Jump: 0.08,
+  Wave: 0.18,
+  Flute: 0.16,
+  Sit: 0.24,
+  Cheer: 0.1,
+};
+const XYSHZ_ACTION_FADE_OUT: Record<(typeof XYSHZ_ACTION_CLIPS)[number], number> = {
+  Idle: 0.16,
+  WalkLoop: 0.2,
+  RunLoop: 0.16,
+  Jump: 0.2,
+  Wave: 0.2,
+  Flute: 0.18,
+  Sit: 0.22,
+  Cheer: 0.14,
+};
+const WAVE_SECONDS = 1.35;
+const WAVE_MOVE_LOCK_SECONDS = 0.86;
+const XYSHZ_MOVE_ACCEL_BASE = 0.045;
+const XYSHZ_MOVE_DECEL_BASE = 0.014;
+const XYSHZ_GREETING_DECEL_BASE = 0.008;
+const XYSHZ_OUTFIT_BACK_Z = -0.17;
+const XYSHZ_OUTFIT_TRIM_Z = XYSHZ_OUTFIT_BACK_Z - 0.006;
 
 function isXyshzActionClip(clip: CharacterActionClip): clip is (typeof XYSHZ_ACTION_CLIPS)[number] {
   return (XYSHZ_ACTION_CLIPS as readonly CharacterActionClip[]).includes(clip);
+}
+
+function getXyshzActionFadeIn(clip: (typeof XYSHZ_ACTION_CLIPS)[number]) {
+  return XYSHZ_ACTION_FADE_IN[clip];
+}
+
+function getXyshzActionFadeOut(from: (typeof XYSHZ_ACTION_CLIPS)[number] | "", to: (typeof XYSHZ_ACTION_CLIPS)[number]) {
+  if (!from) return 0;
+  if ((from === "WalkLoop" || from === "RunLoop") && (to === "WalkLoop" || to === "RunLoop")) return XYSHZ_LOCOMOTION_SWITCH_FADE;
+  if (from === "Jump" && (to === "WalkLoop" || to === "RunLoop" || to === "Idle")) return XYSHZ_JUMP_RECOVERY_FADE;
+  return XYSHZ_ACTION_FADE_OUT[from];
+}
+
+function XyshzHeroBodyDetails() {
+  const grad = useMemo(() => makeToonGradient(), []);
+  const mats = useMemo(
+    () => ({
+      trim: new THREE.MeshToonMaterial({ color: "#dce9ee", gradientMap: grad }),
+      seam: new THREE.MeshToonMaterial({ color: "#315466", gradientMap: grad }),
+      sash: new THREE.MeshToonMaterial({ color: "#446c7d", gradientMap: grad }),
+      shadow: new THREE.MeshToonMaterial({ color: "#233646", gradientMap: grad }),
+      accent: new THREE.MeshToonMaterial({ color: "#78b7c3", gradientMap: grad }),
+    }),
+    [grad],
+  );
+
+  useEffect(() => () => { grad.dispose(); Object.values(mats).forEach((mat) => mat.dispose()); }, [grad, mats]);
+
+  return (
+    <group name="XYSHZ_BodyAndOutfitDetails">
+      <mesh name="XYSHZ_CollarHighlight" material={mats.trim} position={[0, 1.055, -0.085]} rotation={[Math.PI / 2, 0, 0]} scale={[1, 0.52, 1]}>
+        <torusGeometry args={[0.18, 0.012, 8, 36]} />
+      </mesh>
+      <mesh name="XYSHZ_BackCoatSeam" material={mats.seam} position={[0, 0.59, XYSHZ_OUTFIT_TRIM_Z]}>
+        <boxGeometry args={[0.018, 0.46, 0.012]} />
+      </mesh>
+      <mesh name="XYSHZ_WaistSash" material={mats.sash} position={[0, 0.68, XYSHZ_OUTFIT_TRIM_Z]}>
+        <boxGeometry args={[0.42, 0.04, 0.014]} />
+      </mesh>
+      <mesh name="XYSHZ_RobeHemTrim" material={mats.shadow} position={[0, 0.335, XYSHZ_OUTFIT_TRIM_Z]}>
+        <boxGeometry args={[0.47, 0.026, 0.014]} />
+      </mesh>
+      <mesh name="XYSHZ_LeftCoatFold" material={mats.seam} position={[-0.15, 0.55, XYSHZ_OUTFIT_BACK_Z]} rotation={[0, 0, -0.11]}>
+        <boxGeometry args={[0.016, 0.34, 0.012]} />
+      </mesh>
+      <mesh name="XYSHZ_RightCoatFold" material={mats.seam} position={[0.15, 0.55, XYSHZ_OUTFIT_BACK_Z]} rotation={[0, 0, 0.11]}>
+        <boxGeometry args={[0.016, 0.34, 0.012]} />
+      </mesh>
+      <mesh name="XYSHZ_LeftShoulderTrim" material={mats.accent} position={[-0.185, 0.91, XYSHZ_OUTFIT_BACK_Z]} rotation={[0, 0, -0.28]}>
+        <boxGeometry args={[0.18, 0.028, 0.014]} />
+      </mesh>
+      <mesh name="XYSHZ_RightShoulderTrim" material={mats.accent} position={[0.185, 0.91, XYSHZ_OUTFIT_BACK_Z]} rotation={[0, 0, 0.28]}>
+        <boxGeometry args={[0.18, 0.028, 0.014]} />
+      </mesh>
+    </group>
+  );
 }
 
 function GltfHero({ actionRef }: { actionRef?: React.RefObject<CharacterActionClip> }) {
@@ -1981,21 +2651,31 @@ function GltfHero({ actionRef }: { actionRef?: React.RefObject<CharacterActionCl
     return root;
   }, [scene]);
   const { actions, mixer } = useAnimations(animations, ref);
-  const activeClip = useRef<string>("");
+  const activeClip = useRef<(typeof XYSHZ_ACTION_CLIPS)[number] | "">("");
   const activeAction = useRef<THREE.AnimationAction | null>(null);
   useFrame(() => {
     const requested = actionRef?.current ?? "Idle";
     const next = isXyshzActionClip(requested) && actions[requested] ? requested : "Idle";
     if (next !== activeClip.current) {
-      activeAction.current?.fadeOut(0.12);
+      const previousAction = activeAction.current;
+      const syncLocomotionPhase =
+        !!previousAction &&
+        (activeClip.current === "WalkLoop" || activeClip.current === "RunLoop") &&
+        (next === "WalkLoop" || next === "RunLoop");
+      activeAction.current?.fadeOut(getXyshzActionFadeOut(activeClip.current, next));
       const nextAction = actions[next];
       if (nextAction) {
-        nextAction.reset();
+        if (syncLocomotionPhase && previousAction) nextAction.time = previousAction.time;
+        else nextAction.reset();
         const looped = next === "Idle" || next === "RunLoop" || next === "WalkLoop";
         nextAction.clampWhenFinished = !looped;
+        nextAction.enabled = true;
+        nextAction.zeroSlopeAtStart = true;
+        nextAction.zeroSlopeAtEnd = true;
         nextAction.timeScale = next === "RunLoop" ? XYSHZ_RUN_TIMESCALE : next === "WalkLoop" ? XYSHZ_WALK_TIMESCALE : 1;
+        nextAction.setEffectiveWeight(1);
         nextAction.setLoop(looped ? THREE.LoopRepeat : THREE.LoopOnce, looped ? Infinity : 1);
-        nextAction.fadeIn(next === "RunLoop" ? 0.12 : next === "WalkLoop" ? 0.18 : 0.12).play();
+        nextAction.fadeIn(getXyshzActionFadeIn(next)).play();
       }
       activeAction.current = nextAction ?? null;
       activeClip.current = next;
@@ -2006,10 +2686,11 @@ function GltfHero({ actionRef }: { actionRef?: React.RefObject<CharacterActionCl
     <group ref={ref}>
       <primitive
         object={obj}
-        scale={XYSHZ_MODEL_SCALE}
+        scale={XYSHZ_MODEL_BODY_SCALE}
         rotation={XYSHZ_MODEL_ROTATION}
         position={[0, XYSHZ_FOOT_OFFSET_Y, 0]}
       />
+      <XyshzHeroBodyDetails />
     </group>
   );
 }
@@ -2126,6 +2807,21 @@ type CharKind = "hero" | "guardian" | "pocoyo" | "avatar";
 const CHAR_ORDER: CharKind[] = ["hero", "guardian", "pocoyo", "avatar"];
 const CHAR_LABEL: Record<CharKind, string> = { hero: "心屿守护者", guardian: "记忆的守护者", pocoyo: "Pocoyo", avatar: "用捏的人" };
 
+function defaultCharacterForTier(tier: PerfTier): CharKind {
+  void tier;
+  return "hero";
+}
+
+function loadInitialCharacter(tier: PerfTier): CharKind {
+  try {
+    const v = localStorage.getItem("xy_char");
+    if (v === "hero" || v === "guardian" || v === "pocoyo" || v === "avatar") return v;
+    return localStorage.getItem("xy_use_hero") === "0" ? "avatar" : defaultCharacterForTier(tier);
+  } catch {
+    return defaultCharacterForTier(tier);
+  }
+}
+
 // Pocoyo 的 FBX 转 GLB 后仍保留「头在 -Z、脚在 +Z」的卧倒轴向;Three.js 里 Y 才是站立方向。
 // 下面数值来自 Blender/Three 包围盒实测:Z 长 1.0114,旋正后脚底 minY=-0.3367。
 const POCOYO_MODEL_SCALE = 1.06;
@@ -2226,6 +2922,7 @@ function Player({
   nearRef,
   onCar,
   onCarEnter,
+  fishingAction = null,
 }: {
   inputRef: React.RefObject<Input>;
   posRef: React.RefObject<THREE.Vector3>;
@@ -2238,6 +2935,7 @@ function Player({
   nearRef?: React.RefObject<number>;
   onCar?: (s: "enter" | "exit" | null) => void;
   onCarEnter?: () => void;
+  fishingAction?: FishingActionClip | null;
 }) {
   const group = useRef<THREE.Group>(null);
   const legL = useRef<THREE.Object3D>(null);
@@ -2268,6 +2966,7 @@ function Player({
   const vel = useRef({ x: 0, z: 0 }); // 当前水平速度(用于加速/减速平滑)
   const vy = useRef(0); // 垂直速度(跳跃)
   const airborne = useRef(false); // 是否腾空
+  const landT = useRef(0); // 刚落地后的短恢复,让 Jump clip 自然收完
   const sq = useRef(0); // 落地压扁量(衰减)
   const introT = useRef(0); // 开场俯冲运镜进度 0→1
   const stepT = useRef(0); // 脚步/涉水音效冷却计时（限频，避免每帧触发）
@@ -2282,6 +2981,8 @@ function Player({
   const noteCursor = useRef(0);          // 下一个可用音符槽
   const camLook = useRef(new THREE.Vector3(0, 1.5, 0)); // 平滑注视点,减少地形/输入抖动带来的晕眩
   const camLookReady = useRef(false);
+  const camFollowY = useRef(0); // 相机垂直跟随单独低通,跳跃/落地不把镜头猛拽上拽下
+  const camFollowYReady = useRef(false);
   const fluteGrad = useMemo(() => makeToonGradient(), []);
   const fluteMats = useMemo(() => ({
     body: new THREE.MeshToonMaterial({ color: "#e6cd9c", gradientMap: fluteGrad }), // 竹身
@@ -2369,16 +3070,31 @@ function Player({
     }
     g.visible = true;
 
+    if (input.jump && !airborne.current) {
+      vy.current = JUMP_V; airborne.current = true; landT.current = 0;
+      // 起跳音:合成「Q 弹 boing」(playJump,弹性上扬的腾起音),贴合可爱治愈基调。一次性消费,天然不连响。
+      playJump();
+      emitCompanionEvent("jump"); // 精灵「主动陪聊」:跳一下它可能搭句话(由 ExploreMode 套节流)
+    }
+    if (input.jump) input.jump = false; // 一次性消费
+    if (input.wave) { waveT.current = WAVE_SECONDS; moveHoldT.current = 0; input.wave = false; } // 招手:短暂停步并正对镜头,像认真打招呼
+    if (input.flute) { fluteT.current = FLUTE_DUR; fluteNote.current = 0; input.flute = false; } // 吹笛:Q 键 / 🎵 按钮
+
     // 相机相对方向(投影到水平面)
     camera.getWorldDirection(_fwd);
     _fwd.setY(0).normalize();
     _right.crossVectors(_fwd, _up).normalize();
     _move.set(0, 0, 0).addScaledVector(_fwd, -input.y).addScaledVector(_right, input.x);
-    const moving = _move.lengthSq() > 0.0001;
-    moveHoldT.current += moving ? dt : -dt * 2;
-    moveHoldT.current = Math.max(0, Math.min(XYSHZ_RUN_HOLD_SECONDS + 0.6, moveHoldT.current));
-    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + 0.3, moveHoldT.current) : 0;
-    const moveSpeed = PLAYER_SPEED * (1 + runBlend * 0.35);
+    const inputStrength = Math.min(1, Math.hypot(input.x, input.y));
+    const wantsMove = inputStrength > XYSHZ_MOVE_INPUT_DEADZONE;
+    const greetingMoveLocked = character === "hero" && waveT.current > WAVE_SECONDS - WAVE_MOVE_LOCK_SECONDS && !airborne.current;
+    const moving = wantsMove && !greetingMoveLocked;
+    const runIntent = moving && inputStrength >= XYSHZ_RUN_INPUT_THRESHOLD;
+    moveHoldT.current += runIntent ? dt : -dt * 2.4;
+    moveHoldT.current = Math.max(0, Math.min(XYSHZ_RUN_HOLD_SECONDS + XYSHZ_RUN_BLEND_SECONDS, moveHoldT.current));
+    const runBlend = character === "hero" ? smoothstep01(XYSHZ_RUN_HOLD_SECONDS, XYSHZ_RUN_HOLD_SECONDS + XYSHZ_RUN_BLEND_SECONDS, moveHoldT.current) : 0;
+    const heroMoveSpeedFactor = character === "hero" ? XYSHZ_WALK_SPEED_FACTOR + runBlend * (XYSHZ_RUN_SPEED_FACTOR - XYSHZ_WALK_SPEED_FACTOR) : 1;
+    const moveSpeed = PLAYER_SPEED * heroMoveSpeedFactor;
 
     if (moving) {
       _move.normalize();
@@ -2397,54 +3113,24 @@ function Player({
     const tvx = moving ? _move.x * moveSpeed : 0;
     const tvz = moving ? _move.z * moveSpeed : 0;
     // 加减速更柔(降低「灵敏度」):base 调大 → 起步/收步更有重量感,不再一推就窜、一松就停。
-    const accel = 1 - Math.pow(0.02, dt); // 帧率无关;时间常数 ~0.14s → ~0.26s
+    const accelBase = greetingMoveLocked ? XYSHZ_GREETING_DECEL_BASE : moving ? XYSHZ_MOVE_ACCEL_BASE : XYSHZ_MOVE_DECEL_BASE;
+    const accel = 1 - Math.pow(accelBase, dt); // 帧率无关:起步略慢、收步更稳,挥手停步更自然
     vel.current.x += (tvx - vel.current.x) * accel;
     vel.current.z += (tvz - vel.current.z) * accel;
-    pos.x += vel.current.x * dt;
-    pos.z += vel.current.z * dt;
-    // 障碍碰撞:把玩家推出树/房子/地标,并沿其滑行(障碍是整柱高,跳跃也穿不过去)
-    resolveCollisions(collidersRef?.current ?? null, pos, vel.current, PLAYER_COL_R);
-    // 停着的车也挡住玩家(开车时玩家在车里,跳过):动态圆碰撞,人不能穿过车身
-    if (!carState.driving) {
-      const cdx = pos.x - carState.x, cdz = pos.z - carState.z, cmd = 2.4 + PLAYER_COL_R, cd2 = cdx * cdx + cdz * cdz;
-      if (cd2 < cmd * cmd && cd2 > 1e-6) {
-        const cd = Math.sqrt(cd2), cnx = cdx / cd, cnz = cdz / cd;
-        pos.x = carState.x + cnx * cmd; pos.z = carState.z + cnz * cmd;
-        const cvn = vel.current.x * cnx + vel.current.z * cnz;
-        if (cvn < 0) { vel.current.x -= cvn * cnx; vel.current.z -= cvn * cnz; }
-      }
-    }
+    // 分步推进:高速跑动也不会一帧跨过薄障碍;每小步都处理静态障碍、停放车身与岛屿可走边界。
+    advanceWithCollisions(collidersRef?.current ?? null, pos, vel.current, dt, PLAYER_COL_R);
     const speedMag = Math.hypot(vel.current.x, vel.current.z);
-
-    // 限制在岛上:常规岸线到护栏附近为止;海湾入口允许多走一点,能踏上沙滩/浅滩。
-    const maxR = walkableRadius(pos.x, pos.z);
-    const r2 = pos.x * pos.x + pos.z * pos.z;
-    if (r2 > maxR * maxR) {
-      const r = Math.sqrt(r2);
-      pos.x *= maxR / r;
-      pos.z *= maxR / r;
-      vel.current.x *= 0.3;
-      vel.current.z *= 0.3;
-    }
 
     // 步态相位
     const gait = Math.min(1, speedMag / (PLAYER_SPEED * 0.7));
-    walkPhase.current += dt * speedMag * 0.9;
+    const walkBlend = character === "hero" ? gait * (1 - runBlend) : 0;
+    walkPhase.current += dt * speedMag * (0.9 + walkBlend * XYSHZ_WALK_PHASE_BOOST + runBlend * XYSHZ_RUN_PHASE_BOOST);
 
     // 贴地 + 跳跃:陆上随丘陵起伏,浅滩可没到小腿(WADE_FLOOR);腾空时按重力抛物
     // 地标地坪(浴场/街区/山庄)范围内把地表抬到坪顶 → 走上去稳稳落地,不陷下去/不踩空
     // 贴地走「路地面」(近路压平 + 柏油薄层 ROAD_SURFACE_RAISE),与地形网格 / 车同一套函数 → 走在路上稳稳贴在柏油面上,不再陷进路里
     const { y: gwrY, roadW: gwrW } = groundYWithRoad(pos.x, pos.z);
     const groundY = Math.max(gwrY + gwrW * ROAD_SURFACE_RAISE, landmarkGroundLift(pos.x, pos.z), stairsGroundLift(pos.x, pos.z), WADE_FLOOR);
-    if (input.jump && !airborne.current) {
-      vy.current = JUMP_V; airborne.current = true;
-      // 起跳音:合成「Q 弹 boing」(playJump,弹性上扬的腾起音),贴合可爱治愈基调。一次性消费,天然不连响。
-      playJump();
-      emitCompanionEvent("jump"); // 精灵「主动陪聊」:跳一下它可能搭句话(由 ExploreMode 套节流)
-    }
-    if (input.jump) input.jump = false; // 一次性消费
-    if (input.wave) { waveT.current = 1.5; input.wave = false; } // 招手:仅 F 键 / ✋ 按钮触发(缓起缓落更暖)
-    if (input.flute) { fluteT.current = FLUTE_DUR; fluteNote.current = 0; input.flute = false; } // 吹笛:Q 键 / 🎵 按钮
     const cc = cheerRef?.current ?? 0;                            // 拾取(计数变化)→ 欢呼
     if (cc !== prevCheer.current) { cheerT.current = 0.85; prevCheer.current = cc; }
     waveT.current = Math.max(0, waveT.current - dt);
@@ -2467,14 +3153,14 @@ function Player({
     const near = nearRef?.current ?? -1;                          // 靠近 NPC(从无到有)→ 好奇表情
     if (near >= 0 && prevNear.current < 0) curiousT.current = 1.6;
     prevNear.current = near; curiousT.current = Math.max(0, curiousT.current - dt);
-    const settled = !airborne.current && gait < 0.06 && waveT.current <= 0 && cheerT.current <= 0 && fluteT.current <= 0;
+    const settled = !airborne.current && landT.current <= 0 && gait < 0.06 && waveT.current <= 0 && cheerT.current <= 0 && fluteT.current <= 0;
     idleT.current = settled ? idleT.current + dt : 0;             // 连续待机计时
     sit.current += ((idleT.current > 7 ? 1 : 0) - sit.current) * Math.min(1, dt * 2.0); // 久站→坐下(更缓地落座/起身,缓入缓出)
     if (airborne.current) {
       vy.current -= GRAVITY * dt;
       pos.y += vy.current * dt;
       if (pos.y <= groundY) {
-        pos.y = groundY; vy.current = 0; airborne.current = false; sq.current = 1; // 落地触发压扁
+        pos.y = groundY; vy.current = 0; airborne.current = false; landT.current = XYSHZ_LAND_ACTION_SECONDS; sq.current = 1; // 落地触发压扁 + 短恢复
         // 落地音:涉水(脚在水面下)用水花声,否则闷响落地声。采样优先,未命中回退合成。
         // 该分支仅在落地瞬间进入(下帧走 else),天然单次触发,不会连响。
         if (pos.y < 0.02) {
@@ -2489,36 +3175,44 @@ function Player({
     } else {
       pos.y = groundY;
     }
+    landT.current = Math.max(0, landT.current - dt);
     const wading = !airborne.current && pos.y < 0.02; // 脚在水面以下 = 涉水
     // 脚步 / 涉水音：移动中（gait 够大）按步频触发，涉水播水花、陆上播脚步。
     // 采样未就绪时静默（无合成对应，断网可接受）。stepT 限频(慢走 0.46s/步、涉水 0.5s)。
     stepT.current -= dt;
     if (!airborne.current && gait > 0.25 && stepT.current <= 0) {
-      stepT.current = wading ? 0.56 - runBlend * 0.07 : 0.52 - runBlend * 0.08;
+      stepT.current = wading ? 0.56 - runBlend * XYSHZ_RUN_STEP_INTERVAL_DROP : 0.52 - runBlend * XYSHZ_RUN_STEP_INTERVAL_DROP;
       playSample(wading ? "water_splash" : "footstep", { gain: wading ? 0.5 : 0.6, rate: 0.9 + Math.random() * 0.2 });
     }
     sq.current = Math.max(0, sq.current - dt * 3.5); // 压扁回弹衰减
     characterActionRef.current = selectCharacterAction({
       moving: gait > 0.12,
-      running: character === "hero" && moveHoldT.current >= XYSHZ_RUN_HOLD_SECONDS,
+      running: character === "hero" && runBlend >= 0.5,
       airborne: airborne.current,
+      landingActive: landT.current > 0,
       cheerActive: cheerT.current > 0,
       waveActive: waveT.current > 0,
       fluteActive: fluteT.current > 0,
       sitAmount: sit.current,
+      fishingAction,
     });
     const glbClipActive = (character === "guardian" && characterActionRef.current !== "Idle") || (character === "hero" && characterActionRef.current !== "Idle");
+    const locomotionClipActive = characterActionRef.current === "WalkLoop" || characterActionRef.current === "RunLoop";
+    const rootMotionDamping = character === "hero" ? (airborne.current || landT.current > 0 ? XYSHZ_HERO_JUMP_ROOT_DAMPING : locomotionClipActive ? XYSHZ_HERO_LOCOMOTION_ROOT_DAMPING : 1) : 1;
+    const landingSquashDamping = character === "hero" ? XYSHZ_HERO_LANDING_SQUASH_DAMPING : 1;
     const breathe = !airborne.current && gait < 0.12 ? Math.sin(s.clock.elapsedTime * 1.6) * 0.012 : 0; // 待机呼吸起伏
-    const bob = airborne.current ? 0 : Math.abs(Math.sin(walkPhase.current)) * 0.088 * gait; // 走路身体起伏(每步一颠,弹性更足)
+    const bob = airborne.current || landT.current > 0 ? 0 : Math.abs(Math.sin(walkPhase.current)) * XYSHZ_WALK_BODY_BOB_HEIGHT * gait; // 走路身体起伏(每步一颠,远镜头也能读出步态)
+    const locomotionBodyBobFactor = XYSHZ_GLTF_LOCOMOTION_BOB_FACTOR + walkBlend * XYSHZ_WALK_BODY_BOB_BOOST + runBlend * XYSHZ_RUN_BODY_BOB_BOOST;
+    const bodyBob = glbClipActive && locomotionClipActive ? bob * locomotionBodyBobFactor * rootMotionDamping : glbClipActive ? 0 : bob;
     const cheerHop = cheerT.current > 0 ? Math.sin((1 - cheerT.current / 0.85) * Math.PI) * 0.18 : 0; // 欢呼小跳
     const greetBob = waveT.current > 0 ? Math.sin(s.clock.elapsedTime * 4.4) * 0.016 : 0; // 招手时身体轻晃,更亲切
     const fluteBob = fluteT.current > 0 ? Math.sin(s.clock.elapsedTime * 1.7) * 0.02 : 0; // 吹奏时随气息缓缓起伏
     g.position.set(
       pos.x,
-      pos.y + (glbClipActive ? 0 : bob + breathe + greetBob + fluteBob - sit.current * 0.34) - sq.current * 0.12 + cheerHop,
+      pos.y + bodyBob + (glbClipActive ? 0 : breathe + greetBob + fluteBob - sit.current * 0.34) - sq.current * 0.12 * landingSquashDamping + cheerHop,
       pos.z,
     );
-    g.scale.set(1 + sq.current * 0.12, 1 - sq.current * 0.2, 1 + sq.current * 0.12); // 落地压扁
+    g.scale.set(1 + sq.current * 0.12 * landingSquashDamping, 1 - sq.current * 0.2 * landingSquashDamping, 1 + sq.current * 0.12 * landingSquashDamping); // 落地压扁
 
     // 朝向(缓转) + 移动前倾 + 转身侧倾
     let dy = facing.current - g.rotation.y;
@@ -2527,13 +3221,18 @@ function Player({
     g.rotation.y += dy * Math.min(1, dt * 6.5); // 转身更柔和(降灵敏度),不再急转
     if (headingRef) headingRef.current = carState.driving ? carState.heading : g.rotation.y; // 供小地图箭头朝向(开车时跟车头)
     g.rotation.order = "YXZ"; // 朝向(y)→前倾(x)→侧倾(z) 在朝向坐标系内复合
-    const stepPitch = Math.sin(walkPhase.current * 2) * 0.044 * gait; // 每步前后微颠(像点头般的步态弹性,更足)
+    const stepPitch = Math.sin(walkPhase.current * 2) * (0.044 + walkBlend * XYSHZ_WALK_STEP_PITCH_BOOST) * gait * rootMotionDamping; // 每步前后微颠(像点头般的步态弹性,更足)
+    const landPitch = landT.current > 0 ? -Math.sin((landT.current / XYSHZ_LAND_ACTION_SECONDS) * Math.PI) * 0.055 * rootMotionDamping : 0;
     const greetNod = waveT.current > 0 && !moving ? Math.sin(s.clock.elapsedTime * 4.4) * 0.05 : 0; // 招手时轻轻点头致意
-    g.rotation.x += (0.12 * gait + stepPitch + greetNod - sit.current * 0.06 - g.rotation.x) * Math.min(1, dt * 8); // 移动前倾 / 坐下轻松后倚 / 招手点头
-    const sway = Math.sin(walkPhase.current) * 0.088 * gait; // 走路重心左右轻移(自然摆胯,更明显)
+    const walkLean = walkBlend * XYSHZ_WALK_FORWARD_LEAN;
+    const runLean = runBlend * XYSHZ_RUN_FORWARD_LEAN;
+    g.rotation.x += ((0.12 * gait + walkLean + runLean) * rootMotionDamping + stepPitch + landPitch + greetNod - sit.current * 0.06 - g.rotation.x) * Math.min(1, dt * 8); // 移动前倾 / 走路点头 / 跑步压低重心 / 落地缓冲 / 坐下轻松后倚 / 招手点头
+    const sway = Math.sin(walkPhase.current) * (0.088 + walkBlend * XYSHZ_WALK_BODY_SWAY_BOOST + runBlend * XYSHZ_RUN_BODY_SWAY_BOOST) * gait * rootMotionDamping; // 走/跑时重心左右轻移,走路远镜头也能看出摆动
     const greetTilt = waveT.current > 0 && !moving ? 0.11 : 0; // 招手时头/身向举手侧微倾,更亲切
     const seatLean = sit.current > 0.01 ? Math.sin(s.clock.elapsedTime * 0.9) * 0.03 * sit.current : 0; // 坐着时上身随重心极缓微晃,有呼吸感
-    const bank = Math.max(-0.2, Math.min(0.2, dy * 0.5));
+    const bankLimit = character === "hero" ? XYSHZ_HERO_MAX_TURN_BANK : 0.2;
+    const bankDamping = character === "hero" ? XYSHZ_HERO_TURN_BANK_DAMPING : 1;
+    const bank = Math.max(-bankLimit, Math.min(bankLimit, dy * 0.5 * bankDamping));
     g.rotation.z += (bank + sway + greetTilt + seatLean - g.rotation.z) * Math.min(1, dt * 6); // 转身侧倾 + 走路摆胯 + 招手微倾 + 坐姿微晃
 
     // 四肢:先算目标姿态,再阻尼平滑到位(消除直接赋值的僵硬,带自然跟随/缓动)
@@ -2579,7 +3278,7 @@ function Player({
       ELx = ELx * (1 - sv) - 0.6 * sv; ERx = ERx * (1 - sv) - 0.6 * sv; // 手松松搭在膝上,肘自然弯
     }
     if (waveT.current > 0) {                                        // 招手(F / ✋):举手到头侧,主要靠肘/腕来回挥、手臂随之轻摆 → 暖而不僵
-      const env = Math.max(0, Math.min((1.5 - waveT.current) * 3.6, waveT.current * 5, 1)); // 缓起~0.28s + 缓落~0.2s
+      const env = Math.max(0, Math.min((WAVE_SECONDS - waveT.current) * 3.6, waveT.current * 5, 1)); // 缓起~0.28s + 缓落~0.2s
       const w = Math.sin(tw * 7.2);                                 // 挥手节拍(~1.15Hz,温暖不机械,告别旧的 9.2 急抖)
       ALx = -1.85 * env;                                            // 大臂随 env 缓缓抬到头侧(不再瞬间弹到位)
       ALz = (0.5 + w * 0.22) * env;                                 // 向外打开 + 随挥轻摆(辅助,主挥在肘)
@@ -2666,6 +3365,15 @@ function Player({
     }
 
     // 第三人称跟随相机;开场先看见整座岛,再从高空侧俯边降边收到角色身后。
+    const camTargetY = pos.y;
+    if (!camFollowYReady.current) {
+      camFollowY.current = camTargetY;
+      camFollowYReady.current = true;
+    } else {
+      const yLerp = airborne.current || landT.current > 0 ? XYSHZ_CAMERA_VERTICAL_JUMP_LERP : XYSHZ_CAMERA_VERTICAL_GROUND_LERP;
+      camFollowY.current += (camTargetY - camFollowY.current) * Math.min(1, dt * yLerp);
+    }
+    const cameraY = camFollowY.current;
     const ry = g.rotation.y;
     // 放飞天灯后:相机仰起跟拍天灯升空(入 / 保持 / 出 缓动),约 6s 后回到角色
     let watch = 0;
@@ -2674,21 +3382,25 @@ function Player({
       if (lanternCam.t > 6.2) lanternCam.on = false;
       else { const w = lanternCam.t; watch = w < 0.7 ? w / 0.7 : w > 4.6 ? Math.max(0, 1 - (w - 4.6) / 1.6) : 1; }
     }
-    introT.current = Math.min(1, introT.current + dt / HEALING_WALK_CAMERA.introSeconds);
+    const introCameraActive = introT.current < 1;
+    const cameraDt = introCameraActive ? Math.min(dt, HEALING_WALK_CAMERA.introMaxDelta) : dt;
+    const walkingStartedDuringIntro = moving && introCameraActive;
+    if (walkingStartedDuringIntro) introT.current = 1;
+    introT.current = Math.min(1, introT.current + cameraDt / HEALING_WALK_CAMERA.introSeconds);
     if (introT.current < 1) {
       const e = introT.current * introT.current * (3 - 2 * introT.current); // smoothstep 缓动
       const ang = ry + (1 - e) * HEALING_WALK_CAMERA.introSideAngle; // 起始侧偏 → 收束到身后
       const dist = CAM_DIST + (1 - e) * HEALING_WALK_CAMERA.introExtraDist;
       const ht = CAM_HEIGHT + (1 - e) * HEALING_WALK_CAMERA.introExtraHeight;
-      _camTarget.set(pos.x - Math.sin(ang) * dist, pos.y + ht, pos.z - Math.cos(ang) * dist);
+      _camTarget.set(pos.x - Math.sin(ang) * dist, cameraY + ht, pos.z - Math.cos(ang) * dist);
       _camVel.x = 0; _camVel.z = 0;
       resolveCollisions(collidersRef?.current ?? null, _camTarget, _camVel, HEALING_WALK_CAMERA.collisionRadius);
-      camera.position.lerp(_camTarget, Math.min(1, dt * HEALING_WALK_CAMERA.followLerp));
+      camera.position.lerp(_camTarget, Math.min(1, cameraDt * HEALING_WALK_CAMERA.introFollowLerp));
     } else {
       // 跟拍天灯时:略微后撤 + 抬高,腾出仰视天空的余地
       const cd = CAM_DIST + HEALING_WALK_CAMERA.lanternExtraDist * watch;
       const ch = CAM_HEIGHT + HEALING_WALK_CAMERA.lanternExtraHeight * watch;
-      _camTarget.set(pos.x - Math.sin(ry) * cd, pos.y + ch, pos.z - Math.cos(ry) * cd);
+      _camTarget.set(pos.x - Math.sin(ry) * cd, cameraY + ch, pos.z - Math.cos(ry) * cd);
       // 轻量避障:相机若被丘陵/地形挡住(镜头处地面高于镜头 y),沿「角色→相机」方向抬一点、收近,
       // 避免穿山/卡到地下。纯解析判断(用 groundYWithRoad + 地标地坪抬升,无射线),零额外开销。
       const camGround = Math.max(groundYWithRoad(_camTarget.x, _camTarget.z).y, landmarkGroundLift(_camTarget.x, _camTarget.z));
@@ -2700,22 +3412,25 @@ function Player({
       }
       _camVel.x = 0; _camVel.z = 0;
       resolveCollisions(collidersRef?.current ?? null, _camTarget, _camVel, HEALING_WALK_CAMERA.collisionRadius);
-      camera.position.lerp(_camTarget, Math.min(1, dt * HEALING_WALK_CAMERA.followLerp));
+      if (walkingStartedDuringIntro) camera.position.copy(_camTarget);
+      else camera.position.lerp(_camTarget, Math.min(1, dt * HEALING_WALK_CAMERA.followLerp));
     }
     // 注视点:平时看角色;放飞天灯后按 watch 缓动插值到天灯所在的高空(略抬,把上方烟花也带进画面)
     if (watch > 0) {
       const ly = lanternCam.gy + 1.3 + lanternRise(lanternCam.t) + 6;
-      _camLookTarget.set(pos.x + (lanternCam.x - pos.x) * watch, pos.y + 1.5 + (ly - (pos.y + 1.5)) * watch, pos.z + (lanternCam.z - pos.z) * watch);
+      _camLookTarget.set(pos.x + (lanternCam.x - pos.x) * watch, cameraY + 1.5 + (ly - (cameraY + 1.5)) * watch, pos.z + (lanternCam.z - pos.z) * watch);
     } else {
       _camLookTarget.set(
         pos.x + Math.sin(ry) * HEALING_WALK_CAMERA.lookAhead,
-        pos.y + HEALING_WALK_CAMERA.lookHeight,
+        cameraY + HEALING_WALK_CAMERA.lookHeight,
         pos.z + Math.cos(ry) * HEALING_WALK_CAMERA.lookAhead,
       );
     }
     if (!camLookReady.current) {
       camLook.current.copy(_camLookTarget);
       camLookReady.current = true;
+    } else if (introCameraActive && !walkingStartedDuringIntro) {
+      camLook.current.lerp(_camLookTarget, Math.min(1, cameraDt * HEALING_WALK_CAMERA.introLookLerp));
     } else {
       camLook.current.lerp(_camLookTarget, Math.min(1, dt * HEALING_WALK_CAMERA.lookLerp));
     }
@@ -3017,12 +3732,14 @@ function Town({
   collidersRef,
   isNight,
   revealDelay,
+  allowHeavyLandmarks,
 }: {
   toonGrad: THREE.Texture;
   accent: string;
   collidersRef?: React.RefObject<Map<string, Collider[]> | null>;
   isNight?: boolean;
   revealDelay: ExploreRevealDelay;
+  allowHeavyLandmarks?: boolean;
 }) {
   const wall = useMemo(() => new THREE.MeshToonMaterial({ color: "#ece6d6", gradientMap: toonGrad }), [toonGrad]);
   const wall2 = useMemo(() => new THREE.MeshToonMaterial({ color: "#d6ccb4", gradientMap: toonGrad }), [toonGrad]);
@@ -3043,7 +3760,6 @@ function Town({
   const petal = useMemo(() => new THREE.MeshToonMaterial({ color: "#e89ab0", gradientMap: toonGrad }), [toonGrad]);
   const petal2 = useMemo(() => new THREE.MeshToonMaterial({ color: "#f3d27a", gradientMap: toonGrad }), [toonGrad]);
   const rock = useMemo(() => new THREE.MeshToonMaterial({ color: "#7c8794", gradientMap: toonGrad }), [toonGrad]);
-  const pond = useMemo(() => new THREE.MeshToonMaterial({ color: "#5fb6c4", gradientMap: toonGrad, transparent: true, opacity: 0.88 }), [toonGrad]);
   const hay = useMemo(() => new THREE.MeshToonMaterial({ color: "#d8b86a", gradientMap: toonGrad }), [toonGrad]);
   const shell = useMemo(() => new THREE.MeshToonMaterial({ color: "#f0e0cf", gradientMap: toonGrad }), [toonGrad]);
   const glow = useMemo(() => new THREE.MeshStandardMaterial({ color: "#ffe6a0", emissive: "#ffe6a0", emissiveIntensity: 2, toneMapped: false }), []);
@@ -3053,8 +3769,8 @@ function Town({
   // polygonOffset:把路面深度往相机方向微偏,和压平后的地形再有零点几毫米的高度并列时,路面稳赢深度测试 → 杜绝接缝处 z-fighting 闪烁
   const roadMat = useMemo(() => new THREE.MeshToonMaterial({ map: roadTex, gradientMap: toonGrad, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }), [roadTex, toonGrad]);
   useEffect(
-    () => () => [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, hay, glow, roadMat, roadTex].forEach((m) => m.dispose()),
-    [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, pond, hay, glow, roadMat, roadTex],
+    () => () => [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, hay, glow, roadMat, roadTex].forEach((m) => m.dispose()),
+    [wall, wall2, wall3, roof, roof2, roof3, wood, trunk, leaf, leaf2, pine, bush, dark, stone, red, sign, petal, petal2, rock, hay, glow, roadMat, roadTex],
   );
   // 浅滩礁石(岛外一圈水里)
   // 浅滩礁石(大岛外一圈水里)
@@ -3072,54 +3788,11 @@ function Town({
   const buildings = useMemo(() => {
     const wms = [wall, wall2, wall3];
     const rms = [roof, roof2, roof3];
-    const out: { x: number; z: number; rot: number; w: number; d: number; h: number; wm: THREE.Material; rm: THREE.Material }[] = [];
-    const spacer = makeSpacer(7); // 网格边长 ≥ 最大最小间距(7),房子之间留巷子、绝不互穿
-    // 这是岛,不是城市:房子聚成一个中央村落,其余大片留给自然。小而矮的尖顶小屋。
-    const VILLAGE = 26; // 中央村落
-    const cluster = Math.min(34, WALK_RADIUS * 0.2);
-    for (let i = 0; i < VILLAGE; i++) {
-      const a = hash2(i, 1.1) * Math.PI * 2;
-      const r = 4 + Math.sqrt(hash2(i, 2.2)) * cluster;
-      const x = Math.cos(a) * r;
-      const z = Math.sin(a) * r;
-      if (isBeachOrWater(x, z)) continue; // 村落房子也不落在沙滩 / 水里
-      if (nearIsleProp(x, z, 1.0)) continue; // 不叠在神社 / 水井 / 凉亭等设施上
-      if (!spacer(x, z, 6.5)) continue; // 房子互不重叠
-      out.push({
-        x,
-        z,
-        rot: hash2(i, 3.3) * Math.PI * 2,
-        w: 1.8 + hash2(i, 4.4) * 1.0,
-        d: 1.8 + hash2(i, 5.5) * 0.8,
-        h: 1.5 + hash2(i, 6.6) * 1.0,
-        wm: wms[i % 3],
-        rm: rms[i % 3],
-      });
-    }
-    const COTTAGES = 16; // 岛上零星独立小屋
-    for (let i = 0; i < COTTAGES; i++) {
-      const a = (i / COTTAGES) * Math.PI * 2 + hash2(i + 50, 1.7) * 1.2;
-      const r = WALK_RADIUS * (0.28 + hash2(i + 50, 2.3) * 0.58);
-      const x = Math.cos(a) * r;
-      const z = Math.sin(a) * r;
-      // 清掉落在环岛柏油路上的独立小屋(房子有碰撞,不清则车穿模撞墙)。路带 = 路面半宽 + 房子半径 + 余量
-      if (distToRoadCenter(x, z) < ROAD_HALF_W + 4) continue;
-      if (isBeachOrWater(x, z)) continue; // 小屋不建在沙滩 / 水里
-      if (onLandmarkPad(x, z)) continue; // 小屋不压地标地坪/裙边
-      if (nearIsleProp(x, z, 1.0)) continue;
-      if (!spacer(x, z, 7)) continue; // 与村落 / 彼此都不重叠
-      out.push({
-        x,
-        z,
-        rot: hash2(i + 50, 3.1) * Math.PI * 2,
-        w: 1.7 + hash2(i + 50, 4.2) * 0.7,
-        d: 1.7 + hash2(i + 50, 5.1) * 0.6,
-        h: 1.4 + hash2(i + 50, 6.3) * 0.7,
-        wm: wms[i % 3],
-        rm: rms[(i + 1) % 3],
-      });
-    }
-    return out;
+    return buildTownBuildingFootprints().map((b, i) => ({
+      ...b,
+      wm: wms[i % 3],
+      rm: rms[i % 3],
+    }));
   }, [wall, wall2, wall3, roof, roof2, roof3]);
 
   const bushes = useMemo(() => {
@@ -3132,11 +3805,9 @@ function Town({
       const z = Math.sin(a) * r;
       if (isBeachOrWater(x, z)) continue; // 灌木只长草地
       if (onLandmarkPad(x, z)) continue; // 地标地坪 + 裙边缓坡上不生灌木(同树)
-      if (distToRoadCenter(x, z) < ROAD_HALF_W + 1.5) continue; // 清掉环岛柏油路上的灌木(否则穿透路面)
+      if (isInDriveRoadClearance(x, z, 0.4)) continue; // 清掉环岛柏油路和路肩上的灌木
       if (nearIsleProp(x, z, 0.6)) continue; // 不堵在设施/石阶门口(原 0.3 太贴,会蹭进门廊)
-      let onHouse = false;
-      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 1.0) { onHouse = true; break; } } // 不长进房子(同树,只是余量略小)
-      if (onHouse) continue;
+      if (nearTownBuildingFootprint(x, z, buildings, 1.0)) continue; // 不长进房子(同树,只是余量略小)
       if (!spacer(x, z, 2.2)) continue; // 最小间距:不堆叠(更密的林下灌木)
       out.push({ x, z, s: 0.6 + hash2(i + 20, 1.4) * 0.6 });
     }
@@ -3152,6 +3823,7 @@ function Town({
       const t = i / (M - 1);
       const x = (t - 0.5) * 2 * L;
       const z = Math.sin(t * Math.PI * 1.4) * L * 0.32;
+      if (isInDriveRoadClearance(x, z, 0.8)) continue; // 步行砖不压到车道
       if (onLandmarkPad(x, z)) continue; // 方砖步道不铺上地标台坪/裙边(否则平砖按裸地形高散落在抬升台坡上 → 半埋/悬空穿插)
       out.push({ x, z, rot: Math.cos(t * Math.PI * 1.4) * 0.5 });
     }
@@ -3160,6 +3832,7 @@ function Town({
       const t = i / (B - 1);
       const x = Math.sin(t * Math.PI) * 2.0 - 1.0;
       const z = (t - 0.5) * 2 * (L * 0.7);
+      if (isInDriveRoadClearance(x, z, 0.8)) continue; // 纵向支路也不盖到车道
       if (onLandmarkPad(x, z)) continue; // 纵向支路同理(它纵穿浴场/街区台坪)
       out.push({ x, z, rot: Math.PI / 2 + Math.cos(t * Math.PI) * 0.4 });
     }
@@ -3198,6 +3871,7 @@ function Town({
       const t = i / (N - 1);
       const x = (t - 0.5) * 2 * L;
       const z = Math.sin(t * Math.PI * 1.4) * L * 0.32 + 2.2;
+      if (isInDriveRoadClearance(x, z, 0.7)) continue; // 电线杆不立在车道/路肩上
       if (onLandmarkPad(x, z)) continue; // 杆不立在地标地坪/裙边上(否则埋进被抬升的坪里、电线横穿台顶 → 穿模)
       out.push({ x, z });
     }
@@ -3205,10 +3879,10 @@ function Town({
   }, []);
 
   // 电线杆 3 段几何各自的实例数据(原本每杆一个 group+3 mesh → 现每种几何一次实例绘制)
-  const poleItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 1.15, p.z] })), [poleSpots]);
-  const crossAItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 2.1, p.z] })), [poleSpots]);
-  const crossBItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, exGroundY(p.x, p.z) + 1.85, p.z] })), [poleSpots]);
-  // 电线(每档再细分多段:杆顶间走直线下垂,遇土丘/地坪则随地抬起 → 永不穿地、不横切台顶)。
+  const poleItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, groundYWithRoad(p.x, p.z).y + 1.15, p.z] })), [poleSpots]);
+  const crossAItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, groundYWithRoad(p.x, p.z).y + 2.1, p.z] })), [poleSpots]);
+  const crossBItems = useMemo<InstItem[]>(() => poleSpots.map((p) => ({ p: [p.x, groundYWithRoad(p.x, p.z).y + 1.85, p.z] })), [poleSpots]);
+  // 电线(每档再细分多段:杆顶间走直线下垂,遇土丘/路肩/地坪则随地抬起 → 永不穿地、不横切台顶)。
   // 直接产出 InstItem[](单位柱按段长 sv.y 缩放 + quat→euler 朝向),整片电线一次实例绘制。
   const wireItems = useMemo<InstItem[]>(() => {
     const out: InstItem[] = [];
@@ -3226,14 +3900,14 @@ function Town({
       let skip = false;
       for (let s = 0; s <= SEG; s++) { const t = s / SEG; if (onLandmarkPad(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)) { skip = true; break; } }
       if (skip) continue;
-      const ay = exGroundY(a.x, a.z) + TOP;
-      const by = exGroundY(b.x, b.z) + TOP;
+      const ay = groundYWithRoad(a.x, a.z).y + TOP;
+      const by = groundYWithRoad(b.x, b.z).y + TOP;
       let px = a.x, py = ay, pz = a.z;
       for (let s = 1; s <= SEG; s++) {
         const t = s / SEG;
         const x = a.x + (b.x - a.x) * t;
         const z = a.z + (b.z - a.z) * t;
-        const y = Math.max(ay + (by - ay) * t, exGroundY(x, z) + MIN_CLEAR); // 直线垂落,遇地形隆起则抬起
+        const y = Math.max(ay + (by - ay) * t, groundYWithRoad(x, z).y + MIN_CLEAR); // 直线垂落,遇地形/路肩隆起则抬起
         const dx = x - px, dy = y - py, dz = z - pz;
         const len = Math.hypot(dx, dy, dz);
         q.setFromUnitVectors(up, dir.set(dx, dy, dz).normalize());
@@ -3254,6 +3928,7 @@ function Town({
       const t = i / (N - 1);
       const x = (t - 0.5) * 2 * L;
       const z = Math.sin(t * Math.PI * 1.4) * L * 0.32 - 2.0;
+      if (isInDriveRoadClearance(x, z, 0.8)) continue; // 路灯排不压到车道
       if (onLandmarkPad(x, z)) continue; // 路灯同理不立在地标坪上(否则灯柱埋进抬升的台坪 → 穿模)
       out.push({ x, z });
     }
@@ -3272,11 +3947,9 @@ function Town({
       const z = Math.sin(a) * r;
       if (isBeachOrWater(x, z)) continue; // 花不开在沙滩 / 水里
       if (onLandmarkPad(x, z)) continue; // 不开在地标地坪/裙边(否则浮在台坡上)
-      if (distToRoadCenter(x, z) < ROAD_HALF_W + 1.2) continue; // 清掉环岛柏油路上的小花(否则穿透路面)
+      if (isInDriveRoadClearance(x, z, 0.2)) continue; // 小花不长到车道/路肩
       if (nearIsleProp(x, z, 0.5)) continue; // 不从神社/水井/石阶等设施里钻出来
-      let inHouse = false;
-      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 0.4) { inHouse = true; break; } } // 不从屋里长出来(贴墙脚仍可)
-      if (inHouse) continue;
+      if (nearTownBuildingFootprint(x, z, buildings, 0.4)) continue; // 不从屋里长出来(贴墙脚仍可)
       if (!spacer(x, z, 1.4)) continue; // 轻度去重,打散成片堆叠
       out.push({ x, z, c: i % 2 });
     }
@@ -3296,11 +3969,8 @@ function Town({
       // 清出大地标 / 中心设施 / 民居,避免树穿过建筑
       if (onLandmarkPad(x, z)) continue; // 地标地坪 + 裙边缓坡上不长树(否则按原地形贴地会沉进裙边/穿模)
       if (nearIsleProp(x, z, 1.5)) continue;
-      let onHouse = false;
-      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 2.0) { onHouse = true; break; } }
-      if (onHouse) continue;
-      // 环岛路净空(加宽到 4.5,树冠不压路面)
-      if (distToRoadCenter(x, z) < ROAD_HALF_W + 4.5) continue;
+      if (nearTownBuildingFootprint(x, z, buildings, 2.0)) continue;
+      if (isInDriveRoadClearance(x, z, 2.2)) continue; // 树冠不压车道和路肩
       const high = groundYWithRoad(x, z).y > 9; // 高地
       const pine = high ? hash2(i + 1, 8.8) < 0.62 : hash2(i + 1, 8.8) < 0.26; // 高处针叶林更多 → 真实垂直植被带
       const minD = pine ? 4.0 : 4.8; // 阔叶冠大 → 间距更大;松较窄可更密成林(树干仍不互插)
@@ -3327,9 +3997,9 @@ function Town({
       if (isBeachOrWater(x, z)) continue; // 石块也只落在草地(不进海/沙)
       if (onLandmarkPad(x, z)) continue; // 地标地坪 + 裙边缓坡上不落石(同树)
       if (nearIsleProp(x, z, 1.0)) continue;
-      if (distToRoadCenter(x, z) < ROAD_HALF_W + 3.0) continue; // 不堵路面
+      if (isInDriveRoadClearance(x, z, 1.2)) continue; // 石块不堵车道/路肩
       let blocked = false;
-      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 1.5) { blocked = true; break; } }
+      if (nearTownBuildingFootprint(x, z, buildings, 1.5)) blocked = true;
       if (!blocked) for (const t of trees) { if (Math.hypot(x - t.x, z - t.z) < 2.0) { blocked = true; break; } } // 不压树干
       if (blocked) continue;
       if (!spacer(x, z, 3.5)) continue;
@@ -3379,7 +4049,7 @@ function Town({
       { x: 1.6, z: 2.2, r: 0.45 }, // 邮筒
       { x: -1.8, z: 2.6, r: 0.7 }, // 长椅
       { x: 3.4, z: -0.6, r: 0.6 }, // 木箱堆
-      { x: 0.8, z: 1.4, r: 0.35 }, // 路牌
+      { x: 0.8, z: 1.4, r: 0.1 }, // 路牌:窄杆道具,避免碰撞圈压住中心步道
       { x: -6, z: -3, r: 1.0 }, // 村口篝火
       { x: 9, z: -4, r: 0.5 }, // 风铃(岛上装饰,非风铃柱玩法的那 5 根)
       { x: -5, z: -8, r: 1.1 }, // 秋千架
@@ -3387,8 +4057,11 @@ function Town({
     );
     // 石阶:实心 + 可踩 → 由 stairsGroundLift 斜坡贴地负责拾级而上,这里只补两侧栏挡圆防侧穿;不再用单挡圈(那样只能绕、踩不上去)
     for (const c of stairRailColliders()) list.push(c);
+    for (const c of pondWaterColliders()) list.push(c);
+    for (const c of beachFenceColliders()) list.push(c);
     // 心屿湾海滩固体(棕榈/草棚/篝火/小船/潮池/指路牌/海螺礁/藏宝箱)碰撞体 —— 与渲染同一数据源,绝不脱节
     for (const c of getBeach().colliders) list.push(c);
+    for (const c of C1_DISTRICT_COLLIDERS) list.push(c);
     collidersRef.current = buildColliderGrid(list);
   }, [trees, buildings, landRocks, collidersRef]);
 
@@ -3402,11 +4075,9 @@ function Town({
       const z = Math.sin(a) * r;
       if (isBeachOrWater(x, z)) continue; // 蘑菇只长林间草地
       if (onLandmarkPad(x, z)) continue; // 不长在地标地坪/裙边
-      if (distToRoadCenter(x, z) < ROAD_HALF_W + 1.0) continue; // 蘑菇也避开路面
+      if (isInDriveRoadClearance(x, z, 0.35)) continue; // 蘑菇也避开车道/路肩
       if (nearIsleProp(x, z, 0.5)) continue; // 不从设施/石阶里钻出来
-      let inHouse = false;
-      for (const b of buildings) { if (Math.hypot(x - b.x, z - b.z) < Math.max(b.w, b.d) * 0.7 + 0.5) { inHouse = true; break; } } // 不从屋里冒出来(树底下仍可,森林蘑菇本就该长树根旁)
-      if (inHouse) continue;
+      if (nearTownBuildingFootprint(x, z, buildings, 0.5)) continue; // 不从屋里冒出来(树底下仍可,森林蘑菇本就该长树根旁)
       if (!spacer(x, z, 1.8)) continue; // 自身不再堆成一坨(原先无间距,常见两三朵叠穿)
       out.push({ x, z, s: 0.7 + hash2(i + 510, 5.2) * 0.7, red: hash2(i + 510, 6.4) > 0.45 });
     }
@@ -3563,6 +4234,7 @@ function Town({
           const wz = f.z + lx * s + lz * c;
           if (onLandmarkPad(wx, wz)) continue; // 作物不长在地标地坪/裙边上(否则沉进/穿出被抬升的台坡)
           if (Math.hypot(wx - POND.x, wz - POND.z) < POND_CROP_CLEARANCE) continue; // 第二块农田贴近池塘,留出水面和岸边空间
+          if (isInDriveRoadClearance(wx, wz, 0.45)) continue; // 作物不长到车道/路肩上
           out.push({ p: [wx, exGroundY(wx, wz), wz], r: [0, f.rot, 0] });
         }
       }
@@ -3576,6 +4248,7 @@ function Town({
         const wx = f.x + (hash2(f.x + k, 1.3) - 0.5) * f.w * 1.4;
         const wz = f.z + (hash2(f.z + k, 2.7) - 0.5) * f.d * 1.4;
         if (onLandmarkPad(wx, wz)) continue; // 干草垛同样避开地标地坪/裙边
+        if (isInDriveRoadClearance(wx, wz, 1.0)) continue; // 干草垛不堆到车道/路肩上
         out.push({ p: [wx, exGroundY(wx, wz), wz], s: 0.8 + hash2(k, 3.1) * 0.5 });
       }
     }
@@ -3595,6 +4268,9 @@ function Town({
     ],
     [],
   );
+  const pondX = POND_COLLISION_CENTER.x;
+  const pondZ = POND_COLLISION_CENTER.z;
+  const pondWaterY = pondWaterLevel(pondX, pondZ, 7.2, 5.8);
 
   return (
     <group>
@@ -3670,9 +4346,7 @@ function Town({
       {hayG && <InstancedField geo={hayG.geometry} material={hayG.material} items={hayItems} />}
 
       {/* 中央广场(铺石) */}
-      <mesh material={stone} position={[0, exGroundY(0, 0) + 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[4.5, 32]} />
-      </mesh>
+      <TerrainEllipseSurface grad={toonGrad} x={0} z={0} rx={4.5} rz={4.5} yLift={0.03} color="#cabfa8" thetaSegments={32} />
 
       {/* 木栈桥(glb,从大岛东岸伸进海里;原点在陆端,+Z 朝海 → 转 +90° 朝 +X) */}
       <GltfProp url={MODELS.pier} grad={toonGrad} position={[WALK_RADIUS - 1.5, -0.35, 0]} rotation={[0, Math.PI / 2, 0]} scale={0.5} />
@@ -3705,67 +4379,59 @@ function Town({
       {/* 风车(glb,岛屿地标;叶片 Blades 节点缓缓自转) */}
       <GltfProp url={MODELS.windmill} grad={toonGrad} position={[-WALK_RADIUS * 0.35, exGroundY(-WALK_RADIUS * 0.35, WALK_RADIUS * 0.45), WALK_RADIUS * 0.45]} scale={0.78} spin={{ node: "Blades", speed: -0.9, axis: "y" }} />
 
-      {/* 汽车(glb,村里停一辆;toon 卡通 + 可上车驾驶)——3.4M 重模型,独立 Suspense 边界:
-          首屏地形/小物件先可见可走,车随后异步浮现,不再整场景卡在加载界面 */}
-      <DelayedMount ms={revealDelay.car}>
-        <Suspense fallback={null}>
-          <DrivableCar grad={toonGrad} />
-        </Suspense>
-      </DelayedMount>
       <TireDust />
 
       {/* 写实重地标:延迟挂载 + 独立 Suspense,错开几秒在「世界已可走」后逐个到位,深 clone 不卡进岛首帧。
           延迟「轻→重」错峰:街区 → 杜鹃 → 山庄 → 浴场(28M 最重,最后)。 */}
-      {/* 建筑街区(写实地标,村南) */}
-      <DelayedMount ms={revealDelay.townblock}>
-        <Suspense fallback={null}>
-          <LandmarkOnPad cfg={BLOCK} url={MODELS.townblock} padR={7.5} grad={toonGrad} />
-        </Suspense>
-      </DelayedMount>
+      {allowHeavyLandmarks && (
+        <>
+          {/* 建筑街区(写实地标,村南) */}
+          <DelayedMount ms={revealDelay.townblock}>
+            <Suspense fallback={null}>
+              <LandmarkOnPad cfg={BLOCK} url={MODELS.townblock} padR={7.5} grad={toonGrad} />
+            </Suspense>
+          </DelayedMount>
 
-      {/* 杜鹃花(写实灌木,花丛点缀) */}
-      <DelayedMount ms={revealDelay.rhododendron}>
-        <Suspense fallback={null}>
-          {RHODOS.map((r, i) => (
-            <GltfProp key={`rh${i}`} url={MODELS.rhododendron} raw position={[r.x, exGroundY(r.x, r.z) + 1.0 * r.s, r.z]} rotation={[0, hash2(r.x + 2.3, 3.1) * 6.28, 0]} scale={r.s} />
-          ))}
-        </Suspense>
-      </DelayedMount>
+          {/* 杜鹃花(写实灌木,花丛点缀) */}
+          <DelayedMount ms={revealDelay.rhododendron}>
+            <Suspense fallback={null}>
+              {RHODOS.map((r, i) => (
+                <GltfProp key={`rh${i}`} url={MODELS.rhododendron} raw position={[r.x, exGroundY(r.x, r.z) + 1.0 * r.s, r.z]} rotation={[0, hash2(r.x + 2.3, 3.1) * 6.28, 0]} scale={r.s} />
+              ))}
+            </Suspense>
+          </DelayedMount>
 
-      {/* 山庄(复用 villa 精模放大为西侧第三座大地标;toon 卡通材质,带地坪+碰撞,不穿模) */}
-      <DelayedMount ms={revealDelay.manor}>
-        <Suspense fallback={null}>
-          <LandmarkOnPad cfg={MANOR} url={MODELS.houseVilla} padR={9} grad={toonGrad} raw={false} />
-        </Suspense>
-      </DelayedMount>
+          {/* 山庄(复用 villa 精模放大为西侧第三座大地标;toon 卡通材质,带地坪+碰撞,不穿模) */}
+          <DelayedMount ms={revealDelay.manor}>
+            <Suspense fallback={null}>
+              <LandmarkOnPad cfg={MANOR} url={MODELS.houseVilla} padR={9} grad={toonGrad} raw={false} />
+            </Suspense>
+          </DelayedMount>
 
-      {/* 罗马浴场建筑群(写实地标,村北;28M 最重 → 最后挂载) */}
-      <DelayedMount ms={revealDelay.bath}>
-        <Suspense fallback={null}>
-          <LandmarkOnPad cfg={BATH} url={MODELS.bathhouse} padR={10} grad={toonGrad} />
-        </Suspense>
-      </DelayedMount>
+          {/* 罗马浴场建筑群(写实地标,村北;28M 最重 → 最后挂载) */}
+          <DelayedMount ms={revealDelay.bath}>
+            <Suspense fallback={null}>
+              <LandmarkOnPad cfg={BATH} url={MODELS.bathhouse} padR={10} grad={toonGrad} />
+            </Suspense>
+          </DelayedMount>
+        </>
+      )}
 
       {/* 池塘 + 芦苇 */}
-      <mesh material={pond} position={[WALK_RADIUS * 0.3, exGroundY(WALK_RADIUS * 0.3, WALK_RADIUS * 0.3) + 0.04, WALK_RADIUS * 0.3]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[6, 30]} />
-      </mesh>
+      <FlatEllipseSurface grad={toonGrad} x={pondX} z={pondZ} rx={7.2} rz={5.8} y={pondWaterY} color="#5fb6c4" opacity={0.88} depthWrite={false} thetaSegments={36} />
       {/* 河灯(glb,漂在池塘上——呼应「放河灯」仪式) */}
       {([[-2.2, 1.4], [1.6, -1.8], [2.8, 2.2]] as const).map(([dx, dz], i) => {
-        const pcx = WALK_RADIUS * 0.3;
-        const py = exGroundY(pcx, pcx) + 0.14;
-        return <GltfProp key={`riverlamp${i}`} url={MODELS.riverlamp} grad={toonGrad} position={[pcx + dx, py, pcx + dz]} rotation={[0, i * 1.3, 0]} scale={0.7} />;
+        return <GltfProp key={`riverlamp${i}`} url={MODELS.riverlamp} grad={toonGrad} position={[pondX + dx, pondWaterY + 0.06, pondZ + dz]} rotation={[0, i * 1.3, 0]} scale={0.7} />;
       })}
       {/* 荷叶 + 荷花 */}
       {Array.from({ length: 9 }).map((_, k) => {
         const a = hash2(k + 600, 1.3) * Math.PI * 2;
         const rr = Math.sqrt(hash2(k + 600, 2.4)) * 4.6;
-        const px = WALK_RADIUS * 0.3 + Math.cos(a) * rr;
-        const pz = WALK_RADIUS * 0.3 + Math.sin(a) * rr;
-        const py = exGroundY(WALK_RADIUS * 0.3, WALK_RADIUS * 0.3) + 0.07;
+        const px = pondX + Math.cos(a) * rr;
+        const pz = pondZ + Math.sin(a) * rr;
         const s = 0.7 + hash2(k + 600, 3.5) * 0.7;
         return (
-          <group key={`lily${k}`} position={[px, py, pz]}>
+          <group key={`lily${k}`} position={[px, pondWaterY + 0.03, pz]}>
             <mesh geometry={gLily} material={leaf} rotation={[-Math.PI / 2, 0, hash2(k + 600, 4.6) * 6.28]} scale={s} />
             {hash2(k + 600, 7.7) > 0.55 && (
               <mesh material={petal} position={[0, 0.12 * s, 0]} scale={0.5 * s}>
@@ -3777,8 +4443,8 @@ function Town({
       })}
       {Array.from({ length: 16 }).map((_, k) => {
         const a = (k / 16) * Math.PI * 2;
-        const px = WALK_RADIUS * 0.3 + Math.cos(a) * 6.3;
-        const pz = WALK_RADIUS * 0.3 + Math.sin(a) * 6.3;
+        const px = pondX + Math.cos(a) * 6.3;
+        const pz = pondZ + Math.sin(a) * 6.3;
         return (
           <mesh key={k} material={bush} position={[px, exGroundY(px, pz) + 0.4, pz]}>
             <cylinderGeometry args={[0.03, 0.05, 0.85, 4]} />
@@ -4905,6 +5571,7 @@ function DriftBottles({ posRef, onFind, notes }: { posRef: React.RefObject<THREE
 
 // 地表草丛:走在岛上脚边的随风草(实例化一张绘制),避开中央广场与沙滩;toon + 双色 + 顶部随风摆。
 function GroundGrass({ count, animate, grad }: { count: number; animate: boolean; grad: THREE.DataTexture }) {
+  const solidBuildings = useMemo(() => buildTownBuildingFootprints(), []);
   const blades = useMemo(() => {
     const out: { x: number; z: number; y: number; s: number; rot: number }[] = [];
     let tries = 0;
@@ -4916,19 +5583,20 @@ function GroundGrass({ count, animate, grad }: { count: number; animate: boolean
       if (r < 6) continue; // 避开中央广场
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
-      // 避开环岛柏油路:否则 5.2 万根草叶里靠路的那些会直接穿透路面、把路"切碎"。
-      // 环路在半径 ~113..143,只对靠外圈(r>105)的草做路带判定,省掉绝大多数草的 O(N) 距离计算。
-      if (r > 105 && distToRoadCenter(x, z) < ROAD_HALF_W + 1.0) continue;
+      if (nearIsleProp(x, z, 0.75)) continue; // 不从 C1 小场景 / 设施 / 桥 / 围栏脚下冒出来
+      if (nearTownBuildingFootprint(x, z, solidBuildings, 0.65)) continue; // 不穿进小镇房屋底座
+      // 避开环岛柏油路和路肩:否则密草会直接穿透路面、把车道"切碎"。
+      if (r > DRIVE_ROAD_GRASS_CHECK_MIN_RADIUS && isInDriveRoadClearance(x, z, 0.35)) continue;
       // 近路草改用平路地面高度;地标草改用抬升后的草坪面高度。
       // 否则草叶仍按原始地形生成,会被地标草坪顶面盖住,看起来像一块没有草尖的平涂色面。
-      const terrainY = r > 105 ? groundYWithRoad(x, z).y : exGroundY(x, z);
+      const terrainY = r > DRIVE_ROAD_GRASS_CHECK_MIN_RADIUS ? groundYWithRoad(x, z).y : exGroundY(x, z);
       const landmarkY = landmarkGroundLift(x, z);
       const h = Math.max(terrainY, landmarkY);
       if (h < 0.2) continue; // 避开沙滩 / 水
       out.push({ x, z, y: h, s: 0.7 + hash2(tries, 3.1) * 0.7, rot: hash2(tries, 7.7) * 6.28 });
     }
     return out;
-  }, [count]);
+  }, [count, solidBuildings]);
   const geo = useMemo(() => new THREE.ConeGeometry(0.06, 0.4, 5, 2), []);
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const shaderRef = useRef<THREE.WebGLProgramParametersWithUniforms | null>(null);
@@ -4982,7 +5650,7 @@ function GroundGrass({ count, animate, grad }: { count: number; animate: boolean
 function Village({ toonGrad }: { toonGrad: THREE.Texture }) {
   // 村落房子已改由 Town 的 buildings 直接用 glb 渲染(替换旧程序化方块屋);这里只放设施 + 灯塔看守屋。
   const lhX = -WALK_RADIUS * 0.92, lhZ = -WALK_RADIUS * 0.3;
-  const pondX = WALK_RADIUS * 0.3, pondZ = WALK_RADIUS * 0.3;
+  const pondX = POND_COLLISION_CENTER.x, pondZ = POND_COLLISION_CENTER.z;
   const face = (x: number, z: number): [number, number, number] => [0, Math.atan2(x, z), 0];
   return (
     <group>
@@ -5009,7 +5677,14 @@ function Village({ toonGrad }: { toonGrad: THREE.Texture }) {
 function Coastline({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: string }) {
   const off = (a: number, r: number): [number, number] => [Math.cos(a) * r, Math.sin(a) * r];
   const face = (x: number, z: number): [number, number, number] => [0, Math.atan2(x, z), 0];
-  const coveX = Math.cos(BAY_ANGLE) * WALK_RADIUS * 0.92, coveZ = Math.sin(BAY_ANGLE) * WALK_RADIUS * 0.92;
+  function bayWaterPoint(u: number, v = 0): [number, number] {
+    const rx = Math.cos(BAY_ANGLE), rz = Math.sin(BAY_ANGLE);
+    const tx = -Math.sin(BAY_ANGLE), tz = Math.cos(BAY_ANGLE);
+    return [
+      rx * BAY_WATERLINE_RADIUS + tx * u + rx * v,
+      rz * BAY_WATERLINE_RADIUS + tz * u + rz * v,
+    ];
+  }
   const dress = getBeach().dress; // 精心铺陈的海滩道具(无重叠 + 精确贴地,单一数据源)
   const [arX, arZ] = off(4.2, WALK_RADIUS + 30);
   const [ssX, ssZ] = off(5.2, WALK_RADIUS + 24);
@@ -5017,7 +5692,10 @@ function Coastline({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: stri
   const [clX, clZ] = off(5.5, WALK_RADIUS * 0.985);
   const [cvX, cvZ] = off(-1.2, WALK_RADIUS * 0.97);
   const [teX, teZ] = off(2.0, WALK_RADIUS * 0.4);
-  const [wvX, wvZ] = off(BAY_ANGLE, WALK_RADIUS * 1.0);
+  const [wvX, wvZ] = bayWaterPoint(0, 1.6);
+  const [foamX, foamZ] = bayWaterPoint(3.4, 1.2);
+  const [ringX, ringZ] = bayWaterPoint(-3.5, 2.6);
+  const [surfaceX, surfaceZ] = bayWaterPoint(5.5, -0.8);
   const [spX, spZ] = off(5.2, WALK_RADIUS + 19);
   return (
     <group>
@@ -5035,11 +5713,11 @@ function Coastline({ toonGrad, accent }: { toonGrad: THREE.Texture; accent: stri
       ))}
       {/* 发光海水:浪头(朝岸,随浪浮) + 泡沫/涟漪 + 浪花 + 浅滩水面 + 崖边瀑布 */}
       <group position={[wvX, 0.2, wvZ]} rotation={face(wvX, wvZ)}>
-        <FloatSway url={MODELS.waterWave} grad={toonGrad} tint={accent} position={[0, 0, 0]} scale={1.4} amp={0.16} speed={1.1} />
+        <FloatSway url={MODELS.waterWave} grad={toonGrad} tint={accent} position={[0, 0, 0]} scale={1.05} amp={0.12} speed={1.1} />
       </group>
-      <FloatSway url={MODELS.waterFoam} grad={toonGrad} tint={accent} position={[coveX + 1, 0.08, coveZ + 4]} scale={1.2} amp={0.05} speed={0.8} />
-      <FloatSway url={MODELS.waterRing} grad={toonGrad} tint={accent} position={[coveX - 2, 0.1, coveZ + 3]} scale={1.3} amp={0.04} speed={1.4} />
-      <FloatSway url={MODELS.waterSurface} grad={toonGrad} tint={accent} position={[coveX + 3, 0.06, coveZ - 1]} scale={1.6} amp={0.03} speed={0.6} />
+      <FloatSway url={MODELS.waterFoam} grad={toonGrad} tint={accent} position={[foamX, 0.08, foamZ]} scale={0.78} amp={0.05} speed={0.8} />
+      <FloatSway url={MODELS.waterRing} grad={toonGrad} tint={accent} position={[ringX, 0.1, ringZ]} scale={1.0} amp={0.04} speed={1.4} />
+      <FloatSway url={MODELS.waterSurface} grad={toonGrad} tint={accent} position={[surfaceX, 0.06, surfaceZ]} scale={1.2} amp={0.03} speed={0.6} />
       <GltfProp url={MODELS.waterSplash} grad={toonGrad} tint={accent} position={[spX, 0.2, spZ]} scale={1.2} />
       <GltfProp url={MODELS.waterFall} grad={toonGrad} tint={accent} position={[clX, 0.0, clZ]} rotation={face(clX, clZ)} scale={1.3} />
     </group>
@@ -5236,10 +5914,9 @@ function StoneLanterns({ posRef, grad, onNearLamp }: {
   );
 }
 
-const LANTERN_SCALE = 2.0; // kmd.glb 天灯缩放(glb 内含 0.305 node scale → 实际约 1.2 单位高)
-// 🏮 升空天灯:火苗呼吸明灭 + 暖色光晕 + 灯口火星打转,缓缓加速升空、越远越小,最后隐入夜空。
+const LANTERN_SCALE = 1.45;
+// 升空天灯:用轻量几何体替代每盏 clone GLB,保留火苗呼吸、暖色光晕和缓慢升空。
 function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boolean; onDone: () => void }) {
-  const { scene } = useGLTF(MODELS.skyLantern);
   const g = useRef<THREE.Group>(null);
   const flame = useRef<THREE.PointLight>(null);
   const halo = useRef<THREE.Sprite>(null);
@@ -5249,19 +5926,8 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
   const done = useRef(false);
   const y0 = useMemo(() => exGroundY(x, z) + 1.3, [x, z]);
   const seed = useMemo(() => hash2(x * 0.7 + 3.1, z * 0.9 + 1.7) * 10, [x, z]);
-  // 克隆 glb + 复制材质(每盏独立淡出),叠暖色自发光让纸灯像被点亮
-  const obj = useMemo(() => {
-    const cl = scene.clone(true);
-    const mats: THREE.MeshStandardMaterial[] = [];
-    cl.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (!m.isMesh) return;
-      const nm = (m.material as THREE.MeshStandardMaterial).clone();
-      nm.transparent = true; nm.emissive = new THREE.Color("#ffbf6a"); nm.emissiveIntensity = 1.7; nm.toneMapped = false;
-      m.material = nm; mats.push(nm);
-    });
-    return { cl, mats };
-  }, [scene]);
+  const paperMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#ffd29a", emissive: "#ffb35d", emissiveIntensity: 1.6, transparent: true, opacity: 0, toneMapped: false }), []);
+  const frameMat = useMemo(() => new THREE.MeshBasicMaterial({ color: "#6d321d", transparent: true, opacity: 0, toneMapped: false }), []);
   // 火星:绕灯口轻轻打转、明灭的暖色小光点
   // 火星粒子只给「单灯放飞」(lit)。「放飞一片」的十几盏若各带一套每帧更新的 additive 粒子 →
   // 海量 overdraw + 逐帧位置数组更新,是放飞一片卡顿的大头;flock 灯(lit=false)直接不建、不渲、不更新。
@@ -5278,7 +5944,7 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
     const mat = new THREE.PointsMaterial({ size: 0.45, map: glowTexture(), color: "#ffd27a", transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, fog: false });
     return { geo, mat, ph, N };
   }, [x, z, lit]);
-  useEffect(() => () => { obj.mats.forEach((m) => m.dispose()); ember?.geo.dispose(); ember?.mat.dispose(); }, [obj, ember]);
+  useEffect(() => () => { paperMat.dispose(); frameMat.dispose(); ember?.geo.dispose(); ember?.mat.dispose(); }, [paperMat, frameMat, ember]);
   useFrame((_, dt) => {
     t.current += dt; const tt = t.current; const go = g.current; if (!go) return;
     // 起步轻柔上浮 → 稳稳加速升空(可达 ~95,贴近远空微光带)
@@ -5291,7 +5957,9 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
     const born = Math.min(1, tt / 1.1);
     const fade = tt < 15 ? 1 : Math.max(0, 1 - (tt - 15) / 4.5); // 飞够高(15s 后)才缓缓隐去
     const f = Math.max(0, Math.min(1, born * fade));
-    obj.mats.forEach((m) => { m.opacity = f; m.emissiveIntensity = 1.7 * flick * Math.max(0.18, f); });
+    paperMat.opacity = f;
+    paperMat.emissiveIntensity = 1.6 * flick * Math.max(0.18, f);
+    frameMat.opacity = 0.72 * f;
     if (flame.current) flame.current.intensity = 3.6 * flick * f;
     if (core.current) { const cm = core.current.material as THREE.MeshBasicMaterial; cm.opacity = 0.85 * flick * f; core.current.scale.setScalar(0.5 + flick * 0.18); }
     if (halo.current) { const hm = halo.current.material as THREE.SpriteMaterial; hm.opacity = 0.5 * flick * f; const hs = 1.7 + Math.sin(tt * 2 + seed) * 0.12; halo.current.scale.set(hs, hs, hs); }
@@ -5311,7 +5979,30 @@ function RisingLantern({ x, z, lit, onDone }: { x: number; z: number; lit: boole
   });
   return (
     <group ref={g}>
-      <primitive object={obj.cl} scale={LANTERN_SCALE} />
+      <group scale={LANTERN_SCALE}>
+        <mesh material={paperMat} position={[0, 0.62, 0]}>
+          <boxGeometry args={[0.78, 1.02, 0.78]} />
+        </mesh>
+        <mesh material={paperMat} position={[0, 1.16, 0]} scale={[0.82, 0.18, 0.82]}>
+          <cylinderGeometry args={[0.42, 0.36, 0.18, 8, 1, false]} />
+        </mesh>
+        <mesh material={paperMat} position={[0, 0.08, 0]} scale={[0.92, 0.16, 0.92]}>
+          <cylinderGeometry args={[0.34, 0.43, 0.16, 8, 1, false]} />
+        </mesh>
+        <mesh material={frameMat} position={[0, 1.26, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.45, 0.025, 6, 24]} />
+        </mesh>
+        <mesh material={frameMat} position={[0, -0.02, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.44, 0.025, 6, 24]} />
+        </mesh>
+        {[0, Math.PI / 2, Math.PI, Math.PI * 1.5].map((rot) => (
+          <group key={rot} rotation={[0, rot, 0]}>
+            <mesh material={frameMat} position={[0, 0.62, 0.405]}>
+              <boxGeometry args={[0.035, 1.18, 0.035]} />
+            </mesh>
+          </group>
+        ))}
+      </group>
       {/* 地面暖光仅给「单灯放飞」(1~2 盏);「放飞一片」的天灯不带光源——避免十几个动态点光源拖垮全场材质光照 */}
       {lit && <pointLight ref={flame} color="#ffce82" intensity={3.6} distance={8} decay={2} position={[0, 0.6, 0]} />}
       {/* 内辉光球只给单灯;flock 靠发光本体 + 下面的 halo 光晕即可,省掉十几个 additive 球 */}
@@ -5382,18 +6073,14 @@ function GroundBlessing({ x, z, onDone }: { x: number; z: number; onDone: () => 
     </group>
   );
 }
-function SkyLanterns({ launchRef, posRef }: { launchRef: React.RefObject<number>; posRef: React.RefObject<THREE.Vector3> }) {
-  // 进岛即预先加载天灯模型:顶层 useGLTF 让本组件在自己的 Suspense 里挂起直到 kmd.glb 载完,
-  // 而非等首次放飞才加载。载完(本组件成功挂载)即置位全局就绪标志,供放飞前判断「缓存好没」。
-  useGLTF(MODELS.skyLantern);
-  useEffect(() => { _lanternModelReady = true; }, []);
+function SkyLanterns({ launchRef, posRef, tier }: { launchRef: React.RefObject<number>; posRef: React.RefObject<THREE.Vector3>; tier: PerfTier }) {
   type Lan = { id: number; x: number; z: number; lit: boolean };
   const [list, setList] = useState<Lan[]>([]);
   const [bless, setBless] = useState<{ id: number; x: number; z: number }[]>([]);
   const prev = useRef(0); const idc = useRef(0); const bid = useRef(0); const prevFlock = useRef(0);
-  const pending = useRef<Lan[]>([]); // 「放飞一片」的天灯排队挂载,逐帧少量挂上 → 摊平 glb 克隆开销,避免一帧卡死
-  const lowTier = getPerfTier() === "low";
-  const CAP = lowTier ? 10 : 24; // 同时存在的天灯上限(连同其逐帧粒子/材质开销)
+  const pending = useRef<Lan[]>([]); // 「放飞一片」的天灯排队挂载,逐帧少量挂上 → 摊平 React 挂载开销,避免一帧卡死
+  const CAP = lanternCap(tier);
+  const batchSize = lanternBatchSize(tier);
   useFrame(() => {
     if (launchRef.current !== prev.current) {
       prev.current = launchRef.current; const p = posRef.current;
@@ -5406,16 +6093,18 @@ function SkyLanterns({ launchRef, posRef }: { launchRef: React.RefObject<number>
     // 万灯齐放:从发射中心四周放出一整片天灯——压入待挂载队列(无光源 + 错峰),不一帧全挂
     if (lanternFlock.v !== prevFlock.current) {
       prevFlock.current = lanternFlock.v;
-      const FN = lowTier ? 6 : 12; // 一片天灯的数量(原 18,降量保流畅)
+      const FN = lanternFlockSize(tier);
+      const rnd = makeRng(lanternFlock.x * 0.31 + lanternFlock.z * 0.27 + lanternFlock.v * 19.7);
       for (let i = 0; i < FN; i++) {
-        const a = Math.random() * Math.PI * 2, r = 2 + Math.sqrt(Math.random()) * 13;
+        const a = rnd() * Math.PI * 2, r = 2 + Math.sqrt(rnd()) * 13;
         pending.current.push({ id: idc.current++, x: lanternFlock.x + Math.cos(a) * r, z: lanternFlock.z + Math.sin(a) * r, lit: false });
       }
+      if (pending.current.length > CAP) pending.current.splice(0, pending.current.length - CAP);
       setBless((b) => [...b, { id: bid.current++, x: lanternFlock.x, z: lanternFlock.z }].slice(-6));
     }
-    // 每帧最多挂载 3 盏待挂载天灯 → 把十几次 glb 克隆摊到数帧,杜绝瞬时掉帧
+    // 每帧最多挂载 1~2 盏待挂载天灯 → 把 React 挂载和材质创建摊到数帧,杜绝瞬时掉帧
     if (pending.current.length) {
-      const batch = pending.current.splice(0, 3);
+      const batch = pending.current.splice(0, batchSize);
       setList((l) => [...l, ...batch].slice(-CAP));
     }
   });
@@ -5436,6 +6125,33 @@ function GltfFishingBobber() {
   return <primitive object={obj} scale={1.0} />;
 }
 
+function resolveFishingWeather(environment: ExploreEnvironment): FishingWeather {
+  const weather = "weather" in environment ? String((environment as { weather?: unknown }).weather) : "";
+  if (weather.includes("rain")) return "rain";
+  if (weather.includes("fog") || weather.includes("mist")) return "fog";
+  if (weather.includes("wind")) return "wind";
+  return "clear";
+}
+
+function resolveFishingTimeOfDay(environment: ExploreEnvironment): FishingTimeOfDay {
+  const time = "timeOfDay" in environment ? String((environment as { timeOfDay?: unknown }).timeOfDay) : "";
+  const visual = "visual" in environment ? String((environment as { visual?: unknown }).visual) : "";
+  const raw = `${time} ${visual}`.toLowerCase();
+  if (raw.includes("night")) return "night";
+  if (raw.includes("sunset") || raw.includes("dusk")) return "sunset";
+  if (raw.includes("morning") || raw.includes("dawn")) return "morning";
+  return "day";
+}
+
+function fishingActionForPhase(phase: FishingPhase): FishingActionClip | null {
+  if (phase === "aim" || phase === "gear" || phase === "waiting") return "FishingAim";
+  if (phase === "cast") return "FishingCast";
+  if (phase === "hook") return "FishingHook";
+  if (phase === "fight") return "FishingFight";
+  if (phase === "result") return "FishingResult";
+  return null;
+}
+
 function FishingWaterSensor({ posRef, onAtWater }: { posRef: React.RefObject<THREE.Vector3>; onAtWater: (b: boolean) => void }) {
   const was = useRef(false);
   useFrame(() => {
@@ -5448,95 +6164,151 @@ function FishingWaterSensor({ posRef, onAtWater }: { posRef: React.RefObject<THR
   return null;
 }
 
-function FishingSpot({ posRef, casting }: { posRef: React.RefObject<THREE.Vector3>; casting: boolean }) {
-  const bob = useRef<THREE.Group>(null);
-  useFrame((s) => {
-    const p = posRef.current; if (!p) return;
-    const r2 = p.x * p.x + p.z * p.z;
-    const b = bob.current; if (b) {
-      b.visible = casting;
-      if (casting) {
-        const r = Math.sqrt(r2) || 1;
-        const ux = p.x / r, uz = p.z / r;
-        b.position.set(p.x + ux * 4.5, 0.15 + Math.sin(s.clock.elapsedTime * 3) * 0.07, p.z + uz * 4.5);
-      }
+function FishingRigFx({
+  posRef,
+  headingRef,
+  fishingSession,
+  loadout,
+}: {
+  posRef: React.RefObject<THREE.Vector3>;
+  headingRef: React.RefObject<number>;
+  fishingSession: FishingSession;
+  loadout: FishingLoadout;
+}) {
+  const group = useRef<THREE.Group>(null);
+  const rodRef = useRef<THREE.Mesh>(null);
+  const lineObject = useMemo(
+    () =>
+      new THREE.Line(
+        new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: "#f8fafc", transparent: true, opacity: 0.78 }),
+      ),
+    [],
+  );
+  const bobberRef = useRef<THREE.Group>(null);
+  useEffect(() => {
+    return () => {
+      lineObject.geometry.dispose();
+      const material = lineObject.material;
+      if (Array.isArray(material)) material.forEach((item) => item.dispose());
+      else material.dispose();
+    };
+  }, [lineObject]);
+
+  useFrame((state) => {
+    const p = posRef.current;
+    if (!p || !group.current) return;
+    const active = fishingSession.phase !== "idle" && fishingSession.phase !== "gear";
+    group.current.visible = active;
+    if (!active) return;
+
+    const heading = headingRef.current ?? 0;
+    const distance = calculateCastDistance(Math.max(0.18, fishingSession.castPower || 0.45), loadout.rod);
+    const castHeading = heading + fishingSession.aimOffset;
+    const dx = Math.sin(castHeading) * distance;
+    const dz = Math.cos(castHeading) * distance;
+    const hand = new THREE.Vector3(p.x + Math.sin(heading) * 0.35, placeableGroundY(p.x, p.z) + 1.35, p.z + Math.cos(heading) * 0.35);
+    const tip = new THREE.Vector3(hand.x + Math.sin(castHeading) * 1.8, hand.y + 0.62, hand.z + Math.cos(castHeading) * 1.8);
+    const bob = new THREE.Vector3(p.x + dx, 0.18 + Math.sin(state.clock.elapsedTime * 3.1) * 0.05, p.z + dz);
+
+    if (rodRef.current) {
+      const rodDir = tip.clone().sub(hand);
+      const rodLen = rodDir.length();
+      rodRef.current.position.copy(hand).addScaledVector(rodDir, 0.5);
+      rodRef.current.scale.set(0.035, rodLen, 0.035);
+      rodRef.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), rodDir.normalize());
     }
+    if (bobberRef.current) bobberRef.current.position.copy(bob);
+    const curve = new THREE.CatmullRomCurve3([tip, new THREE.Vector3((tip.x + bob.x) / 2, Math.max(tip.y, 1.2), (tip.z + bob.z) / 2), bob]);
+    lineObject.geometry.dispose();
+    lineObject.geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(18));
   });
+
   return (
-    <group ref={bob} visible={false}>
-      <GltfFishingBobber />
+    <group ref={group} visible={false}>
+      <mesh ref={rodRef}>
+        <cylinderGeometry args={[1, 1, 1, 8]} />
+        <meshBasicMaterial color="#6b442e" />
+      </mesh>
+      <primitive object={lineObject} />
+      <group ref={bobberRef}>
+        <GltfFishingBobber />
+      </group>
     </group>
   );
 }
 
-const FISHING_CATCHES: { icon: string; title: string; lines: string[] }[] = [
-  { icon: "🐚", title: "一枚贝壳", lines: ["贴近耳边,你听见很远很远的海。", "它把潮声收了起来,等你想听的时候。", "纹路温温的,像谁的指纹。"] },
-  { icon: "🍾", title: "一只漂流瓶", lines: ["「今天也辛苦了,记得好好吃饭。」", "「看见这行字的此刻,你正被惦记着。」", "「慢慢来,海不会催你。」"] },
-  { icon: "🐟", title: "一条小鱼", lines: ["你把它放回海里,水面漾开一圈星光。", "它绕你一圈,像在道谢,然后游远了。"] },
-  { icon: "⭐", title: "一尾星海鱼", lines: ["稀客——鳞片随你此刻的心情变色。", "钓到它的人,心里大多都藏着光。"] },
-];
-
-function FishingRhythmHud({ startedAt, onReel }: { startedAt: number; onReel: () => void }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      setNow(Date.now());
-      raf = window.requestAnimationFrame(tick);
-    };
-    raf = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(raf);
-  }, []);
-
-  const progress = fishingRhythmProgress(now, startedAt);
-  const inWindow = isFishingRhythmHit(progress);
-  const ringScale = Math.max(0.36, 1.24 - progress * 0.86);
-  const ringOpacity = Math.max(0.42, 1 - progress * 0.36);
-
-  return (
-    <div className="panel-glass-2 rounded-card px-4 py-3 text-center text-white/90 shadow-2xl" role="status" aria-live="polite">
-      <div className="flex items-center gap-3">
-        <div className="relative h-[4.75rem] w-[4.75rem] shrink-0">
-          <div className="absolute inset-3 rounded-full border border-cyan-100/55 bg-cyan-100/10" />
-          <div
-            className="absolute inset-0 rounded-full border-2 border-white/80"
-            style={{
-              opacity: ringOpacity,
-              transform: `scale(${ringScale})`,
-              boxShadow: inWindow ? "0 0 24px rgba(125, 231, 255, 0.75)" : "0 0 14px rgba(255,255,255,0.28)",
-              transition: "box-shadow 120ms ease-out",
-            }}
-          />
-          <div
-            className="absolute inset-[1.58rem] rounded-full border-2"
-            style={{
-              borderColor: inWindow ? "rgba(134, 239, 172, 0.95)" : "rgba(255,255,255,0.34)",
-              background: inWindow ? "rgba(34,197,94,0.16)" : "rgba(255,255,255,0.07)",
-            }}
-          />
-          <span className="absolute inset-0 flex items-center justify-center text-[20px] leading-none">🎣</span>
-        </div>
-        <div className="min-w-0 text-left">
-          <p className="font-display text-[15px] tracking-wider">{inWindow ? "现在收线!" : "盯住光圈"}</p>
-          <p className="mt-1 text-caption leading-relaxed text-white/58">光圈贴近内环时收线，鱼会跟着海光上来。</p>
-          <button
-            type="button"
-            onClick={onReel}
-            className="btn-primary mt-2 px-5 py-2 text-[13px]"
-            aria-label="收线"
-          >
-            收线
-          </button>
+function FishingSystemHud({
+  session,
+  save,
+  loadout,
+  onStart,
+  onAim,
+  onCast,
+  onHook,
+  onCancel,
+}: {
+  session: FishingSession;
+  save: FishingSaveV1;
+  loadout: FishingLoadout;
+  onStart: () => void;
+  onAim: () => void;
+  onCast: (power: number) => void;
+  onHook: () => void;
+  onCancel: () => void;
+}) {
+  const tensionPct = Math.round(session.fight.tension * 100);
+  if (session.phase === "idle") {
+    return <button type="button" onClick={onStart} className="panel-glass-2 rounded-full px-6 py-2.5 font-display text-[15px] tracking-wider text-white/90">🎣 垂钓</button>;
+  }
+  if (session.phase === "gear") {
+    return (
+      <div className="panel-glass-2 rounded-card px-4 py-3 text-white/90">
+        <p className="font-display text-[15px] tracking-wider">钓具</p>
+        <p className="mt-1 text-caption text-white/62">{loadout.rod.name} · {loadout.line.name} · {loadout.bait.name}</p>
+        <p className="mt-1 text-caption text-white/45">图鉴 {Object.keys(save.codex).length}/5</p>
+        <div className="mt-3 flex gap-2">
+          <button type="button" onClick={onAim} className="btn-primary px-4 py-2 text-[13px]">开始瞄准</button>
+          <button type="button" onClick={onCancel} className="btn-ghost px-4 py-2 text-[13px]">收起</button>
         </div>
       </div>
-    </div>
-  );
+    );
+  }
+  if (session.phase === "aim") {
+    return (
+      <div className="panel-glass-2 rounded-card px-4 py-3 text-center text-white/90">
+        <p className="font-display text-[15px] tracking-wider">按住蓄力，松手抛竿</p>
+        <button type="button" onClick={() => onCast(0.72)} className="btn-primary mt-2 px-5 py-2 text-[13px]">抛竿</button>
+      </div>
+    );
+  }
+  if (session.phase === "waiting" || session.phase === "cast") {
+    return <div className="panel-glass-2 rounded-full px-5 py-2.5 font-display text-[14px] tracking-wider text-white/86">看浮漂，鱼线已经入水…</div>;
+  }
+  if (session.phase === "hook") {
+    return <button type="button" onClick={onHook} className="panel-glass-2 rounded-full px-6 py-2.5 font-display text-[15px] tracking-wider text-white/90">浮漂下沉 · 提竿</button>;
+  }
+  if (session.phase === "fight") {
+    return (
+      <div className="panel-glass-2 rounded-card px-4 py-3 text-white/90">
+        <p className="font-display text-[15px] tracking-wider">张力 {tensionPct}%</p>
+        <div className="mt-2 h-2 w-48 rounded-full bg-white/15">
+          <div className="h-full rounded-full bg-emerald-300" style={{ width: `${Math.min(100, tensionPct)}%` }} />
+        </div>
+        <p className="mt-2 text-caption text-white/58">保持绿区，别让线太紧或太松。</p>
+      </div>
+    );
+  }
+  if (session.phase === "bad_cast") return <div className="panel-glass-2 rounded-full px-5 py-2.5 text-white/86">落点太浅，只溅起一圈水花。</div>;
+  if (session.phase === "fish_escaped") return <div className="panel-glass-2 rounded-full px-5 py-2.5 text-white/86">线松了，它挣脱了。</div>;
+  if (session.phase === "line_broken") return <div className="panel-glass-2 rounded-full px-5 py-2.5 text-white/86">线绷太久断了。</div>;
+  return <div className="panel-glass-2 rounded-full px-5 py-2.5 text-white/86">放生或收藏这次收获。</div>;
 }
 
 // 🌊🪵 位置感知音频：按玩家所在区域切换循环底噪 + 靠近地标触发点状音。
 // 区域判定用 exGroundY(高度) + bayMask(海湾) + 离心半径；地标用固定坐标+半径边沿触发。
 // 位置底噪与情绪底噪并行（lib/locationAmbience.ts 独立运行）；地标音走 envGain 独立常响。
-const POND = { x: WALK_RADIUS * 0.3, z: WALK_RADIUS * 0.3 }; // 池塘中心(~53,53)
+const POND = POND_COLLISION_CENTER; // 池塘中心(~53,53)
 const POND_CROP_CLEARANCE = 8.5;
 const BONFIRE = { x: -6, z: -3 }; // 篝火
 const LIGHTHOUSE = { x: -WALK_RADIUS * 0.92, z: -WALK_RADIUS * 0.3 }; // 灯塔(~-163,-53)
@@ -6410,15 +7182,9 @@ function ShootingStars() {
   return <>{items.map((it, i) => <points key={i} ref={(el) => { refs.current[i] = el; }} geometry={it.g} material={it.m} frustumCulled={false} visible={false} />)}</>;
 }
 
-// 加载态：首次进岛/弱网时模型未就绪，给一个居中提示，避免移动端白屏困惑。
-function ExploreLoading() {
-  return (
-    <Html center>
-      <div style={{ color: "#fff", textAlign: "center", whiteSpace: "nowrap", textShadow: "0 1px 8px rgba(0,0,0,.6)", fontSize: 15 }}>
-        岛屿正在浮出水面……
-      </div>
-    </Html>
-  );
+function ExploreModelGate({ children }: { children: React.ReactNode }) {
+  useGLTF(EXPLORE_PREFETCH_MODELS);
+  return <>{children}</>;
 }
 
 function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: number; tier: PerfTier }) {
@@ -6476,6 +7242,344 @@ function ExploreRain({ active, opacity, tier }: { active: boolean; opacity: numb
   return <instancedMesh ref={ref} args={[geo, mat, count]} frustumCulled={false} />;
 }
 
+type TerrainSurfaceMaterialProps = {
+  grad: THREE.Texture;
+  color: string;
+  opacity?: number;
+  depthWrite?: boolean;
+  yLift?: number;
+  renderOrder?: number;
+  polygonOffsetFactor?: number;
+  polygonOffsetUnits?: number;
+};
+type TerrainRectSurfaceSpec = { x: number; z: number; width: number; depth: number; rot?: number };
+type TerrainEllipseSurfaceSpec = { x: number; z: number; rx: number; rz: number; rot?: number };
+
+function terrainSurfaceWorldPoint(centerX: number, centerZ: number, rot: number, lx: number, lz: number): { x: number; z: number } {
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  return {
+    x: centerX + lx * c - lz * s,
+    z: centerZ + lx * s + lz * c,
+  };
+}
+
+function buildTerrainRectSurfaceGeometry(surface: TerrainRectSurfaceSpec, segmentsX = 6, segmentsZ = 3, yLift = 0.08): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const rot = surface.rot ?? 0;
+  for (let iz = 0; iz <= segmentsZ; iz++) {
+    const lz = -surface.depth / 2 + (surface.depth * iz) / segmentsZ;
+    for (let ix = 0; ix <= segmentsX; ix++) {
+      const lx = -surface.width / 2 + (surface.width * ix) / segmentsX;
+      const { x, z } = terrainSurfaceWorldPoint(surface.x, surface.z, rot, lx, lz);
+      positions.push(x, placeableGroundY(x, z) + yLift, z);
+      uvs.push(ix / segmentsX, iz / segmentsZ);
+    }
+  }
+  const row = segmentsX + 1;
+  for (let iz = 0; iz < segmentsZ; iz++) {
+    for (let ix = 0; ix < segmentsX; ix++) {
+      const a = iz * row + ix;
+      const b = a + 1;
+      const c = a + row;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function buildTerrainEllipseSurfaceGeometry(surface: TerrainEllipseSurfaceSpec, radialSegments = 4, thetaSegments = 28, yLift = 0.08): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const rot = surface.rot ?? 0;
+  positions.push(surface.x, placeableGroundY(surface.x, surface.z) + yLift, surface.z);
+  uvs.push(0.5, 0.5);
+  for (let ring = 1; ring <= radialSegments; ring++) {
+    const radius = ring / radialSegments;
+    for (let i = 0; i < thetaSegments; i++) {
+      const a = (i / thetaSegments) * Math.PI * 2;
+      const lx = Math.cos(a) * surface.rx * radius;
+      const lz = Math.sin(a) * surface.rz * radius;
+      const { x, z } = terrainSurfaceWorldPoint(surface.x, surface.z, rot, lx, lz);
+      positions.push(x, placeableGroundY(x, z) + yLift, z);
+      uvs.push(0.5 + Math.cos(a) * radius * 0.5, 0.5 + Math.sin(a) * radius * 0.5);
+    }
+  }
+  for (let i = 0; i < thetaSegments; i++) {
+    const next = (i + 1) % thetaSegments;
+    indices.push(0, 1 + i, 1 + next);
+  }
+  for (let ring = 2; ring <= radialSegments; ring++) {
+    const prev = 1 + (ring - 2) * thetaSegments;
+    const curr = 1 + (ring - 1) * thetaSegments;
+    for (let i = 0; i < thetaSegments; i++) {
+      const next = (i + 1) % thetaSegments;
+      const a = prev + i;
+      const b = prev + next;
+      const c = curr + i;
+      const d = curr + next;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function buildFlatEllipseSurfaceGeometry(surface: TerrainEllipseSurfaceSpec, y: number, radialSegments = 4, thetaSegments = 28): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const rot = surface.rot ?? 0;
+  positions.push(surface.x, y, surface.z);
+  uvs.push(0.5, 0.5);
+  for (let ring = 1; ring <= radialSegments; ring++) {
+    const radius = ring / radialSegments;
+    for (let i = 0; i < thetaSegments; i++) {
+      const a = (i / thetaSegments) * Math.PI * 2;
+      const lx = Math.cos(a) * surface.rx * radius;
+      const lz = Math.sin(a) * surface.rz * radius;
+      const { x, z } = terrainSurfaceWorldPoint(surface.x, surface.z, rot, lx, lz);
+      positions.push(x, y, z);
+      uvs.push(0.5 + Math.cos(a) * radius * 0.5, 0.5 + Math.sin(a) * radius * 0.5);
+    }
+  }
+  for (let i = 0; i < thetaSegments; i++) {
+    const next = (i + 1) % thetaSegments;
+    indices.push(0, 1 + i, 1 + next);
+  }
+  for (let ring = 2; ring <= radialSegments; ring++) {
+    const prev = 1 + (ring - 2) * thetaSegments;
+    const curr = 1 + (ring - 1) * thetaSegments;
+    for (let i = 0; i < thetaSegments; i++) {
+      const next = (i + 1) % thetaSegments;
+      const a = prev + i;
+      const b = prev + next;
+      const c = curr + i;
+      const d = curr + next;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function AnimatedAnimeSea({
+  palette,
+  lowTier,
+  degraded,
+}: {
+  palette: AnimeSeaPalette;
+  lowTier: boolean;
+  degraded: boolean;
+}) {
+  const segments = lowTier || degraded ? 10 : 36;
+  const geo = useMemo(() => new THREE.PlaneGeometry(10000, 10000, segments, segments), [segments]);
+  const mat = useMemo(() => new THREE.MeshToonMaterial({
+    color: palette.deep,
+    transparent: true,
+    opacity: 0.84 + palette.waveOpacity * 0.14,
+    depthWrite: false,
+  }), [palette.deep, palette.waveOpacity]);
+  const pos = useMemo(() => geo.getAttribute("position") as THREE.BufferAttribute, [geo]);
+  const baseZ = useMemo(() => {
+    const out = new Float32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) out[i] = pos.getZ(i);
+    return out;
+  }, [pos]);
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
+  useEffect(() => {
+    mat.color.set(palette.deep);
+    mat.opacity = 0.84 + palette.waveOpacity * 0.14;
+  }, [mat, palette.deep, palette.waveOpacity]);
+  useFrame((s) => {
+    if (lowTier || degraded) return;
+    const t = s.clock.elapsedTime;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const wave = Math.sin(x * 0.012 + t * 0.45) * 0.018 + Math.sin(y * 0.018 - t * 0.32) * 0.014;
+      pos.setZ(i, baseZ[i] + wave);
+    }
+    pos.needsUpdate = true;
+  });
+  return (
+    <mesh geometry={geo} material={mat} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.025, 0]} renderOrder={-6} />
+  );
+}
+
+function AnimeShoreBreak({ spec, bayAngle, lowTier, degraded }: {
+  spec: AnimeShoreBreakSpec;
+  bayAngle: number;
+  lowTier: boolean;
+  degraded: boolean;
+}) {
+  const mesh = useRef<THREE.Mesh>(null);
+  const mat = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: spec.color, transparent: true, opacity: spec.opacity, depthWrite: false, toneMapped: false }),
+    [spec.color, spec.opacity],
+  );
+  useEffect(() => () => mat.dispose(), [mat]);
+  useFrame((s) => {
+    const m = mesh.current;
+    if (!m || lowTier || degraded) return;
+    const pulse = 0.5 + 0.5 * Math.sin(s.clock.elapsedTime * spec.speed + spec.phase);
+    m.scale.set(1 + pulse * 0.035, 1 + pulse * 0.18, 1);
+    mat.opacity = spec.opacity * (0.72 + pulse * 0.28);
+  });
+  return (
+    <mesh
+      ref={mesh}
+      position={[spec.x, 0.075 + spec.offShoreOffset * 0.003, spec.z]}
+      rotation={[-Math.PI / 2, 0, bayAngle - Math.PI / 2]}
+      renderOrder={3}
+    >
+      <planeGeometry args={[spec.length, spec.width, 8, 1]} />
+      <primitive object={mat} attach="material" />
+    </mesh>
+  );
+}
+
+function AnimeShoreBreaks({
+  bayAngle,
+  waterlineRadius,
+  palette,
+  lowTier,
+  degraded,
+  night,
+}: {
+  bayAngle: number;
+  waterlineRadius: number;
+  palette: AnimeSeaPalette;
+  lowTier: boolean;
+  degraded: boolean;
+  night: boolean;
+}) {
+  const breaks = useMemo(
+    () => makeAnimeShoreBreaks({ bayAngle, waterlineRadius, lowTier, night }),
+    [bayAngle, waterlineRadius, lowTier, night],
+  );
+  return (
+    <group>
+      {breaks.map((spec) => (
+        <AnimeShoreBreak key={spec.key} spec={{ ...spec, color: palette.foam }} bayAngle={bayAngle} lowTier={lowTier} degraded={degraded} />
+      ))}
+    </group>
+  );
+}
+
+function BayLightReflection({
+  bayAngle,
+  centerRadius,
+  radius,
+  palette,
+  active,
+}: {
+  bayAngle: number;
+  centerRadius: number;
+  radius: number;
+  palette: AnimeSeaPalette;
+  active: boolean;
+}) {
+  const opacity = active ? palette.reflectionOpacity : palette.reflectionOpacity * 0.36;
+  const x = Math.cos(bayAngle) * centerRadius;
+  const z = Math.sin(bayAngle) * centerRadius;
+  return (
+    <mesh
+      rotation={[-Math.PI / 2, 0, bayAngle - Math.PI / 2]}
+      position={[x, 0.065, z]}
+      scale={[radius * 0.58, radius * 0.08, 1]}
+      renderOrder={2}
+    >
+      <circleGeometry args={[1, 42]} />
+      <meshBasicMaterial color={palette.reflection} transparent opacity={opacity} depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
+
+function pondWaterLevel(cx: number, cz: number, rx: number, rz: number): number {
+  let waterY = placeableGroundY(cx, cz);
+  const rings = [0.35, 0.62, 0.86, 1.0];
+  for (const radius of rings) {
+    const samples = radius === 1.0 ? 32 : 20;
+    for (let i = 0; i < samples; i++) {
+      const a = (i / samples) * Math.PI * 2;
+      const x = cx + Math.cos(a) * rx * radius;
+      const z = cz + Math.sin(a) * rz * radius;
+      waterY = Math.max(waterY, placeableGroundY(x, z));
+    }
+  }
+  return waterY + 0.05;
+}
+
+function TerrainSurfaceMaterial({ grad, color, opacity = 1, depthWrite = opacity >= 1, polygonOffsetFactor = -2, polygonOffsetUnits = -2 }: TerrainSurfaceMaterialProps) {
+  return (
+    <meshToonMaterial
+      color={color}
+      gradientMap={grad}
+      transparent={opacity < 1}
+      opacity={opacity}
+      depthWrite={depthWrite}
+      side={THREE.DoubleSide}
+      polygonOffset
+      polygonOffsetFactor={polygonOffsetFactor}
+      polygonOffsetUnits={polygonOffsetUnits}
+    />
+  );
+}
+
+function TerrainRectSurface(props: TerrainSurfaceMaterialProps & TerrainRectSurfaceSpec & { segmentsX?: number; segmentsZ?: number }) {
+  const { x, z, width, depth, rot = 0, segmentsX = 6, segmentsZ = 3, yLift = 0.08, renderOrder = 2 } = props;
+  const geo = useMemo(() => buildTerrainRectSurfaceGeometry({ x, z, width, depth, rot }, segmentsX, segmentsZ, yLift), [x, z, width, depth, rot, segmentsX, segmentsZ, yLift]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} receiveShadow renderOrder={renderOrder}>
+      <TerrainSurfaceMaterial {...props} />
+    </mesh>
+  );
+}
+
+function TerrainEllipseSurface(props: TerrainSurfaceMaterialProps & TerrainEllipseSurfaceSpec & { radialSegments?: number; thetaSegments?: number }) {
+  const { x, z, rx, rz, rot = 0, radialSegments = 4, thetaSegments = 28, yLift = 0.08, renderOrder = 2 } = props;
+  const geo = useMemo(() => buildTerrainEllipseSurfaceGeometry({ x, z, rx, rz, rot }, radialSegments, thetaSegments, yLift), [x, z, rx, rz, rot, radialSegments, thetaSegments, yLift]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} receiveShadow renderOrder={renderOrder}>
+      <TerrainSurfaceMaterial {...props} />
+    </mesh>
+  );
+}
+
+function FlatEllipseSurface(props: TerrainSurfaceMaterialProps & TerrainEllipseSurfaceSpec & { y: number; radialSegments?: number; thetaSegments?: number }) {
+  const { x, z, rx, rz, rot = 0, y, radialSegments = 4, thetaSegments = 28, renderOrder = 2 } = props;
+  const geo = useMemo(() => buildFlatEllipseSurfaceGeometry({ x, z, rx, rz, rot }, y, radialSegments, thetaSegments), [x, z, rx, rz, rot, y, radialSegments, thetaSegments]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} renderOrder={renderOrder}>
+      <TerrainSurfaceMaterial {...props} />
+    </mesh>
+  );
+}
+
 function DistrictGroundPatch(_props: {
   patch: {
     x: number;
@@ -6490,18 +7594,11 @@ function DistrictGroundPatch(_props: {
   };
   shape?: "circle" | "rect";
 }) {
+  void _props;
   return null;
 }
 
-function DistrictFlatTile({
-  x,
-  z,
-  width,
-  depth,
-  color,
-  opacity = 0.32,
-  rot = 0,
-}: {
+function DistrictFlatTile(_props: {
   x: number;
   z: number;
   width: number;
@@ -6510,33 +7607,19 @@ function DistrictFlatTile({
   opacity?: number;
   rot?: number;
 }) {
-  return (
-    <mesh rotation={[-Math.PI / 2, 0, rot]} position={[x, exGroundY(x, z) + 0.07, z]}>
-      <planeGeometry args={[width, depth]} />
-      <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} toneMapped={false} />
-    </mesh>
-  );
+  void _props;
+  return null;
 }
 
-function DistrictCircleTile({
-  x,
-  z,
-  radius,
-  color,
-  opacity = 0.3,
-}: {
+function DistrictCircleTile(_props: {
   x: number;
   z: number;
   radius: number;
   color: string;
   opacity?: number;
 }) {
-  return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[x, exGroundY(x, z) + 0.072, z]}>
-      <circleGeometry args={[radius, 64]} />
-      <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} toneMapped={false} />
-    </mesh>
-  );
+  void _props;
+  return null;
 }
 
 function DistrictLanternPair({ grad, x, z, night, rot = 0 }: { grad: THREE.Texture; x: number; z: number; night: boolean; rot?: number }) {
@@ -6549,18 +7632,75 @@ function DistrictLanternPair({ grad, x, z, night, rot = 0 }: { grad: THREE.Textu
   );
 }
 
+function HomeYardDetails({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const cord = night ? "#ffd98a" : "#8b6a45";
+  return (
+    <group>
+      <TerrainRectSurface grad={grad} x={-27.8} z={-22.2} width={4.7} depth={1.25} rot={-0.2} yLift={0.095} color="#f4d6a3" />
+      <mesh position={[-31.4, placeableGroundY(-31.4, -24.2) + 0.62, -24.2]} castShadow>
+        <cylinderGeometry args={[0.045, 0.06, 1.24, 6]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-24.5, placeableGroundY(-24.5, -24.2) + 0.62, -24.2]} castShadow>
+        <cylinderGeometry args={[0.045, 0.06, 1.24, 6]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-27.95, placeableGroundY(-27.95, -24.2) + 1.26, -24.2]} rotation={[0, 0, Math.PI / 2]} castShadow>
+        <cylinderGeometry args={[0.018, 0.018, 6.9, 6]} />
+        <meshToonMaterial color={cord} gradientMap={grad} />
+      </mesh>
+      <mesh position={[-29.7, placeableGroundY(-29.7, -24.22) + 1.02, -24.22]} scale={[0.6, 0.44, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#6f8f5f" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-28.2, placeableGroundY(-28.2, -24.25) + 0.98, -24.25]} scale={[0.52, 0.38, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#d98b6f" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-26.8, placeableGroundY(-26.8, -24.18) + 1.0, -24.18]} scale={[0.48, 0.4, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#f2e2a4" gradientMap={grad} />
+      </mesh>
+    </group>
+  );
+}
+
 function HomeDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
   const lamps = night ? "#ffd98a" : undefined;
   return (
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.home} />
       <DistrictFlatTile x={-24} z={-23} width={26} depth={5} color="#ffe6b2" opacity={0.28} rot={-0.35} />
-      <GroundProp url={MODELS.houseCottage} grad={grad} x={-39} z={-32} rot={0.55} scale={1.12} />
-      <GroundProp url={MODELS.houseLoft} grad={grad} x={-9} z={-15} rot={-0.4} scale={0.86} />
-      <GroundProp url={MODELS.townMailbox} grad={grad} x={-31} z={-13} rot={0.8} scale={1.08} tint={lamps} />
-      <GroundProp url={MODELS.townBench} grad={grad} x={-23} z={-17} rot={1.35} scale={1.05} />
-      <GroundProp url={MODELS.isleWell} grad={grad} x={-19} z={-31} scale={0.92} />
-      <GroundProp url={MODELS.stonelantern} grad={grad} x={-11} z={-28} rot={-0.2} scale={0.82} tint={lamps} />
+      <HomeYardDetails grad={grad} night={night} />
+      <Suspense fallback={null}>
+        <GroundProp url={MODELS.houseCottage} grad={grad} x={-39} z={-32} rot={0.55} scale={1.12} />
+        <GroundProp url={MODELS.houseLoft} grad={grad} x={-9} z={-15} rot={-0.4} scale={0.86} />
+        <GroundProp url={MODELS.townMailbox} grad={grad} x={-31} z={-13} rot={0.8} scale={1.08} tint={lamps} />
+        <GroundProp url={MODELS.townBench} grad={grad} x={-23} z={-17} rot={1.35} scale={1.05} />
+        <GroundProp url={MODELS.isleWell} grad={grad} x={-19} z={-31} scale={0.92} />
+        <GroundProp url={MODELS.stonelantern} grad={grad} x={-11} z={-28} rot={-0.2} scale={0.82} tint={lamps} />
+      </Suspense>
+    </group>
+  );
+}
+
+function BeachShoreDetails({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.beach;
+  const shells = [
+    [p.x - 11, p.z - 5, 0.28, 0.2],
+    [p.x - 8, p.z - 2, 0.22, -0.4],
+    [p.x + 13, p.z + 2, 0.25, 0.75],
+  ] as const;
+  return (
+    <group>
+      <TerrainEllipseSurface grad={grad} x={p.x - 6} z={p.z + 2} rx={4.8} rz={0.72} rot={0.48} yLift={0.08} color="#7fc7d4" />
+      <TerrainRectSurface grad={grad} x={p.x - 3.7} z={p.z + 2.9} width={2.8} depth={0.18} rot={0.46} yLift={0.095} color="#fff1c7" polygonOffsetFactor={-3} polygonOffsetUnits={-3} />
+      {shells.map(([x, z, s, r], i) => (
+        <mesh key={i} rotation={[-Math.PI / 2, 0, r]} position={[x, placeableGroundY(x, z) + 0.14, z]} scale={[s, s * 0.65, 1]} castShadow>
+          <circleGeometry args={[1, 12]} />
+          <meshToonMaterial color={i % 2 === 0 ? "#fff1c7" : "#f2c9b0"} gradientMap={grad} />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -6572,49 +7712,724 @@ function BeachDistrict({ grad }: { grad: THREE.Texture }) {
       <DistrictGroundPatch patch={p} shape="rect" />
       <DistrictFlatTile x={p.x + 6} z={p.z - 6} width={44} depth={7} color="#f7e3bc" opacity={0.44} rot={0.55} />
       <DistrictFlatTile x={p.x - 8} z={p.z + 7} width={32} depth={4} color="#bfe6ee" opacity={0.28} rot={0.5} />
-      <GroundProp url={MODELS.beachDeckchair} grad={grad} x={p.x - 18} z={p.z + 4} rot={0.8} scale={1.25} />
-      <GroundProp url={MODELS.beachSurfboard} grad={grad} x={p.x - 7} z={p.z - 9} rot={1.2} scale={1.12} />
-      <GroundProp url={MODELS.beachBucket} grad={grad} x={p.x + 9} z={p.z + 5} rot={-0.5} scale={1.18} />
-      <GroundProp url={MODELS.beachBall} grad={grad} x={p.x + 17} z={p.z - 2} rot={0.2} scale={1.04} />
-      <GroundProp url={MODELS.beachSign} grad={grad} x={p.x - 23} z={p.z - 11} rot={0.25} scale={1.15} />
-      <GroundProp url={MODELS.beachPalm} grad={grad} x={p.x + 22} z={p.z + 11} rot={-0.35} scale={1.1} />
-      <GroundProp url={MODELS.beachFirepit} grad={grad} x={p.x + 3} z={p.z + 14} rot={0.1} scale={1.0} />
-      <GroundProp url={MODELS.beachFootprint} grad={grad} x={p.x - 3} z={p.z + 1} rot={0.65} scale={1.45} />
-      <GroundProp url={MODELS.beachStarfish} grad={grad} x={p.x + 24} z={p.z - 9} rot={0.5} scale={1.1} />
-      <GroundProp url={MODELS.beachTidepool} grad={grad} x={p.x - 18} z={p.z + 13} rot={-0.2} scale={1.16} />
-      <GroundProp url={MODELS.beachSandcastle} grad={grad} x={p.x + 15} z={p.z + 10} rot={0.35} scale={1.08} />
+      <BeachShoreDetails grad={grad} />
+      <Suspense fallback={null}>
+        <GroundProp url={MODELS.beachDeckchair} grad={grad} x={p.x - 18} z={p.z + 4} rot={0.8} scale={1.25} />
+        <GroundProp url={MODELS.beachSurfboard} grad={grad} x={p.x - 7} z={p.z - 9} rot={1.2} scale={1.12} />
+        <GroundProp url={MODELS.beachBucket} grad={grad} x={p.x + 9} z={p.z + 5} rot={-0.5} scale={1.18} />
+        <GroundProp url={MODELS.beachBall} grad={grad} x={p.x + 17} z={p.z - 2} rot={0.2} scale={1.04} />
+        <GroundProp url={MODELS.beachSign} grad={grad} x={p.x - 23} z={p.z - 11} rot={0.25} scale={1.15} />
+        <GroundProp url={MODELS.beachPalm} grad={grad} x={p.x + 22} z={p.z + 11} rot={-0.35} scale={1.1} />
+        <GroundProp url={MODELS.beachFirepit} grad={grad} x={p.x + 3} z={p.z + 14} rot={0.1} scale={1.0} />
+        <GroundProp url={MODELS.beachFootprint} grad={grad} x={p.x - 3} z={p.z + 1} rot={0.65} scale={1.45} />
+        <GroundProp url={MODELS.beachStarfish} grad={grad} x={p.x + 24} z={p.z - 9} rot={0.5} scale={1.1} />
+        <GroundProp url={MODELS.beachTidepool} grad={grad} x={p.x - 18} z={p.z + 13} rot={-0.2} scale={1.16} />
+        <GroundProp url={MODELS.beachSandcastle} grad={grad} x={p.x + 15} z={p.z + 10} rot={0.35} scale={1.08} />
+      </Suspense>
+    </group>
+  );
+}
+
+const RICE_PADDY_LAYOUT = [
+  { dx: -15, dz: -10, w: 24, d: 16, rot: 0 },
+  { dx: 15, dz: -10, w: 24, d: 16, rot: 0 },
+  { dx: -15, dz: 10, w: 24, d: 16, rot: 0 },
+  { dx: 15, dz: 10, w: 24, d: 16, rot: 0 },
+] as const;
+
+type RicePaddyPlot = { x: number; z: number; w: number; d: number; rot: number };
+type RicePaddyBermSide = "north" | "south" | "west" | "east";
+const RICE_PADDY_BERM_SIDES: RicePaddyBermSide[] = ["north", "south", "west", "east"];
+
+function ricePaddyWorldPoint(plot: RicePaddyPlot, lx: number, lz: number): { x: number; z: number } {
+  const c = Math.cos(plot.rot);
+  const s = Math.sin(plot.rot);
+  return {
+    x: plot.x + lx * c - lz * s,
+    z: plot.z + lx * s + lz * c,
+  };
+}
+
+function ricePaddyGridLocalPoint(plot: RicePaddyPlot, col: number, colCount: number, row: number, rowCount: number, insetX: number, insetZ: number): { lx: number; lz: number } {
+  const usableW = Math.max(0.1, plot.w - insetX * 2);
+  const usableD = Math.max(0.1, plot.d - insetZ * 2);
+  return {
+    lx: colCount <= 1 ? 0 : -plot.w / 2 + insetX + col * (usableW / Math.max(1, colCount - 1)),
+    lz: rowCount <= 1 ? 0 : -plot.d / 2 + insetZ + row * (usableD / Math.max(1, rowCount - 1)),
+  };
+}
+
+function ricePaddyFlatY(plot: RicePaddyPlot, yLift = 0): number {
+  const samples: { x: number; z: number }[] = [];
+  for (let iz = 0; iz <= 4; iz++) {
+    const lz = -plot.d / 2 + (plot.d * iz) / 4;
+    for (let ix = 0; ix <= 4; ix++) {
+      const lx = -plot.w / 2 + (plot.w * ix) / 4;
+      samples.push(ricePaddyWorldPoint(plot, lx, lz));
+    }
+  }
+  return Math.max(...samples.map(({ x, z }) => placeableGroundY(x, z))) + yLift;
+}
+
+function buildRicePaddySurfaceGeometry(plot: RicePaddyPlot, segmentsX = 8, segmentsZ = 6, yLift = 0.22): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const flatY = ricePaddyFlatY(plot, yLift);
+  for (let iz = 0; iz <= segmentsZ; iz++) {
+    const lz = -plot.d / 2 + (plot.d * iz) / segmentsZ;
+    for (let ix = 0; ix <= segmentsX; ix++) {
+      const lx = -plot.w / 2 + (plot.w * ix) / segmentsX;
+      const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+      positions.push(x, flatY, z);
+      uvs.push(ix / segmentsX, iz / segmentsZ);
+    }
+  }
+  const row = segmentsX + 1;
+  for (let iz = 0; iz < segmentsZ; iz++) {
+    for (let ix = 0; ix < segmentsX; ix++) {
+      const a = iz * row + ix;
+      const b = a + 1;
+      const c = a + row;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function buildRicePaddyRetainingWallGeometry(plot: RicePaddyPlot, segments = 10, topLift = 0.2, bottomLift = 0.03): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const topY = ricePaddyFlatY(plot, topLift);
+  const wallColor = new THREE.Color();
+
+  const appendSide = (side: RicePaddyBermSide) => {
+    const start = positions.length / 3;
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const alongW = -plot.w / 2 + plot.w * t;
+      const alongD = -plot.d / 2 + plot.d * t;
+      let lx: number;
+      let lz: number;
+      if (side === "north" || side === "south") {
+        lx = alongW;
+        lz = side === "north" ? -plot.d / 2 : plot.d / 2;
+      } else {
+        lx = side === "west" ? -plot.w / 2 : plot.w / 2;
+        lz = alongD;
+      }
+      const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+      const groundY = placeableGroundY(x, z);
+      terrainGrassColor(x, z, groundY, wallColor);
+      positions.push(x, topY, z);
+      colors.push(wallColor.r, wallColor.g, wallColor.b);
+      positions.push(x, groundY + bottomLift, z);
+      colors.push(wallColor.r, wallColor.g, wallColor.b);
+    }
+    for (let i = 0; i < segments; i++) {
+      const a = start + i * 2;
+      const b = a + 1;
+      const c = a + 2;
+      const d = a + 3;
+      indices.push(a, c, b, b, c, d);
+    }
+  };
+
+  for (const side of RICE_PADDY_BERM_SIDES) appendSide(side);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function buildRicePaddyBermGeometry(plot: RicePaddyPlot, side: RicePaddyBermSide, yLift = 0.28): THREE.BufferGeometry {
+  const width = 0.9;
+  const length = side === "north" || side === "south" ? plot.w + 1.2 : plot.d + 1.2;
+  const segments = Math.max(4, Math.ceil(length / 3));
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const flatY = ricePaddyFlatY(plot, yLift);
+  for (let i = 0; i <= segments; i++) {
+    const along = -length / 2 + (length * i) / segments;
+    for (let j = 0; j < 2; j++) {
+      const cross = (j - 0.5) * width;
+      let lx: number;
+      let lz: number;
+      if (side === "north" || side === "south") {
+        lx = along;
+        lz = (side === "north" ? -plot.d / 2 : plot.d / 2) + cross;
+      } else {
+        lx = (side === "west" ? -plot.w / 2 : plot.w / 2) + cross;
+        lz = along;
+      }
+      const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+      positions.push(x, flatY, z);
+    }
+  }
+  for (let i = 0; i < segments; i++) {
+    const a = i * 2;
+    const b = a + 1;
+    const c = a + 2;
+    const d = a + 3;
+    indices.push(a, c, b, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function buildRicePaddyFlatRectGeometry(plot: RicePaddyPlot, lx: number, lz: number, width: number, depth: number, rot = 0, yLift = 0.34): THREE.BufferGeometry {
+  const center = ricePaddyWorldPoint(plot, lx, lz);
+  const angle = plot.rot + rot;
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const flatY = ricePaddyFlatY(plot, yLift);
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices = [0, 2, 1, 1, 2, 3];
+  const corners = [
+    [-width / 2, -depth / 2],
+    [width / 2, -depth / 2],
+    [-width / 2, depth / 2],
+    [width / 2, depth / 2],
+  ] as const;
+  for (const [xOffset, zOffset] of corners) {
+    const x = center.x + xOffset * c - zOffset * s;
+    const z = center.z + xOffset * s + zOffset * c;
+    positions.push(x, flatY, z);
+    uvs.push(xOffset > 0 ? 1 : 0, zOffset > 0 ? 1 : 0);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+function RicePaddyTerrainSurface({ plot }: { plot: RicePaddyPlot }) {
+  const geo = useMemo(() => buildRicePaddySurfaceGeometry(plot), [plot]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} receiveShadow renderOrder={2}>
+      <meshStandardMaterial color="#79cbd0" roughness={0.2} metalness={0.18} transparent opacity={0.84} depthWrite={false} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} />
+    </mesh>
+  );
+}
+
+function RicePaddyRetainingWall({ plot, grad }: { plot: RicePaddyPlot; grad: THREE.Texture }) {
+  const geo = useMemo(() => buildRicePaddyRetainingWallGeometry(plot), [plot]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} receiveShadow renderOrder={2}>
+      <meshToonMaterial vertexColors gradientMap={grad} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
+    </mesh>
+  );
+}
+
+function RicePaddyBermStrip({ plot, side, grad }: { plot: RicePaddyPlot; side: RicePaddyBermSide; grad: THREE.Texture }) {
+  const geo = useMemo(() => buildRicePaddyBermGeometry(plot, side), [plot, side]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} receiveShadow renderOrder={3}>
+      <meshToonMaterial color="#d9be72" gradientMap={grad} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
+    </mesh>
+  );
+}
+
+function RicePaddyShineStrip({ plot, grad, lx, lz, len, rot }: { plot: RicePaddyPlot; grad: THREE.Texture; lx: number; lz: number; len: number; rot: number }) {
+  const geo = useMemo(() => buildRicePaddyFlatRectGeometry(plot, lx, lz, len, 0.28, rot), [plot, lx, lz, len, rot]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  return (
+    <mesh geometry={geo} receiveShadow renderOrder={4}>
+      <meshToonMaterial color="#f6fff0" gradientMap={grad} transparent opacity={0.72} depthWrite={false} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+    </mesh>
+  );
+}
+
+function RicePaddyWater({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.rice;
+  const plots = useMemo(() => RICE_PADDY_LAYOUT.map((plot) => ({ x: p.x + plot.dx, z: p.z + plot.dz, w: plot.w, d: plot.d, rot: plot.rot })), [p.x, p.z]);
+  const shine = [
+    { plotIndex: 0, lx: -4, lz: -3, len: 8, rot: -0.04 },
+    { plotIndex: 1, lx: -2, lz: 1, len: 10, rot: 0.02 },
+    { plotIndex: 2, lx: 8, lz: -1, len: 7, rot: -0.03 },
+  ] as const;
+  const seedlingGeo = useMemo(() => new THREE.ConeGeometry(0.05, 0.62, 5), []);
+  const seedlingMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#6f9e5f", gradientMap: grad, emissive: new THREE.Color("#85b86a"), emissiveIntensity: 0.1 }), [grad]);
+  const grainHeadGeo = useMemo(() => new THREE.ConeGeometry(0.07, 0.24, 5), []);
+  const grainHeadMat = useMemo(() => new THREE.MeshToonMaterial({ color: "#d8b85d", gradientMap: grad, emissive: new THREE.Color("#b89542"), emissiveIntensity: 0.08 }), [grad]);
+  useEffect(() => () => {
+    seedlingGeo.dispose();
+    seedlingMat.dispose();
+    grainHeadGeo.dispose();
+    grainHeadMat.dispose();
+  }, [seedlingGeo, seedlingMat, grainHeadGeo, grainHeadMat]);
+  const seedlingItems = useMemo<InstItem[]>(() => {
+    const out: InstItem[] = [];
+    for (let plotIndex = 0; plotIndex < plots.length; plotIndex++) {
+      const plot = plots[plotIndex];
+      const flatY = ricePaddyFlatY(plot, 0.42);
+      const rowCount = Math.max(4, Math.round((plot.d - 4) / 3.2));
+      const colCount = Math.max(5, Math.round((plot.w - 4.8) / 3.2));
+      for (let row = 0; row < rowCount; row++) {
+        for (let col = 0; col < colCount; col++) {
+          const { lx, lz } = ricePaddyGridLocalPoint(plot, col, colCount, row, rowCount, 2.4, 2);
+          const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+          const edge = row === 0 || col === 0 || row === rowCount - 1 || col === colCount - 1;
+          out.push({
+            p: [x, flatY, z],
+            s: edge ? 0.82 : 0.96,
+            r: [0, plot.rot, 0],
+          });
+        }
+      }
+    }
+    return out;
+  }, [plots]);
+  const grainHeadItems = useMemo<InstItem[]>(() => {
+    const out: InstItem[] = [];
+    for (let plotIndex = 0; plotIndex < plots.length; plotIndex++) {
+      const plot = plots[plotIndex];
+      const flatY = ricePaddyFlatY(plot, 0.82);
+      const rowCount = Math.max(3, Math.round((plot.d - 4) / 4.1));
+      const colCount = Math.max(4, Math.round((plot.w - 4.8) / 4.2));
+      for (let row = 0; row < rowCount; row++) {
+        for (let col = 0; col < colCount; col++) {
+          if ((row + col + plotIndex) % 2 !== 0) continue;
+          const { lx, lz } = ricePaddyGridLocalPoint(plot, col, colCount, row, rowCount, 3.2, 2.5);
+          const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+          const sway = (hash2(plotIndex * 83 + row * 13 + col, 2.6) - 0.5) * 0.28;
+          out.push({
+            p: [x, flatY, z],
+            sv: [0.82, 1.18, 0.82],
+            r: [sway, plot.rot + sway * 0.8, -sway * 0.7],
+          });
+        }
+      }
+    }
+    return out;
+  }, [plots]);
+  return (
+    <group>
+      {plots.map((plot, i) => (
+        <group key={i}>
+          <RicePaddyRetainingWall key={`wall-${i}`} plot={plot} grad={grad} />
+          <RicePaddyTerrainSurface plot={plot} />
+          {RICE_PADDY_BERM_SIDES.map((side) => <RicePaddyBermStrip key={side} plot={plot} side={side} grad={grad} />)}
+        </group>
+      ))}
+      {shine.map(({ plotIndex, lx, lz, len, rot }, i) => {
+        const plot = plots[plotIndex];
+        return plot ? <RicePaddyShineStrip key={`shine-${i}`} plot={plot} grad={grad} lx={lx} lz={lz} len={len} rot={rot} /> : null;
+      })}
+      <InstancedField geo={seedlingGeo} material={seedlingMat} items={seedlingItems} />
+      <InstancedField geo={grainHeadGeo} material={grainHeadMat} items={grainHeadItems} />
+    </group>
+  );
+}
+
+function FieldScarecrow({ grad, x, z, rot = 0, scale = 1, baseY }: { grad: THREE.Texture; x: number; z: number; rot?: number; scale?: number; baseY?: number }) {
+  const y = baseY ?? placeableGroundY(x, z);
+  return (
+    <group position={[x, y + 0.04, z]} rotation={[0, rot, 0]} scale={scale}>
+      <mesh position={[0, 0.76, 0]}>
+        <cylinderGeometry args={[0.055, 0.065, 1.52, 6]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0, 1.24, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.04, 0.048, 1.8, 6]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0, 0.88, 0]} scale={[0.34, 0.4, 0.18]}>
+        <coneGeometry args={[1, 1, 5]} />
+        <meshToonMaterial color="#d9b45d" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0, 1.08, 0]} scale={[0.48, 0.36, 0.22]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#e88b54" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-0.46, 1.1, 0]} rotation={[0, 0, 0.25]} scale={[0.28, 0.19, 0.11]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#6f8f5f" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.46, 1.1, 0]} rotation={[0, 0, -0.25]} scale={[0.28, 0.19, 0.11]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#6f8f5f" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0, 1.52, 0]} scale={[0.25, 0.25, 0.25]}>
+        <sphereGeometry args={[1, 10, 8]} />
+        <meshToonMaterial color="#d9b45d" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-0.08, 1.55, 0.23]} scale={[0.03, 0.03, 0.022]}>
+        <sphereGeometry args={[1, 8, 6]} />
+        <meshToonMaterial color="#4b3326" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.08, 1.55, 0.23]} scale={[0.03, 0.03, 0.022]}>
+        <sphereGeometry args={[1, 8, 6]} />
+        <meshToonMaterial color="#4b3326" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0, 1.72, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.46, 0.46, 0.06, 12]} />
+        <meshToonMaterial color="#c89b4e" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0, 1.94, 0]}>
+        <coneGeometry args={[0.3, 0.42, 8]} />
+        <meshToonMaterial color="#c89b4e" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-1.0, 1.24, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <coneGeometry args={[0.08, 0.28, 6]} />
+        <meshToonMaterial color="#d9b45d" gradientMap={grad} />
+      </mesh>
+      <mesh position={[1.0, 1.24, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <coneGeometry args={[0.08, 0.28, 6]} />
+        <meshToonMaterial color="#d9b45d" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.16, 1.1, 0.23]} scale={[0.14, 0.1, 0.03]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#b35f45" gradientMap={grad} />
+      </mesh>
     </group>
   );
 }
 
 function RiceFieldDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: boolean }) {
-  const rows = lowTier ? 9 : 16;
-  const cols = lowTier ? 8 : 13;
+  const p = HEALING_DISTRICT_PRESENTATION.rice;
+  const plots = RICE_PADDY_LAYOUT.map((plot) => ({ x: p.x + plot.dx, z: p.z + plot.dz, w: plot.w, d: plot.d, rot: plot.rot }));
+  const scarecrowAnchors = [
+    { plotIndex: 0, lx: -9, lz: 7, rot: 0.25, scale: 2.35 },
+    { plotIndex: 2, lx: 12, lz: -8, rot: -0.35, scale: 1.85 },
+    { plotIndex: 3, lx: 3, lz: 0, rot: -0.1, scale: 1.45 },
+  ] as const;
   const items = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = 40 + c * 3.15 + (r % 2) * 0.8;
-      const z = -101 + r * 3.05;
-      items.push(<GroundProp key={`${r}-${c}`} url={MODELS.natCropSprout} grad={grad} x={x} z={z} rot={(c * 0.37 + r * 0.21) % 6.28} scale={0.96} />);
+  for (let plotIndex = 0; plotIndex < plots.length; plotIndex++) {
+    const plot = plots[plotIndex];
+    const flatY = ricePaddyFlatY(plot, 0.3);
+    const rowCount = lowTier ? 4 : 6;
+    const colCount = lowTier ? 5 : 8;
+    for (let r = 0; r < rowCount; r++) {
+      for (let c = 0; c < colCount; c++) {
+        const { lx, lz } = ricePaddyGridLocalPoint(plot, c, colCount, r, rowCount, 3, 2.8);
+        const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+        const edge = r === 0 || c === 0 || r === rowCount - 1 || c === colCount - 1;
+        items.push(<GltfProp key={`${plotIndex}-${r}-${c}`} url={MODELS.natCropSprout} grad={grad} position={[x, flatY, z]} rotation={[0, plot.rot, 0]} scale={edge ? 0.92 : 1.16} tint={edge ? "#8fbf6b" : "#6fa85f"} grounded />);
+      }
     }
   }
+  const reeds = [
+    [p.x - 31, p.z + 14, 1.3, 0.4],
+    [p.x - 27, p.z - 18, 1.1, -0.2],
+    [p.x + 30, p.z + 11, 1.25, 0.1],
+    [p.x + 24, p.z - 20, 1.08, -0.5],
+  ] as const;
   return (
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.rice} shape="rect" />
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[58, exGroundY(58, -80) + 0.04, -80]}>
-        <planeGeometry args={[55, 42]} />
-        <meshBasicMaterial color="#d7ecaa" transparent opacity={0.18} depthWrite={false} toneMapped={false} />
+      <RicePaddyWater grad={grad} />
+      {scarecrowAnchors.map(({ plotIndex, lx, lz, rot, scale }, i) => {
+        const plot = plots[plotIndex];
+        const { x, z } = ricePaddyWorldPoint(plot, lx, lz);
+        return <FieldScarecrow key={i} grad={grad} x={x} z={z} rot={rot} scale={scale} baseY={ricePaddyFlatY(plot, 0.34)} />;
+      })}
+      <Suspense fallback={null}>
+        {items}
+        {reeds.map(([x, z, s, r], i) => <GroundProp key={i} url={MODELS.natReed} grad={grad} x={x} z={z} rot={r} scale={s} tint="#d9c47a" />)}
+        <GroundProp url={MODELS.houseCottage} grad={grad} x={p.x - 31} z={p.z + 24} rot={0.45} scale={0.92} />
+        <GroundProp url={MODELS.townHaystack} grad={grad} x={p.x + 11} z={p.z - 12} rot={0.4} scale={1.38} />
+        <GroundProp url={MODELS.paperboat} grad={grad} x={p.x - 12} z={p.z + 7} rot={-0.6} scale={1.05} />
+        <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x - 22} z={p.z + 22} rot={0.45} scale={1.12} />
+        <GroundProp url={MODELS.townFence} grad={grad} x={p.x + 31} z={p.z + 17} rot={0.1} scale={1.35} />
+        <GroundProp url={MODELS.townFence} grad={grad} x={p.x - 35} z={p.z + 10} rot={Math.PI / 2} scale={1.18} />
+        <GltfProp url={MODELS.bgBird} grad={grad} position={[p.x + 16, placeableGroundY(p.x + 16, p.z + 24) + 7.5, p.z + 24]} rotation={[0, -0.4, 0]} scale={0.85} />
+        <GltfProp url={MODELS.bgBird} grad={grad} position={[p.x + 25, placeableGroundY(p.x + 25, p.z + 19) + 8.2, p.z + 19]} rotation={[0, -0.2, 0]} scale={0.58} />
+      </Suspense>
+    </group>
+  );
+}
+
+function FarmSoilBed({ grad, x, z, width, depth, rot = 0, color = "#9d7650" }: { grad: THREE.Texture; x: number; z: number; width: number; depth: number; rot?: number; color?: string }) {
+  return (
+    <TerrainRectSurface grad={grad} x={x} z={z} width={width} depth={depth} rot={rot} yLift={0.16} color={color} />
+  );
+}
+
+function FarmSoilRows({ grad, x, z, rot = 0, rows = 4, cols = 7, color = "#9d7650" }: { grad: THREE.Texture; x: number; z: number; rot?: number; rows?: number; cols?: number; color?: string }) {
+  const items = [];
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const rowWidth = (cols - 1) * 1.55 + 1.35;
+  for (let r = 0; r < rows; r++) {
+    const lz = (r - (rows - 1) / 2) * 1.75;
+    const px = x - lz * s;
+    const pz = z + lz * c;
+    items.push(<FarmSoilBed key={r} grad={grad} x={px} z={pz} width={rowWidth} depth={0.82} rot={rot} color={r % 2 === 0 ? color : "#846341"} />);
+  }
+  return <group>{items}</group>;
+}
+
+function FarmCropRows({ grad, x, z, rot = 0, rows = 4, cols = 7, tint = "#b7cf77" }: { grad: THREE.Texture; x: number; z: number; rot?: number; rows?: number; cols?: number; tint?: string }) {
+  const items = [];
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  for (let r = 0; r < rows; r++) {
+    for (let col = 0; col < cols; col++) {
+      const lx = (col - (cols - 1) / 2) * 1.55;
+      const lz = (r - (rows - 1) / 2) * 1.75;
+      const px = x + lx * c - lz * s;
+      const pz = z + lx * s + lz * c;
+      items.push(<GroundProp key={`${r}-${col}`} url={MODELS.natCropSprout} grad={grad} x={px} z={pz} rot={rot + hash2(r * 19 + col, 2.4) * 0.5} scale={1.1} yOffset={0.08} tint={tint} />);
+    }
+  }
+  return <group>{items}</group>;
+}
+
+function FarmsteadDistrictCore({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.farm;
+  const fences = [
+    [p.x - 17, p.z - 16, 0, 1.5],
+    [p.x - 3, p.z - 16, 0, 1.5],
+    [p.x + 11, p.z - 16, 0, 1.5],
+    [p.x - 19, p.z - 5, Math.PI / 2, 1.35],
+    [p.x + 18, p.z - 6, Math.PI / 2, 1.35],
+  ] as const;
+  return (
+    <group>
+      <FarmSoilRows grad={grad} x={p.x - 9} z={p.z - 4} rot={0.1} rows={5} cols={8} color="#9c7a50" />
+      <FarmSoilRows grad={grad} x={p.x + 10} z={p.z - 10} rot={-0.15} rows={5} cols={7} color="#8f704d" />
+      <FieldScarecrow grad={grad} x={p.x - 1} z={p.z - 3} rot={0.05} scale={1.05} />
+      <Suspense fallback={null}>
+        <FarmCropRows grad={grad} x={p.x - 9} z={p.z - 4} rot={0.1} rows={5} cols={8} tint="#b4c969" />
+        <FarmCropRows grad={grad} x={p.x + 10} z={p.z - 10} rot={-0.15} rows={5} cols={7} tint="#8fc174" />
+        <GroundProp url={MODELS.houseCottage} grad={grad} x={p.x - 26} z={p.z + 15} rot={0.65} scale={1.0} />
+        <GroundProp url={MODELS.houseVilla} grad={grad} x={p.x + 25} z={p.z - 16} rot={-0.65} scale={0.92} />
+        <GroundProp url={MODELS.isleWell} grad={grad} x={p.x - 3} z={p.z - 14} rot={0.2} scale={0.98} />
+        <GroundProp url={MODELS.natCropSprout} grad={grad} x={p.x + 2} z={p.z - 2} rot={0.2} scale={1.22} tint="#9fc66c" />
+        <GroundProp url={MODELS.townHaystack} grad={grad} x={p.x + 8} z={p.z - 14} rot={0.25} scale={1.55} />
+        <GroundProp url={MODELS.townHaystack} grad={grad} x={p.x - 15} z={p.z - 2} rot={1.2} scale={1.28} />
+        <GroundProp url={MODELS.townCrate} grad={grad} x={p.x + 3} z={p.z - 16} rot={0.5} scale={1.12} />
+        <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x - 21} z={p.z + 7} rot={0.45} scale={1.08} />
+        <GroundProp url={MODELS.windmill} grad={grad} x={p.x + 22} z={p.z + 5} rot={0.7} scale={1.34} spin={{ node: "Blades", speed: -0.9, axis: "y" }} />
+        {fences.map(([x, z, r, sc], i) => <GroundProp key={i} url={MODELS.townFence} grad={grad} x={x} z={z} rot={r} scale={sc} />)}
+      </Suspense>
+    </group>
+  );
+}
+
+function TownMarketPavers({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.town;
+  const stones = [
+    [-8, 2, 5.8, 1.55, 0.1],
+    [0, 2.8, 5.2, 1.4, -0.04],
+    [8, 2, 5.8, 1.55, 0.08],
+    [-5, 9, 4.6, 1.25, Math.PI / 2 + 0.05],
+    [3, 10, 4.4, 1.25, Math.PI / 2 - 0.04],
+    [12, 8, 4.8, 1.2, Math.PI / 2 + 0.08],
+  ] as const;
+  return (
+    <group>
+      {stones.map(([dx, dz, w, d, r], i) => {
+        const x = p.x + dx;
+        const z = p.z + dz;
+        return <TerrainRectSurface key={i} grad={grad} x={x} z={z} width={w} depth={d} rot={r} yLift={0.09} color={i % 2 === 0 ? "#d3bd9a" : "#c2aa87"} polygonOffsetFactor={-2} polygonOffsetUnits={-2} />;
+      })}
+    </group>
+  );
+}
+
+function TownNoticeBoard({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.town;
+  const glow = night ? "#ffe9a0" : "#f0c86a";
+  const x = p.x - 4;
+  const z = p.z - 5.5;
+  const y = placeableGroundY(x, z);
+  return (
+    <group position={[x, y + 0.04, z]} rotation={[0, 0.18, 0]}>
+      <mesh position={[-0.85, 0.55, 0]} castShadow>
+        <cylinderGeometry args={[0.055, 0.07, 1.1, 6]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
       </mesh>
-      {[47, 58, 69].map((x) => <DistrictFlatTile key={x} x={x} z={-80} width={2.2} depth={43} color="#bfe9dc" opacity={0.34} />)}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[58, exGroundY(58, -80) + 0.055, -80]}>
-        <planeGeometry args={[56, 3.2]} />
-        <meshBasicMaterial color="#bfe9dc" transparent opacity={0.28} depthWrite={false} toneMapped={false} />
+      <mesh position={[0.85, 0.55, 0]} castShadow>
+        <cylinderGeometry args={[0.055, 0.07, 1.1, 6]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
       </mesh>
-      {items}
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={79} z={-86} rot={0.4} scale={1.38} />
-      <GroundProp url={MODELS.paperboat} grad={grad} x={47} z={-73} rot={-0.6} scale={1.05} />
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={38} z={-62} rot={0.45} scale={1.12} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={80} z={-70} rot={0.1} scale={1.35} />
+      <mesh position={[0, 1.06, 0]} scale={[1.85, 1.05, 0.12]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#7b5630" gradientMap={grad} />
+      </mesh>
+      <mesh position={[-0.46, 1.13, 0.08]} scale={[0.38, 0.42, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#f0c86a" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.14, 1.0, 0.08]} scale={[0.46, 0.32, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#f4d6a3" gradientMap={grad} />
+      </mesh>
+      <mesh position={[0.62, 1.22, 0.08]} scale={[0.28, 0.26, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color={glow} gradientMap={grad} />
+      </mesh>
+    </group>
+  );
+}
+
+function TownMarketSquare({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.town;
+  const lamps = night ? "#ffe9a0" : undefined;
+  const lampSpots = [
+    [p.x - 22, p.z - 3],
+    [p.x + 20, p.z - 2],
+    [p.x - 19, p.z + 16],
+    [p.x + 22, p.z + 15],
+  ] as const;
+  return (
+    <group>
+      <TownMarketPavers grad={grad} />
+      <TownNoticeBoard grad={grad} night={night} />
+      <Suspense fallback={null}>
+        <GroundProp url={MODELS.houseShop} grad={grad} x={p.x - 24} z={p.z - 13} rot={0.5} scale={0.94} />
+        <GroundProp url={MODELS.houseCafe} grad={grad} x={p.x + 24} z={p.z - 14} rot={-0.45} scale={0.9} />
+        <GroundProp url={MODELS.houseMachiya} grad={grad} x={p.x - 22} z={p.z + 16} rot={0.42} scale={0.84} />
+        <GroundProp url={MODELS.houseRound} grad={grad} x={p.x + 22} z={p.z + 17} rot={-0.35} scale={0.86} />
+        <GroundProp url={MODELS.isleStall} grad={grad} x={p.x - 8} z={p.z + 3} rot={0.08} scale={1.08} />
+        <GroundProp url={MODELS.townParasol} grad={grad} x={p.x + 6} z={p.z + 7} rot={-0.25} scale={1.1} />
+        <GroundProp url={MODELS.townCrate} grad={grad} x={p.x - 14} z={p.z + 10} rot={0.4} scale={1.2} />
+        <GroundProp url={MODELS.townBench} grad={grad} x={p.x + 15} z={p.z - 1} rot={1.55} scale={1.02} />
+        <GroundProp url={MODELS.townMailbox} grad={grad} x={p.x - 1} z={p.z - 19} rot={0.2} scale={1.02} tint={lamps} />
+        <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 2} z={p.z + 21} rot={-0.05} scale={1.16} tint={lamps} />
+        {lampSpots.map(([x, z], i) => <GroundProp key={i} url={MODELS.townLamppost} grad={grad} x={x} z={z} rot={0} scale={1.03} tint={lamps} />)}
+      </Suspense>
+    </group>
+  );
+}
+
+function MountainTrailMarkers({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.mountain;
+  const markers = [
+    [p.x - 20, p.z - 18, 0.8, "#d95f45"],
+    [p.x - 11, p.z - 8, 0.62, "#f0c86a"],
+    [p.x + 1, p.z + 4, 0.35, "#7fb68d"],
+    [p.x + 13, p.z + 13, 0.18, "#d95f45"],
+  ] as const;
+  return (
+    <group>
+      {markers.map(([x, z, r, color], i) => (
+        <group key={i} position={[x, placeableGroundY(x, z) + 0.08, z]} rotation={[0, r, 0]}>
+          <mesh position={[0, 0.5, 0]} castShadow>
+            <cylinderGeometry args={[0.055, 0.075, 1.0, 6]} />
+            <meshToonMaterial color="#6f5132" gradientMap={grad} />
+          </mesh>
+          <mesh position={[0.34, 0.86, 0]} rotation={[0, 0, -0.16]} castShadow>
+            <boxGeometry args={[0.62, 0.28, 0.045]} />
+            <meshToonMaterial color={color} gradientMap={grad} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function MountainStepPath({ grad, x, z, rot = 0, count = 4 }: { grad: THREE.Texture; x: number; z: number; rot?: number; count?: number }) {
+  return (
+    <group>
+      {Array.from({ length: count }, (_, i) => (
+        <GroundProp key={i} url={MODELS.isleStepstones} grad={grad} x={x + Math.cos(rot) * i * 4.6} z={z + Math.sin(rot) * i * 4.6} rot={rot + i * 0.12} scale={1.05 + i * 0.08} />
+      ))}
+    </group>
+  );
+}
+
+function MountainTrailScene({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.mountain;
+  const pineSpots = [
+    [p.x - 24, p.z + 7, 1.55],
+    [p.x - 7, p.z + 23, 1.3],
+    [p.x + 22, p.z + 4, 1.42],
+    [p.x + 12, p.z - 18, 1.18],
+  ] as const;
+  return (
+    <group>
+      <MountainStepPath grad={grad} x={p.x - 24} z={p.z - 24} rot={0.74} count={5} />
+      <MountainTrailMarkers grad={grad} />
+      <GroundProp url={MODELS.terrCliff} grad={grad} x={p.x + 2} z={p.z + 2} rot={-0.4} scale={0.62} />
+      <GroundProp url={MODELS.terrStairs} grad={grad} x={p.x - 15} z={p.z - 9} rot={0.75} scale={0.52} />
+      <GroundProp url={MODELS.terrArchrock} grad={grad} x={p.x + 18} z={p.z - 17} rot={-0.65} scale={0.48} />
+      <GroundProp url={MODELS.cairn} grad={grad} x={p.x - 5} z={p.z + 15} rot={0.35} scale={1.08} />
+      <GroundProp url={MODELS.cairn} grad={grad} x={p.x + 9} z={p.z + 20} rot={-0.15} scale={0.84} />
+      <GroundProp url={MODELS.isleLookout} grad={grad} x={p.x + 23} z={p.z + 17} rot={-0.55} scale={1.12} />
+      <GroundProp url={MODELS.torii} grad={grad} x={p.x - 27} z={p.z - 20} rot={0.82} scale={1.24} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 2} z={p.z - 25} rot={0.35} scale={1.05} />
+      <DistrictLanternPair grad={grad} x={p.x - 14} z={p.z - 3} night={night} rot={-0.4} />
+      {pineSpots.map(([x, z, s], i) => <GroundProp key={i} url={MODELS.natPine} grad={grad} x={x} z={z} rot={hash2(i + 612, 4.1) * Math.PI * 2} scale={s} />)}
+    </group>
+  );
+}
+
+function ForestUnderstory({ grad, x, z }: { grad: THREE.Texture; x: number; z: number }) {
+  const mushrooms = [
+    [-6, -2, 1.05],
+    [-2, 3, 0.9],
+    [3, -1, 0.95],
+    [6, 4, 0.82],
+  ] as const;
+  return (
+    <group>
+      {mushrooms.map(([dx, dz, s], i) => <GroundProp key={i} url={MODELS.natMushroom} grad={grad} x={x + dx} z={z + dz} rot={i * 0.7} scale={s} />)}
+      <GroundProp url={MODELS.natBush} grad={grad} x={x - 8} z={z + 4} rot={0.2} scale={1.1} />
+      <GroundProp url={MODELS.natFlowers} grad={grad} x={x + 7} z={z - 5} rot={-0.3} scale={1.15} />
+    </group>
+  );
+}
+
+function ForestCampClearing({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.forest;
+  const rocks = [
+    [-13, -8, 1.0, 0.2],
+    [-4, -12, 0.78, 0.9],
+    [3, -9, 0.9, -0.3],
+    [1, 3, 0.72, 1.4],
+  ] as const;
+  return (
+    <group>
+      <TerrainEllipseSurface grad={grad} x={p.x - 7} z={p.z - 5} rx={7.6} rz={7.6} rot={0.18} yLift={0.08} color="#61784a" />
+      {rocks.map(([dx, dz, s, r], i) => <GroundProp key={i} url={MODELS.natRock} grad={grad} x={p.x + dx} z={p.z + dz} rot={r} scale={s} />)}
+    </group>
+  );
+}
+
+function ForestCampGrove({ grad, lowTier }: { grad: THREE.Texture; lowTier: boolean }) {
+  const p = HEALING_DISTRICT_PRESENTATION.forest;
+  const treeSpots = lowTier
+    ? [[-31, -19, 1.85], [-18, 17, 1.58], [4, -24, 1.68], [24, -8, 1.75], [29, 18, 1.48], [-2, 3, 1.32]]
+    : [[-36, -22, 2.05], [-30, 18, 1.75], [-19, -14, 1.8], [-12, 27, 1.52], [5, -26, 1.76], [17, 19, 1.64], [29, -12, 1.92], [35, 18, 1.58], [-2, 2, 1.4], [22, 4, 1.45], [8, 31, 1.32], [-35, 3, 1.5]];
+  return (
+    <group>
+      {treeSpots.map(([dx, dz, s], i) => (
+        <GroundProp key={i} url={i % 3 === 0 ? MODELS.natBroad : MODELS.natPine} grad={grad} x={p.x + dx} z={p.z + dz} rot={hash2(i + 401, 2.5) * Math.PI * 2} scale={s} />
+      ))}
+      <ForestUnderstory grad={grad} x={p.x - 4} z={p.z + 1} />
+      <ForestCampClearing grad={grad} />
+      <GroundProp url={MODELS.bonfire} grad={grad} x={p.x - 8} z={p.z - 6} rot={0.1} scale={0.92} />
+      <GroundProp url={MODELS.isleTent} grad={grad} x={p.x - 25} z={p.z + 23} rot={0.25} scale={1.18} />
+      <GroundProp url={MODELS.isleHammock} grad={grad} x={p.x + 15} z={p.z + 4} rot={-0.5} scale={1.16} />
+      <GroundProp url={MODELS.isleSwing} grad={grad} x={p.x - 5} z={p.z - 2} rot={0.38} scale={1.08} />
+      <GroundProp url={MODELS.leafnote} grad={grad} x={p.x + 10} z={p.z - 11} rot={-0.4} scale={0.82} />
+      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 31} z={p.z - 22} rot={-0.25} scale={1.18} />
     </group>
   );
 }
@@ -6632,83 +8447,64 @@ function MountainDistrict({ grad, night }: { grad: THREE.Texture; night: boolean
       <DistrictGroundPatch patch={p} />
       <DistrictFlatTile x={p.x - 10} z={p.z - 12} width={8} depth={30} color="#d6c8ad" opacity={0.3} rot={-0.78} />
       <DistrictFlatTile x={p.x + 7} z={p.z + 4} width={8} depth={28} color="#d6c8ad" opacity={0.28} rot={-0.35} />
-      <GroundProp url={MODELS.isleStepstones} grad={grad} x={p.x - 11} z={p.z - 15} rot={-0.75} scale={1.55} />
-      <GroundProp url={MODELS.torii} grad={grad} x={p.x - 25} z={p.z - 20} rot={0.82} scale={1.24} />
-      <GroundProp url={MODELS.isleLookout} grad={grad} x={p.x + 18} z={p.z + 16} rot={-0.55} scale={1.12} />
-      <DistrictLanternPair grad={grad} x={p.x - 14} z={p.z - 3} night={night} rot={-0.4} />
-      {rocks.map(([x, z, s, r], i) => <GroundProp key={i} url={MODELS.natRock} grad={grad} x={x} z={z} rot={r} scale={s} />)}
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 2} z={p.z - 23} rot={0.35} scale={1.05} />
+      <Suspense fallback={null}>
+        <MountainTrailScene grad={grad} night={night} />
+        {rocks.map(([x, z, s, r], i) => <GroundProp key={i} url={MODELS.natRock} grad={grad} x={x} z={z} rot={r} scale={s} />)}
+      </Suspense>
     </group>
   );
 }
 
 function ForestDistrict({ grad, lowTier }: { grad: THREE.Texture; lowTier: boolean }) {
   const p = HEALING_DISTRICT_PRESENTATION.forest;
-  const treeSpots = lowTier
-    ? [[-30, -18, 1.8], [-18, 17, 1.55], [4, -23, 1.65], [24, -8, 1.75], [28, 18, 1.45], [-2, 3, 1.3]]
-    : [[-34, -21, 2.0], [-29, 18, 1.72], [-18, -13, 1.78], [-10, 26, 1.5], [5, -25, 1.74], [17, 18, 1.62], [28, -11, 1.9], [34, 18, 1.55], [-2, 2, 1.38], [22, 4, 1.42]];
-  const bushSpots = [[-26, 0, 1.2], [-12, -23, 1.1], [10, 23, 1.0], [30, 3, 1.15], [-4, 15, 0.95]] as const;
-  const mushrooms = [[-10, -1, 1.25], [-5, 5, 1.05], [2, 4, 1.0], [7, -3, 1.1], [-1, -7, 0.95], [12, 8, 0.9], [-15, 9, 0.92]] as const;
   return (
     <group>
       <DistrictGroundPatch patch={p} />
       <DistrictCircleTile x={p.x + 1} z={p.z} radius={22} color="#376f4b" opacity={0.22} />
       <DistrictFlatTile x={p.x + 4} z={p.z} width={12} depth={58} color="#9fca84" opacity={0.32} rot={1.05} />
-      {treeSpots.map(([dx, dz, s], i) => (
-        <GroundProp
-          key={i}
-          url={i % 2 === 0 ? MODELS.natPine : MODELS.natBroad}
-          grad={grad}
-          x={p.x + dx}
-          z={p.z + dz}
-          rot={hash2(i + 401, 2.5) * Math.PI * 2}
-          scale={s}
-        />
-      ))}
-      {bushSpots.map(([dx, dz, s], i) => <GroundProp key={i} url={MODELS.natBush} grad={grad} x={p.x + dx} z={p.z + dz} rot={i * 0.7} scale={s} />)}
-      {mushrooms.map(([dx, dz, s], i) => <GroundProp key={i} url={MODELS.natMushroom} grad={grad} x={p.x + dx} z={p.z + dz} rot={i * 0.9} scale={s} />)}
-      <GroundProp url={MODELS.isleSwing} grad={grad} x={p.x - 5} z={p.z - 2} rot={0.38} scale={1.08} />
-      <GroundProp url={MODELS.isleHammock} grad={grad} x={p.x + 15} z={p.z + 4} rot={-0.5} scale={1.16} />
-      <GroundProp url={MODELS.isleTent} grad={grad} x={p.x - 23} z={p.z + 24} rot={0.25} scale={1.15} />
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x + 30} z={p.z - 21} rot={-0.25} scale={1.18} />
-      <GroundProp url={MODELS.natFlowers} grad={grad} x={p.x - 2} z={p.z + 14} rot={0.2} scale={1.22} />
+      <Suspense fallback={null}>
+        <ForestCampGrove grad={grad} lowTier={lowTier} />
+      </Suspense>
     </group>
   );
 }
 
 function TownDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
   const p = HEALING_DISTRICT_PRESENTATION.town;
-  const lamps = night ? "#ffe9a0" : undefined;
   return (
     <group>
       <DistrictGroundPatch patch={p} />
       <DistrictFlatTile x={p.x} z={p.z} width={40} depth={18} color="#d8c0a0" opacity={0.36} rot={0.08} />
       <DistrictFlatTile x={p.x + 4} z={p.z + 4} width={8} depth={42} color="#efe0bd" opacity={0.24} rot={Math.PI / 2} />
-      <GroundProp url={MODELS.houseCottage} grad={grad} x={p.x - 24} z={p.z - 11} rot={0.45} scale={0.95} />
-      <GroundProp url={MODELS.houseLoft} grad={grad} x={p.x + 24} z={p.z - 14} rot={-0.4} scale={0.9} />
-      <GroundProp url={MODELS.isleStall} grad={grad} x={p.x - 7} z={p.z + 3} rot={0.1} scale={1.05} />
-      <GroundProp url={MODELS.townParasol} grad={grad} x={p.x + 8} z={p.z + 8} rot={-0.2} scale={1.05} />
-      <GroundProp url={MODELS.townCrate} grad={grad} x={p.x - 14} z={p.z + 10} rot={0.4} scale={1.18} />
-      <GroundProp url={MODELS.townBench} grad={grad} x={p.x + 16} z={p.z - 1} rot={1.55} scale={1.0} />
-      <GroundProp url={MODELS.townMailbox} grad={grad} x={p.x - 2} z={p.z - 19} rot={0.2} scale={1.02} tint={lamps} />
-      <GroundProp url={MODELS.townLamppost} grad={grad} x={p.x - 19} z={p.z + 7} rot={0} scale={1.06} tint={lamps} />
-      <GroundProp url={MODELS.townLamppost} grad={grad} x={p.x + 20} z={p.z + 4} rot={0} scale={1.06} tint={lamps} />
+      <TownMarketSquare grad={grad} night={night} />
     </group>
   );
 }
 
 function FarmDistrict({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.farm;
   return (
     <group>
-      <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.farm} />
-      <DistrictFlatTile x={-56} z={-78} width={42} depth={8} color="#c9d779" opacity={0.22} rot={0.08} />
-      <DistrictFlatTile x={-57} z={-88} width={42} depth={8} color="#c9d779" opacity={0.2} rot={0.08} />
-      <GroundProp url={MODELS.houseVilla} grad={grad} x={-58} z={-93} rot={-0.8} scale={1.16} />
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={-43} z={-82} rot={0.3} scale={1.55} />
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={-66} z={-78} rot={1.4} scale={1.18} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={-51} z={-70} rot={0.1} scale={1.62} />
-      <GroundProp url={MODELS.townFence} grad={grad} x={-67} z={-88} rot={Math.PI / 2} scale={1.45} />
-      <GroundProp url={MODELS.windmill} grad={grad} x={-72} z={-104} rot={0.7} scale={1.28} />
+      <DistrictGroundPatch patch={p} />
+      <DistrictFlatTile x={p.x} z={p.z + 8} width={48} depth={9} color="#c9d779" opacity={0.22} rot={0.08} />
+      <DistrictFlatTile x={p.x + 2} z={p.z - 4} width={48} depth={9} color="#c9d779" opacity={0.2} rot={0.08} />
+      <FarmsteadDistrictCore grad={grad} />
+    </group>
+  );
+}
+
+function ZooHabitatPool({ grad }: { grad: THREE.Texture }) {
+  const p = HEALING_DISTRICT_PRESENTATION.zoo;
+  const x = p.x + 13;
+  const z = p.z + 3;
+  return (
+    <group>
+      <TerrainEllipseSurface grad={grad} x={x} z={z} rx={6.6} rz={4.4} rot={0.18} yLift={0.07} color="#7fc7d4" opacity={0.58} depthWrite={false} thetaSegments={32} />
+      <TerrainRectSurface grad={grad} x={x - 1.3} z={z + 1.1} width={2.2} depth={0.42} rot={0.18} yLift={0.085} color="#d8c08c" />
+      <mesh position={[p.x - 16, placeableGroundY(p.x - 16, p.z + 13) + 0.14, p.z + 13]} rotation={[0, 0.36, 0]} castShadow>
+        <boxGeometry args={[1.8, 0.28, 0.82]} />
+        <meshToonMaterial color="#b8895a" gradientMap={grad} />
+      </mesh>
     </group>
   );
 }
@@ -6732,17 +8528,26 @@ function ZooDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }) {
       <DistrictCircleTile x={p.x} z={p.z - 1} radius={20} color="#d8b977" opacity={0.28} />
       <DistrictCircleTile x={p.x + 13} z={p.z + 3} radius={6.5} color="#7fc7d4" opacity={0.35} />
       <DistrictFlatTile x={p.x - 8} z={p.z + 15} width={20} depth={5} color="#f1d99e" opacity={0.32} rot={0.12} />
-      {fences.map(([x, z, r, s], i) => <GroundProp key={i} url={MODELS.townFence} grad={grad} x={x} z={z} rot={r} scale={s} />)}
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x - 24} z={p.z - 20} rot={0.5} scale={1.35} tint={tint} />
-      <GroundProp url={MODELS.townCrate} grad={grad} x={p.x - 11} z={p.z + 15} rot={0.4} scale={1.12} />
-      <GroundProp url={MODELS.townHaystack} grad={grad} x={p.x - 1} z={p.z + 15} rot={-0.2} scale={1.1} />
-      <GroundProp url={MODELS.townBench} grad={grad} x={p.x + 14} z={p.z - 14} rot={1.45} scale={0.95} />
-      <GroundProp url={MODELS.critterFox} grad={grad} x={p.x - 7} z={p.z - 1} rot={0.5} scale={1.28} />
-      <GroundProp url={MODELS.critterCat} grad={grad} x={p.x + 5} z={p.z - 6} rot={-0.8} scale={1.2} />
-      <GroundProp url={MODELS.critterOwl} grad={grad} x={p.x - 3} z={p.z + 9} rot={0.2} scale={1.16} />
-      <GroundProp url={MODELS.critterFish} grad={grad} x={p.x + 13} z={p.z + 3} rot={-0.6} scale={0.9} />
-      <GroundProp url={MODELS.natBush} grad={grad} x={p.x + 22} z={p.z + 16} rot={0.2} scale={1.1} />
+      <ZooHabitatPool grad={grad} />
+      <Suspense fallback={null}>
+        {fences.map(([x, z, r, s], i) => <GroundProp key={i} url={MODELS.townFence} grad={grad} x={x} z={z} rot={r} scale={s} />)}
+        <GroundProp url={MODELS.townSignpost} grad={grad} x={p.x - 24} z={p.z - 20} rot={0.5} scale={1.35} tint={tint} />
+        <GroundProp url={MODELS.townCrate} grad={grad} x={p.x - 11} z={p.z + 15} rot={0.4} scale={1.12} />
+        <GroundProp url={MODELS.townHaystack} grad={grad} x={p.x - 1} z={p.z + 15} rot={-0.2} scale={1.1} />
+        <GroundProp url={MODELS.townBench} grad={grad} x={p.x + 14} z={p.z - 14} rot={1.45} scale={0.95} />
+        <GroundProp url={MODELS.critterFox} grad={grad} x={p.x - 7} z={p.z - 1} rot={0.5} scale={1.28} />
+        <GroundProp url={MODELS.critterCat} grad={grad} x={p.x + 5} z={p.z - 6} rot={-0.8} scale={1.2} />
+        <GroundProp url={MODELS.critterOwl} grad={grad} x={p.x - 3} z={p.z + 9} rot={0.2} scale={1.16} />
+        <GroundProp url={MODELS.critterFish} grad={grad} x={p.x + 13} z={p.z + 3} rot={-0.6} scale={0.9} />
+        <GroundProp url={MODELS.natBush} grad={grad} x={p.x + 22} z={p.z + 16} rot={0.2} scale={1.1} />
+      </Suspense>
     </group>
+  );
+}
+
+function SwampWaterPatch({ grad, x, z, rx, rz, rot = 0 }: { grad: THREE.Texture; x: number; z: number; rx: number; rz: number; rot?: number }) {
+  return (
+    <TerrainEllipseSurface grad={grad} x={x} z={z} rx={rx} rz={rz} rot={rot} yLift={0.055} color="#78b7ad" opacity={0.5} depthWrite={false} polygonOffsetFactor={-3} polygonOffsetUnits={-3} thetaSegments={32} />
   );
 }
 
@@ -6767,27 +8572,87 @@ function SwampDistrict({ grad, accent, lowTier }: { grad: THREE.Texture; accent:
       <DistrictFlatTile x={86} z={-97} width={7} depth={24} color="#bd9a64" opacity={0.32} rot={1.34} />
       <DistrictFlatTile x={85} z={-116} width={34} depth={16} color="#79b6ad" opacity={0.32} rot={0.22} />
       <DistrictFlatTile x={80} z={-116} width={7} depth={25} color="#b58d58" opacity={0.38} rot={0.85} />
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[92, exGroundY(92, -104) + 0.05, -104]}>
-        <circleGeometry args={[29, 56]} />
-        <meshStandardMaterial color="#4a8279" roughness={0.48} metalness={0.08} transparent opacity={0.3} depthWrite={false} />
+      <SwampWaterPatch grad={grad} x={92} z={-104} rx={24} rz={17} rot={0.18} />
+      <SwampWaterPatch grad={grad} x={81} z={-116} rx={13} rz={8} rot={-0.25} />
+      <SwampWaterPatch grad={grad} x={102} z={-112} rx={8} rz={5.5} rot={0.3} />
+      <Suspense fallback={null}>
+        {reeds}
+        {fixedReeds.map(([dx, dz, s], i) => <GroundProp key={`fixed-${i}`} url={MODELS.natReed} grad={grad} x={92 + dx} z={-104 + dz} rot={i * 0.75} scale={s} />)}
+        <GroundProp url={MODELS.isleBridge} grad={grad} x={91} z={-103} rot={0.85} scale={0.64} />
+        <GroundProp url={MODELS.isleBridge} grad={grad} x={84} z={-95} rot={1.32} scale={0.46} />
+        <GroundProp url={MODELS.isleBridge} grad={grad} x={80} z={-116} rot={0.85} scale={0.42} />
+        <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.42} />
+        <GroundProp url={MODELS.natLotus} grad={grad} x={77} z={-116} rot={-0.25} scale={1.42} />
+        <GroundProp url={MODELS.natLotus} grad={grad} x={89} z={-118} rot={0.36} scale={1.12} />
+        <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={1.26} />
+        <GroundProp url={MODELS.natLotus} grad={grad} x={95} z={-92} rot={0.1} scale={1.0} />
+        <GroundProp url={MODELS.critterFish} grad={grad} x={101} z={-103} rot={0.4} scale={0.78} tint={accent} />
+        <GroundProp url={MODELS.natReed} grad={grad} x={72} z={-117} rot={0.2} scale={1.34} />
+        <GroundProp url={MODELS.natReed} grad={grad} x={83} z={-123} rot={-0.4} scale={1.18} />
+        <GroundProp url={MODELS.natReed} grad={grad} x={91} z={-115} rot={0.7} scale={1.26} />
+        <GroundProp url={MODELS.natReed} grad={grad} x={87} z={-110} rot={-0.15} scale={1.18} />
+        <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.42} />
+        <GroundProp url={MODELS.townSignpost} grad={grad} x={75} z={-119} rot={0.7} scale={1.05} />
+      </Suspense>
+    </group>
+  );
+}
+
+function ScenicPrayerFlags({ grad, night }: { grad: THREE.Texture; night: boolean }) {
+  const glow = night ? "#ffe9a0" : "#f0c86a";
+  const flags = [
+    [14, 101, "#d95f45", 0.16],
+    [17, 102.6, "#f0c86a", 0.12],
+    [20, 103.5, "#6f8f5f", 0.05],
+    [33, 99.5, "#d95f45", -0.14],
+    [37, 101, "#f0c86a", -0.2],
+  ] as const;
+  return (
+    <group>
+      {flags.map(([x, z, color, rot], i) => {
+        const y = placeableGroundY(x, z);
+        return (
+          <group key={i} position={[x, y + 0.06, z]} rotation={[0, rot, 0]}>
+            <mesh position={[0, 0.72, 0]} castShadow>
+              <cylinderGeometry args={[0.035, 0.045, 1.44, 6]} />
+              <meshToonMaterial color="#7b5630" gradientMap={grad} />
+            </mesh>
+            <mesh position={[0.28, 1.06, 0]} rotation={[0, 0, -0.12]} scale={[0.52, 0.3, 0.035]} castShadow>
+              <boxGeometry args={[1, 1, 1]} />
+              <meshToonMaterial color={color} gradientMap={grad} />
+            </mesh>
+          </group>
+        );
+      })}
+      <mesh position={[26.6, placeableGroundY(26.6, 103) + 0.22, 103]} rotation={[0, -0.35, 0]} castShadow>
+        <boxGeometry args={[1.85, 0.28, 0.74]} />
+        <meshToonMaterial color="#f0c86a" gradientMap={grad} />
       </mesh>
-      {reeds}
-      {fixedReeds.map(([dx, dz, s], i) => <GroundProp key={`fixed-${i}`} url={MODELS.natReed} grad={grad} x={92 + dx} z={-104 + dz} rot={i * 0.75} scale={s} />)}
-      <GroundProp url={MODELS.isleBridge} grad={grad} x={91} z={-103} rot={0.85} scale={0.64} />
-      <GroundProp url={MODELS.isleBridge} grad={grad} x={84} z={-95} rot={1.32} scale={0.46} />
-      <GroundProp url={MODELS.isleBridge} grad={grad} x={80} z={-116} rot={0.85} scale={0.42} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={84} z={-97} rot={0.4} scale={1.42} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={77} z={-116} rot={-0.25} scale={1.42} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={89} z={-118} rot={0.36} scale={1.12} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={101} z={-111} rot={-0.5} scale={1.26} />
-      <GroundProp url={MODELS.natLotus} grad={grad} x={95} z={-92} rot={0.1} scale={1.0} />
-      <GroundProp url={MODELS.critterFish} grad={grad} x={101} z={-103} rot={0.4} scale={0.78} tint={accent} />
-      <GroundProp url={MODELS.natReed} grad={grad} x={72} z={-117} rot={0.2} scale={1.34} />
-      <GroundProp url={MODELS.natReed} grad={grad} x={83} z={-123} rot={-0.4} scale={1.18} />
-      <GroundProp url={MODELS.natReed} grad={grad} x={91} z={-115} rot={0.7} scale={1.26} />
-      <GroundProp url={MODELS.natReed} grad={grad} x={87} z={-110} rot={-0.15} scale={1.18} />
-      <GroundProp url={MODELS.natMushroom} grad={grad} x={109} z={-96} rot={0.8} scale={1.42} />
-      <GroundProp url={MODELS.townSignpost} grad={grad} x={75} z={-119} rot={0.7} scale={1.05} />
+      <mesh position={[25.75, placeableGroundY(25.75, 103) + 0.52, 103]} rotation={[0, -0.35, 0]} scale={[0.42, 0.24, 0.035]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshToonMaterial color="#d95f45" gradientMap={grad} />
+      </mesh>
+      <mesh position={[24.3, placeableGroundY(24.3, 104) + 1.25, 104]} rotation={[0, 0.12, 0]} castShadow>
+        <sphereGeometry args={[0.12, 10, 8]} />
+        <meshToonMaterial color={glow} gradientMap={grad} />
+      </mesh>
+    </group>
+  );
+}
+
+function ScenicViewPath({ grad }: { grad: THREE.Texture }) {
+  const stones = [
+    [12, 105, 1.4, 0.1],
+    [16, 107, 1.15, -0.15],
+    [21, 108, 1.25, 0.22],
+    [26, 107, 1.1, -0.05],
+    [31, 105, 1.35, 0.18],
+  ] as const;
+  return (
+    <group>
+      {stones.map(([x, z, s, r], i) => (
+        <TerrainEllipseSurface key={i} grad={grad} x={x} z={z} rx={s * 1.4} rz={s * 0.72} rot={r} yLift={0.075} color={i % 2 === 0 ? "#d9c79f" : "#cbb78f"} radialSegments={2} thetaSegments={18} />
+      ))}
     </group>
   );
 }
@@ -6798,11 +8663,15 @@ function ScenicDistrict({ grad, night }: { grad: THREE.Texture; night: boolean }
     <group>
       <DistrictGroundPatch patch={HEALING_DISTRICT_PRESENTATION.scenic} />
       <DistrictFlatTile x={23} z={106} width={8} depth={34} color="#e7d8a6" opacity={0.24} rot={1.2} />
-      <GroundProp url={MODELS.torii} grad={grad} x={18} z={112} rot={Math.PI} scale={1.26} />
-      <GroundProp url={MODELS.isleLookout} grad={grad} x={31} z={105} rot={-0.5} scale={1.18} />
-      <GroundProp url={MODELS.stonelantern} grad={grad} x={8} z={104} rot={0.4} scale={1.1} tint={glow} />
-      <GroundProp url={MODELS.stonelantern} grad={grad} x={38} z={115} rot={-0.3} scale={1.1} tint={glow} />
-      <GroundProp url={MODELS.isleWindchime} grad={grad} x={23} z={98} rot={0.2} scale={1.02} />
+      <ScenicViewPath grad={grad} />
+      <ScenicPrayerFlags grad={grad} night={night} />
+      <Suspense fallback={null}>
+        <GroundProp url={MODELS.torii} grad={grad} x={18} z={106} rot={Math.PI} scale={1.26} />
+        <GroundProp url={MODELS.isleLookout} grad={grad} x={31} z={105} rot={-0.5} scale={1.18} />
+        <GroundProp url={MODELS.stonelantern} grad={grad} x={8} z={104} rot={0.4} scale={1.1} tint={glow} />
+        <GroundProp url={MODELS.stonelantern} grad={grad} x={38} z={104} rot={-0.3} scale={1.1} tint={glow} />
+        <GroundProp url={MODELS.isleWindchime} grad={grad} x={23} z={98} rot={0.2} scale={1.02} />
+      </Suspense>
     </group>
   );
 }
@@ -6855,8 +8724,11 @@ function ExploreScene({
   onPlantFlower,
   onNearFlower,
   lanternLaunch,
+  fireworkLaunch,
   onAtWater,
-  fishingCasting,
+  fishingSession,
+  fishingLoadout,
+  fishingAction,
   onRingChime,
   songDone,
   nextChime,
@@ -6902,8 +8774,11 @@ function ExploreScene({
   onPlantFlower: (x: number, z: number, color: string) => void;
   onNearFlower: (f: Flower | null) => void;
   lanternLaunch: React.RefObject<number>;
+  fireworkLaunch: React.RefObject<number>;
   onAtWater: (b: boolean) => void;
-  fishingCasting: boolean;
+  fishingSession: FishingSession;
+  fishingLoadout: FishingLoadout;
+  fishingAction: FishingActionClip | null;
   onRingChime: (i: number) => void;
   songDone: boolean;
   nextChime?: number;
@@ -6921,39 +8796,36 @@ function ExploreScene({
   onNearDistrict: (zone: ExploreZone | null) => void;
   tier: PerfTier;
 }) {
-  const terrain = useMemo(() => buildExploreTerrain(), []);
+  const terrain = useMemo(() => buildExploreTerrain(tier), [tier]);
   useEffect(() => () => terrain.dispose(), [terrain]);
   const envVisual = useMemo(() => resolveExploreEnvironmentVisual(visual, environment), [visual, environment]);
+  const isMeteorNight = environment.weather === "meteor";
   const forceNight = environment.timeOfDay === "night";
-  useEffect(() => { sceneEnv.night = forceNight; }, [forceNight]); // 夜间标记 → 车头灯只在夜里亮
+  useEffect(() => { sceneEnv.night = forceNight || isMeteorNight; }, [forceNight, isMeteorNight]); // 夜间标记 → 车头灯只在夜里亮
   useEffect(() => {
-    setWeatherAmbience(environment.weather, environment.weather === "rain");
+    setWeatherAmbience(environment.weather === "rain" ? "rain" : "clear", environment.weather === "rain");
     return () => setWeatherAmbience("clear", false);
   }, [environment.weather]);
   // posRef / headingRef 由父级 ExploreMode 持有并下传(Canvas 外的小地图也要实时读到玩家位置/朝向)
   const collidersRef = useRef<Map<string, Collider[]> | null>(null); // 障碍碰撞网格(Town 填充,Player 读取)
   const cheerRef = useRef(0); // 拾取计数(Player 读 → 欢呼)
   const nearRef = useRef(-1); // 最近 NPC(Player 读 → 好奇表情)
-  const shallowHex = useMemo(() => new THREE.Color(visual.seaHighlight).lerp(new THREE.Color("#eafdff"), 0.5).getStyle(), [visual.seaHighlight]); // 浅滩:海面高光再提亮
+  const animeSeaPalette = useMemo(
+    () => resolveAnimeSeaPalette({
+      sea: visual.sea,
+      seaHighlight: visual.seaHighlight,
+      timeOfDay: environment.timeOfDay,
+      weather: environment.weather,
+    }),
+    [visual.sea, visual.seaHighlight, environment.timeOfDay, environment.weather],
+  );
   const sketch = useMemo(() => new SketchEffect(), []);
   useEffect(() => () => sketch.dispose(), [sketch]);
   // 帧率持续偏低时自动降级:关掉 Sobel 手绘后期 + 降 dpr(由 PerfWatch 触发,见下方)
   const [degraded, setDegraded] = useState(false);
   const lowTier = tier === "low";
-  const revealDelay = {
-    town: lowTier ? 5200 : 0,
-    village: lowTier ? 7600 : 0,
-    coastline: lowTier ? 9600 : 0,
-    districts: lowTier ? 12500 : 0,
-    interactions: lowTier ? 11200 : 0,
-    companion: lowTier ? 14000 : 0,
-    car: lowTier ? 9000 : 0,
-    lanterns: lowTier ? 15000 : 0,
-    townblock: lowTier ? 14000 : 0,
-    rhododendron: lowTier ? 16500 : 0,
-    manor: lowTier ? 19000 : 0,
-    bath: lowTier ? 22000 : 0,
-  };
+  const grassCount = EXPLORE_GRASS_COUNT[tier];
+  const revealDelay = useMemo(() => getExploreRevealDelay(tier), [tier]);
   // 渐变天空作 scene.background(放进 3D,否则 EffectComposer 会把空域清成黑)
   const skyTex = useMemo(() => {
     const W = 64, H = 512; // 提分辨率:低分辨率渐变拉伸到全天空会出明显色带(banding)
@@ -6971,7 +8843,7 @@ function ExploreScene({
       // 抖动:打散 8-bit 量化造成的色带(banding 根因),夜空尤其明显。确定性噪声(自带 LCG),不在渲染期用 Math.random。
       const img = ctx.getImageData(0, 0, W, H);
       const d = img.data;
-      let seed = forceNight ? 9173 : 1337;
+      let seed = forceNight || isMeteorNight ? 9173 : 1337;
       for (let i = 0; i < d.length; i += 4) {
         seed = (seed * 1664525 + 1013904223) >>> 0;
         const n = (seed / 4294967296 - 0.5) * 5; // ±2.5
@@ -6982,7 +8854,7 @@ function ExploreScene({
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
-  }, [envVisual.skyTop, envVisual.skyMid, envVisual.skyBottom, forceNight]);
+  }, [envVisual.skyTop, envVisual.skyMid, envVisual.skyBottom, forceNight, isMeteorNight]);
   useEffect(() => () => skyTex.dispose(), [skyTex]);
   // toon 渐变(地形平涂赛璐璐)
   const toonGrad = useMemo(() => makeToonGradient(), []);
@@ -6992,20 +8864,22 @@ function ExploreScene({
   useEffect(() => () => { snowMat.dispose(); gSnow.dispose(); }, [snowMat, gSnow]);
   const snowItems = useMemo<InstItem[]>(() => {
     const out: InstItem[] = [];
-    for (let i = 0; i < 2000; i++) {
+    const count = lowTier ? 700 : 2000;
+    for (let i = 0; i < count; i++) {
       const a = hash2(i + 700, 1.3) * Math.PI * 2;
       const r = Math.sqrt(hash2(i + 700, 2.7)) * WALK_RADIUS * 0.88;
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       const h = exGroundY(x, z);
-      if (h < 11.5) continue; // 只盖最高的几座丘(地形 exGroundY 可达 ~16)
+      if (!isMountainSnowSpot(x, z, h)) continue; // 只盖山地区域的最高坡,避免草地/道路/农田误生成白雪块
       out.push({ p: [x, h + 0.05, z], sv: [1.1 + hash2(i, 3.1) * 1.0, 0.3, 1.1 + hash2(i, 4.2) * 1.0], r: [0, hash2(i, 5.3) * 6.28, 0] });
     }
     return out;
-  }, []);
+  }, [lowTier]);
   useEffect(() => () => toonGrad.dispose(), [toonGrad]);
 
-  const isNight = forceNight || visual.time === "night" || visual.stars; // 夜空(手动🌙 或 情绪夜):月亮/星星/烟花共用此判定
+  const isNight = forceNight || isMeteorNight || visual.time === "night" || visual.stars; // 夜空(手动🌙/特殊夜空 或 情绪夜):月亮/星星/烟花共用此判定
+  const meteorShowerCount = isMeteorNight ? (tier === "low" ? 8 : 24) : (tier === "low" ? 5 : 11);
 
   return (
     <>
@@ -7013,15 +8887,15 @@ function ExploreScene({
       <fog attach="fog" args={[new THREE.Color(envVisual.fog).getHex(), envVisual.fogNear, envVisual.fogFar]} />
       <ambientLight intensity={envVisual.ambient} />
       <hemisphereLight args={[new THREE.Color(envVisual.skyMid).getHex(), new THREE.Color(visual.sea).getHex(), envVisual.hemi]} />
-      <directionalLight position={environment.timeOfDay === "sunset" ? [-7, 5, -4] : [5, 8, 3]} intensity={forceNight ? 0.46 : 1.2} color={envVisual.directional} />
+      <directionalLight position={environment.timeOfDay === "sunset" ? [-7, 5, -4] : [5, 8, 3]} intensity={forceNight || isMeteorNight ? 0.46 : 1.2} color={envVisual.directional} />
       {isNight && <Stars radius={340} depth={80} count={4200} factor={4.5} saturation={0} fade speed={0.4} />}
       {isNight && <MilkyWay />}
       {isNight && <BrightStars />}
       {isNight && <ShootingStars />}
       {isNight && <Moon />}
       {isNight && tier !== "low" && <Aurora />}
-      {isNight && <MeteorShower count={tier === "low" ? 5 : 11} />}
-      {isNight && tier !== "low" && <NightMotes count={64} posRef={posRef} />}
+      {isNight && <MeteorShower count={meteorShowerCount} meteorMode={isMeteorNight} />}
+      {isNight && tier !== "low" && <NightMotes count={isMeteorNight ? 96 : 64} posRef={posRef} />}
       {forceNight && lanternCount > 0 && <DistantGlows count={lanternCount} />}
       {environment.weather === "rain" && <ExploreRain active opacity={envVisual.rainOpacity} tier={tier} />}
 
@@ -7030,19 +8904,21 @@ function ExploreScene({
         <meshToonMaterial vertexColors gradientMap={toonGrad} />
       </mesh>
       {/* 脚边随风草丛 */}
-      <GroundGrass count={lowTier ? 12000 : 52000} animate={!lowTier} grad={toonGrad} />
+      {grassCount > 0 && <GroundGrass count={grassCount} animate={tier === "high" && !degraded} grad={toonGrad} />}
       {/* 山顶薄雪 */}
       <InstancedField geo={gSnow} material={snowMat} items={snowItems} />
-      {/* 近岸浪花:贴水线一圈柔白(陆地处被沙挡住,只在水边显形) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.06, 0]}>
-        <ringGeometry args={[WALK_RADIUS * 1.0, WALK_RADIUS * 1.1, 96]} />
-        <meshBasicMaterial color="#e6f6f8" transparent opacity={0.3} depthWrite={false} toneMapped={false} />
-      </mesh>
-      {/* 程序小镇 / 村落 / 海岸:桌面开场直接展示完整岛貌;低配/移动端分段错峰挂载保流畅。 */}
+      {/* 近岸浪花:沿心屿湾推进的手绘浪带,替代单圈硬泡沫。 */}
+      <AnimeShoreBreaks bayAngle={BAY_ANGLE} waterlineRadius={SHORE_FOAM_INNER_RADIUS} palette={animeSeaPalette} lowTier={lowTier} degraded={degraded} night={isNight} />
+      {/* 汽车(glb,村里停一辆;toon 卡通 + 可上车驾驶):玩法入口不跟随重地标延迟/降级隐藏。
+          真实模型加载期间先显示轻量占位车,避免出现「能上车但看不到车」。 */}
+      <Suspense fallback={<ParkedCarFallback grad={toonGrad} />}>
+        <DrivableCar grad={toonGrad} />
+      </Suspense>
+      {/* 程序小镇 / 村落 / 海岸:首屏先给地形、海面和玩家;模型场景分段错峰挂载保流畅。 */}
       <DelayedMount ms={revealDelay.town}>
         <Suspense fallback={null}>
           {/* 程序小镇 */}
-          <Town toonGrad={toonGrad} accent={visual.accent} collidersRef={collidersRef} isNight={isNight} revealDelay={revealDelay} />
+          <Town toonGrad={toonGrad} accent={visual.accent} collidersRef={collidersRef} isNight={isNight} revealDelay={revealDelay} allowHeavyLandmarks />
         </Suspense>
       </DelayedMount>
       <DelayedMount ms={revealDelay.village}>
@@ -7058,22 +8934,19 @@ function ExploreScene({
         </Suspense>
       </DelayedMount>
       <DelayedMount ms={revealDelay.districts}>
-        <Suspense fallback={null}>
-          <IslandDistricts grad={toonGrad} accent={visual.accent} environment={environment} tier={tier} />
-        </Suspense>
+        <IslandDistricts grad={toonGrad} accent={visual.accent} environment={environment} tier={tier} />
       </DelayedMount>
       {/* 海面(大) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
-        <planeGeometry args={[10000, 10000]} />
-        <meshStandardMaterial color={visual.sea} roughness={0.3} metalness={0.5} transparent opacity={0.92} />
-      </mesh>
+      {/* 动画感 toon 海面:高性能档轻微波动,低性能档静态降级。 */}
+      <AnimatedAnimeSea palette={animeSeaPalette} lowTier={lowTier} degraded={degraded} />
+      <BayLightReflection bayAngle={BAY_ANGLE} centerRadius={BAY_SHALLOW_WATER_CENTER_RADIUS} radius={BAY_SHALLOW_WATER_RADIUS} palette={animeSeaPalette} active={isNight || isMeteorNight} />
       {/* 海湾浅滩:近岸一片更浅更亮的水,可以走进去踩水(陆地处被地形挡住,只在水里显形) */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[Math.cos(BAY_ANGLE) * WALK_RADIUS * 1.04, 0.05, Math.sin(BAY_ANGLE) * WALK_RADIUS * 1.04]}
+        position={[Math.cos(BAY_ANGLE) * BAY_SHALLOW_WATER_CENTER_RADIUS, 0.05, Math.sin(BAY_ANGLE) * BAY_SHALLOW_WATER_CENTER_RADIUS]}
       >
-        <circleGeometry args={[50, 44]} />
-        <meshStandardMaterial color={shallowHex} roughness={0.22} metalness={0.3} transparent opacity={0.62} depthWrite={false} />
+        <circleGeometry args={[BAY_SHALLOW_WATER_RADIUS, 44]} />
+        <meshBasicMaterial color={animeSeaPalette.shallow} transparent opacity={0.1} depthWrite={false} toneMapped={false} />
       </mesh>
       {environment.weather === "rain" && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.09, 0]}>
@@ -7084,9 +8957,13 @@ function ExploreScene({
 
       {/* 玩家(角色模型,小、加载快):自己一个 Suspense → 不被建筑/道具拖住,相机&角色尽快就位 */}
       <Suspense fallback={null}>
-        <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} />
+        <Player inputRef={inputRef} posRef={posRef} headingRef={headingRef} avatar={avatar} character={character} expression={expression} collidersRef={collidersRef} cheerRef={cheerRef} nearRef={nearRef} onCar={onCar} onCarEnter={onCarEnter} fishingAction={fishingAction} />
       </Suspense>
       <FishingWaterSensor posRef={posRef} onAtWater={onAtWater} />
+      {/* 天灯释放用轻量几何即时可用;烟花独立信号,避免烟花轮次误触发额外天灯。 */}
+      <SkyLanterns launchRef={lanternLaunch} posRef={posRef} tier={tier} />
+      <Fireworks launchRef={fireworkLaunch} posRef={posRef} active={isNight} tier={tier} />
+      {/* <FishingSpot marker: fishing rig mounts later with the interaction batch. */}
       {/* 灯塔精灵 4.4M 重模型：独立 Suspense，不阻塞「可上岛」，世界就绪后随即淡入 */}
       <DelayedMount ms={revealDelay.companion}>
         <Suspense fallback={null}>
@@ -7129,12 +9006,7 @@ function ExploreScene({
 
         {/* 🌸 心情花田 · 🏮 暮色天灯 · 🎣 拾海垂钓 · 🎐 风铃心曲 */}
         <MoodGarden inputRef={inputRef} posRef={posRef} accent={visual.accent} flowers={flowers} onPlant={onPlantFlower} onNear={onNearFlower} />
-        {/* 天灯 2.7M 重模型:独立 Suspense,首屏不等它(夜晚放飞时早已就绪) */}
-        <DelayedMount ms={revealDelay.lanterns}>
-          <Suspense fallback={null}><SkyLanterns launchRef={lanternLaunch} posRef={posRef} /></Suspense>
-        </DelayedMount>
-        <Fireworks launchRef={lanternLaunch} posRef={posRef} active={isNight} tier={tier} />
-        <FishingSpot posRef={posRef} casting={fishingCasting} />
+        <FishingRigFx posRef={posRef} headingRef={headingRef} fishingSession={fishingSession} loadout={fishingLoadout} />
         <WindChimes posRef={posRef} grad={toonGrad} onRing={onRingChime} nextChime={nextChime} />
         <LocationAudio posRef={posRef} night={isNight} />
         {songDone && <Fireflies count={tier === "low" ? 24 : 46} />}
@@ -7156,7 +9028,7 @@ function ExploreScene({
   );
 }
 
-// 触屏摇杆(左下)。pointer 拖动写入 inputRef；松开归零。
+// 触屏摇杆(左下偏内)。pointer 拖动写入 inputRef；松开归零。
 function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
   const base = useRef<HTMLDivElement>(null);
   const knobRef = useRef<HTMLDivElement>(null);
@@ -7198,7 +9070,7 @@ function Joystick({ inputRef }: { inputRef: React.RefObject<Input> }) {
     <div
       ref={base}
       className="xy-explore-joystick absolute h-28 w-28 rounded-full border border-white/25 bg-white/10 backdrop-blur-md touch-none select-none"
-      style={{ left: "calc(1.4rem + env(safe-area-inset-left))", bottom: "calc(1.6rem + env(safe-area-inset-bottom))" }}
+      style={{ left: "calc(1.8rem + env(safe-area-inset-left))", bottom: "calc(1.6rem + env(safe-area-inset-bottom))" }}
       onPointerDown={(e) => {
         active.current = true;
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -7582,13 +9454,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [carPrompt, setCarPrompt] = useState<"enter" | "exit" | null>(null); // 车交互提示(由 Player 回报)
   const [giftedIds, setGiftedIds] = useState<number[]>([]); // 已送过心愿的 NPC
   const [avatar, setAvatar] = useState<Avatar>(loadAvatar); // 你捏的人物外观(本地保存)
-  const [character, setCharacter] = useState<CharKind>(() => { // 可切换主角:心屿守护者 / 记忆的守护者 / Pocoyo / 捏的人(迁移旧 xy_use_hero)
-    try {
-      const v = localStorage.getItem("xy_char");
-      if (v === "hero" || v === "guardian" || v === "pocoyo" || v === "avatar") return v;
-      return localStorage.getItem("xy_use_hero") === "0" ? "avatar" : "hero";
-    } catch { return "hero"; }
-  });
+  const [character, setCharacter] = useState<CharKind>(() => loadInitialCharacter(tier)); // 可切换主角:心屿守护者 / 记忆的守护者 / Pocoyo / 捏的人(迁移旧 xy_use_hero)
   const [expression, setExpression] = useState<string>(() => { try { return localStorage.getItem("xy_expr") || "auto"; } catch { return "auto"; } }); // 主角表情(auto 跟随状态 / 开心 / 平静 / 坚定 / 好奇)
   const [dressOpen, setDressOpen] = useState(false); // 换装面板开关
   const [mapMenu, setMapMenu] = useState(false); // 上车后「选地图」菜单
@@ -7866,14 +9732,23 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const [lanternText, setLanternText] = useState("");
   const [lanternCount, setLanternCount] = useState<number>(() => { try { return parseInt(localStorage.getItem("xy_lanterns") || "0", 10) || 0; } catch { return 0; } });
   const lanternLaunch = useRef(0);
-  const [lanternPrep, setLanternPrep] = useState(false); // 天灯模型还没缓存好时:显示「准备中」,就绪后自动放飞
-  const lanternWaitRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fireworkLaunch = useRef(0);
+  const lastLanternReleaseAt = useRef(0);
   const [atWater, setAtWater] = useState(false);
-  const [fishing, setFishing] = useState<FishingState>("idle");
-  const [rhythmStartedAt, setRhythmStartedAt] = useState(0);
-  const [fishingMiss, setFishingMiss] = useState<FishingMissReason | null>(null);
-  const [shownCatch, setShownCatch] = useState<{ icon: string; title: string; line: string } | null>(null);
-  const [catchCount, setCatchCount] = useState<number>(() => { try { return parseInt(localStorage.getItem("xy_catch") || "0", 10) || 0; } catch { return 0; } });
+  const [fishingSession, setFishingSession] = useState<FishingSession>(INITIAL_FISHING_SESSION);
+  const [fishingSave, setFishingSave] = useState<FishingSaveV1>(() => {
+    try { return loadFishingSave(localStorage); } catch { return createDefaultFishingSave(); }
+  });
+  const [shownCatch, setShownCatch] = useState<{ speciesId: string; icon: string; title: string; line: string; weight: number } | null>(null);
+  const activeFishingAction = fishingActionForPhase(fishingSession.phase);
+  const fishingLoadout = useMemo(
+    () => resolveFishingLoadout({
+      rodId: fishingSave.selectedRodId,
+      lineId: fishingSave.selectedLineId,
+      baitId: fishingSave.selectedBaitId,
+    }),
+    [fishingSave.selectedRodId, fishingSave.selectedLineId, fishingSave.selectedBaitId],
+  );
   const [songProgress, setSongProgress] = useState(0);
   const [songDone, setSongDone] = useState<boolean>(() => { try { return localStorage.getItem("xy_song") === "1"; } catch { return false; } });
   const [songFlash, setSongFlash] = useState(false);
@@ -7881,56 +9756,164 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   useEffect(() => { try { localStorage.setItem("xy_garden", JSON.stringify(flowers.slice(-120))); } catch { /* ignore */ } }, [flowers]);
   useEffect(() => { try { saveExploreEnvironment(localStorage, environment); } catch { /* ignore */ } }, [environment]);
   useEffect(() => { try { localStorage.setItem("xy_lanterns", String(lanternCount)); } catch { /* ignore */ } }, [lanternCount]);
-  // 天灯曲目后台预热；kmd.glb 仅非 low 档提前拉取，移动端把模型解析留到更晚的场景延迟里。
+  // 天灯模型是非关键路径；所有设备都预热，但延后到探索稳定后再用 idle 拉取，避免进岛首段卡顿。
+  // 真实天灯曲目不在这里预解码：首次放飞时若未就绪会走合成旋律兜底，流畅优先。
   useEffect(() => {
     const w = window as Window & { requestIdleCallback?: (cb: () => void) => number; cancelIdleCallback?: (id: number) => void };
-    let idle = 0; let to: ReturnType<typeof setTimeout> | undefined;
+    let idle = 0;
     const warm = () => {
-      prewarmLanternCues();
-      if (tier !== "low") useGLTF.preload(MODELS.skyLantern);
+      useGLTF.preload(MODELS.skyLantern);
     };
-    if (w.requestIdleCallback) idle = w.requestIdleCallback(warm);
-    else to = setTimeout(warm, 4000);
-    return () => { if (idle && w.cancelIdleCallback) w.cancelIdleCallback(idle); if (to) clearTimeout(to); };
+    const to: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      if (w.requestIdleCallback) idle = w.requestIdleCallback(warm);
+      else warm();
+    }, 12000);
+    return () => {
+      if (idle && w.cancelIdleCallback) w.cancelIdleCallback(idle);
+      if (to) clearTimeout(to);
+    };
   }, [tier]);
   useEffect(() => { try { localStorage.setItem("xy_song", songDone ? "1" : "0"); } catch { /* ignore */ } }, [songDone]);
-  useEffect(() => { try { localStorage.setItem("xy_catch", String(catchCount)); } catch { /* ignore */ } }, [catchCount]);
-  // 垂钓:抛竿 → 等鱼 → 节奏收线;错过/离开水边都会温和复位
   useEffect(() => {
-    if (fishing === "cast") {
-      const t = window.setTimeout(() => setFishing("waiting"), 650);
+    try { saveFishingSave(localStorage, fishingSave); } catch { /* ignore */ }
+  }, [fishingSave]);
+
+  const resetFishingSession = useCallback(() => {
+    setFishingSession(INITIAL_FISHING_SESSION);
+  }, []);
+
+  const startRealisticFishing = useCallback(() => {
+    setFishingSession({ ...INITIAL_FISHING_SESSION, phase: "gear" });
+    playSfx("tap");
+  }, []);
+
+  const beginFishingAim = useCallback(() => {
+    setFishingSession((session) => ({ ...session, phase: "aim", castPower: 0.45, layer: "mid" }));
+    playSfx("tap");
+  }, []);
+
+  const castRealisticLine = useCallback((power: number) => {
+    const layer = castPowerToWaterLayer(power);
+    if (!isCastValid(power)) {
+      setFishingSession((session) => ({ ...session, phase: "bad_cast", castPower: power, layer }));
+      playSfx("ripple");
+      return;
+    }
+    setFishingSession((session) => ({ ...session, phase: "cast", castPower: power, layer }));
+    playSfx("whoosh");
+  }, []);
+
+  const buildCurrentFishingEnvironment = useCallback((layer: FishingEnvironment["layer"]): FishingEnvironment => ({
+    spot: resolveFishingTimeOfDay(environment) === "night" ? "nightTide" : "deepBay",
+    weather: resolveFishingWeather(environment),
+    timeOfDay: resolveFishingTimeOfDay(environment),
+    layer,
+  }), [environment]);
+
+  const handleHook = useCallback(() => {
+    setFishingSession((session) => {
+      if (session.phase !== "hook") return session;
+      const hook = resolveHookResult(Date.now() - session.hookStartedAtMs);
+      if (hook === "early") return { ...session, phase: "fish_escaped" };
+      if (hook === "late") return { ...session, phase: "fish_escaped" };
+      const species = getFishingSpecies(session.selectedSpeciesId ?? "silver_bay_minnow");
+      return {
+        ...session,
+        phase: "fight",
+        fight: {
+          ...INITIAL_FISHING_FIGHT,
+          fishStamina: species?.stamina ?? 1,
+          fishDistance: 1,
+        },
+      };
+    });
+    playSfx("ripple");
+  }, []);
+
+  const finishFishingCatch = useCallback((speciesId: string) => {
+    const species = getFishingSpecies(speciesId);
+    const weight = species ? Math.round((species.minWeight + Math.random() * (species.maxWeight - species.minWeight)) * 100) / 100 : 0.2;
+    setFishingSave((save) => recordFishingCatch(save, { speciesId, weight, caughtAt: Date.now() }));
+    setShownCatch({
+      speciesId,
+      weight,
+      icon: speciesId === "starsea_fish" ? "⭐" : "🐟",
+      title: species?.name ?? "银湾小鱼",
+      line: "主角把鱼稳稳收上岸，海面还在轻轻发光。",
+    });
+    setFishingSession({ ...INITIAL_FISHING_SESSION, phase: "result", selectedSpeciesId: speciesId });
+    playSfx("collect");
+    emitCompanionEvent("fish_catch");
+  }, []);
+
+  useEffect(() => {
+    if (fishingSession.phase === "cast") {
+      const t = window.setTimeout(() => {
+        const env = buildCurrentFishingEnvironment(fishingSession.layer);
+        const pool = buildFishingPool(env, fishingLoadout.bait.id);
+        const species = chooseWeightedSpecies(pool);
+        setFishingSession((session) => ({ ...session, phase: "waiting", selectedSpeciesId: species.id }));
+      }, 520);
       return () => window.clearTimeout(t);
     }
-    if (fishing === "waiting") {
+    if (fishingSession.phase === "waiting") {
       const t = window.setTimeout(() => {
-        setRhythmStartedAt(Date.now());
-        setFishing("bite");
+        setFishingSession((session) => ({ ...session, phase: "hook", hookStartedAtMs: Date.now() }));
         playSfx("ripple");
-      }, pickFishingWaitMs());
-      return () => window.clearTimeout(t);
-    }
-    if (fishing === "bite") {
-      const t = window.setTimeout(() => {
-        setFishingMiss("late");
-        setFishing("missed");
-        playSfx("ripple");
-      }, FISHING_RHYTHM_DURATION_MS);
-      return () => window.clearTimeout(t);
-    }
-    if (fishing === "missed") {
-      const t = window.setTimeout(() => {
-        setFishingMiss(null);
-        setFishing("idle");
       }, 1300);
       return () => window.clearTimeout(t);
     }
-  }, [fishing]);
-  useEffect(() => {
-    if (!atWater && fishing !== "idle") {
-      setFishingMiss(null);
-      setFishing("idle");
+    if (fishingSession.phase === "hook") {
+      const t = window.setTimeout(() => {
+        setFishingSession((session) => session.phase === "hook" ? { ...session, phase: "fish_escaped" } : session);
+      }, 1100);
+      return () => window.clearTimeout(t);
     }
-  }, [atWater, fishing]);
+    if (fishingSession.phase === "fish_escaped" || fishingSession.phase === "line_broken" || fishingSession.phase === "bad_cast" || fishingSession.phase === "no_bite") {
+      const t = window.setTimeout(resetFishingSession, 1500);
+      return () => window.clearTimeout(t);
+    }
+  }, [buildCurrentFishingEnvironment, fishingLoadout.bait.id, fishingSession.phase, fishingSession.layer, resetFishingSession]);
+
+  useEffect(() => {
+    if (!atWater && fishingSession.phase !== "idle") resetFishingSession();
+  }, [atWater, fishingSession.phase, resetFishingSession]);
+
+  useEffect(() => {
+    if (fishingSession.phase !== "fight") return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const delta = now - last;
+      last = now;
+      setFishingSession((session) => {
+        if (session.phase !== "fight") return session;
+        const species = getFishingSpecies(session.selectedSpeciesId ?? "silver_bay_minnow");
+        const next = nextFishingFightState(
+          session.fight,
+          { reeling: true, steadying: true, fishSurge: 0.35 + Math.sin(now / 380) * 0.25 },
+          {
+            rodControl: fishingLoadout.rod.control,
+            lineBreakLimit: fishingLoadout.line.breakLimit,
+            speciesStrength: species?.strength ?? 0.25,
+            speciesStamina: species?.stamina ?? 0.25,
+          },
+          delta,
+        );
+        if (next.outcome === "caught" && session.selectedSpeciesId) {
+          window.setTimeout(() => finishFishingCatch(session.selectedSpeciesId!), 0);
+          return { ...session, fight: next, phase: "result" };
+        }
+        if (next.outcome === "line_broken") return { ...session, fight: next, phase: "line_broken" };
+        if (next.outcome === "fish_escaped") return { ...session, fight: next, phase: "fish_escaped" };
+        return { ...session, fight: next };
+      });
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [finishFishingCatch, fishingLoadout.line.breakLimit, fishingLoadout.rod.control, fishingSession.phase]);
+
   // 风铃心曲:奏齐目标序 → 满岛萤火 + 持久解锁
   useEffect(() => {
     if (!songDone && songProgress >= SONG.length) { setSongDone(true); setSongFlash(true); playSfx("bloom"); const t = setTimeout(() => setSongFlash(false), 4500); return () => clearTimeout(t); }
@@ -7938,7 +9921,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
   const plantFlower = (x: number, z: number, color: string) => { setFlowers((f) => [...f, { x, z, color, t: Date.now() }].slice(-120)); playSfx("bloom"); emitCompanionEvent("plant"); };
   const doReleaseLantern = () => {
     lanternLaunch.current += 1;
-    setTimeout(() => { lanternLaunch.current += 1; }, 850); // 再补一轮 → 单灯也连放两束烟花
+    fireworkLaunch.current += 1;
     setLanternCount((c) => c + 1); setLanternOpen(false); setLanternText("");
     playSfx("reveal"); playLanternRelease();
     if (!playLanternCue("single")) playLanternMelody(false); // 真实曲目优先(Frost Waltz),未就绪/静音回退八音盒合成
@@ -7949,84 +9932,35 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     const p = posRef.current; const px = p ? p.x : 0, pz = p ? p.z : 0;
     lanternFlock.x = px; lanternFlock.z = pz; lanternFlock.v += 1;
     lanternCam.x = px; lanternCam.z = pz; lanternCam.gy = exGroundY(px, pz); lanternCam.t = 0; lanternCam.on = true;
-    setLanternCount((c) => c + 18); setMenuOpen(false);
+    setLanternCount((c) => c + lanternFlockSize(tier)); setMenuOpen(false);
     playSfx("reveal"); playLanternRelease();
     if (!playLanternCue("flock")) playLanternMelody(true); // 真实曲目优先(Skye Cuillin),未就绪/静音回退八音盒合成
     emitCompanionEvent("lantern");
-    // 连放几轮烟花(每轮触发一次 show)→ 像一场盛大烟火秀;镜头随每轮重置而持续仰望(原 5 轮过载,降为 3 轮 / 弱机 2 轮)
-    const rounds = tier === "low" ? 2 : 3;
-    for (let k = 0; k < rounds; k++) setTimeout(() => { lanternLaunch.current += 1; }, 350 + k * 620);
+    // 烟花只触发 Fireworks,不复用 lanternLaunch,避免一轮烟花额外生成一盏单灯。
+    fireworkLaunch.current += 1;
+    const rounds = lanternFireworkRounds(tier);
+    for (let k = 1; k < rounds; k++) setTimeout(() => { fireworkLaunch.current += 1; }, 420 + (k - 1) * 680);
   };
-  // 放飞前确保天灯模型已缓存好:就绪 → 立刻放;还没好 → 关面板 + 提示「准备中」,轮询到就绪即自动放飞,
-  // 这样「放天灯,等缓存好再放」不会出现「点了才加载解析 kmd.glb」的卡顿尖峰。6s 兜底防极端情况卡死。
   const ensureLantern = (kind: "single" | "flock") => {
-    const go = () => (kind === "single" ? doReleaseLantern() : doReleaseLanternFlock());
-    if (_lanternModelReady) { go(); return; }
-    if (kind === "single") setLanternOpen(false); else setMenuOpen(false);
-    setLanternPrep(true);
-    if (lanternWaitRef.current) clearInterval(lanternWaitRef.current);
-    let waited = 0;
-    lanternWaitRef.current = setInterval(() => {
-      waited += 120;
-      if (_lanternModelReady || waited > 6000) {
-        if (lanternWaitRef.current) clearInterval(lanternWaitRef.current);
-        lanternWaitRef.current = null; setLanternPrep(false); go();
-      }
-    }, 120);
+    const now = Date.now();
+    const cooldown = kind === "flock" ? LANTERN_FLOCK_COOLDOWN_MS : LANTERN_SINGLE_COOLDOWN_MS;
+    if (now - lastLanternReleaseAt.current < cooldown) {
+      if (kind === "single") setLanternOpen(false); else setMenuOpen(false);
+      return;
+    }
+    lastLanternReleaseAt.current = now;
+    if (kind === "single") doReleaseLantern();
+    else doReleaseLanternFlock();
   };
   const releaseLantern = () => ensureLantern("single");
   const releaseLanternFlock = () => ensureLantern("flock");
-  useEffect(() => () => { if (lanternWaitRef.current) clearInterval(lanternWaitRef.current); }, []); // 卸载时清掉等待轮询
-  const onCast = useCallback(() => {
-    if (fishing === "idle") {
-      setFishingMiss(null);
-      setFishing("cast");
-      playSfx("tap");
-      return;
-    }
-    if (fishing === "waiting") {
-      setFishingMiss(null);
-      setFishing("idle");
-      playSfx("tap");
-      return;
-    }
-    if (fishing !== "bite") return;
-
-    const progress = fishingRhythmProgress(Date.now(), rhythmStartedAt);
-    if (!isFishingRhythmHit(progress)) {
-      setFishingMiss(fishingMissReason(progress));
-      setFishing("missed");
-      playSfx("ripple");
-      return;
-    }
-
-    const c = FISHING_CATCHES[Math.floor(Math.random() * FISHING_CATCHES.length)];
-    const line = c.lines[Math.floor(Math.random() * c.lines.length)];
-    setShownCatch({ icon: c.icon, title: c.title, line });
-    setCatchCount((n) => n + 1);
-    setFishingMiss(null);
-    setFishing("idle");
-    playSfx(c.icon === "🐟" ? "ripple" : "shell");
-    emitCompanionEvent("fish_catch");
-  }, [fishing, rhythmStartedAt]);
-  useEffect(() => {
-    if (fishing !== "bite") return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return;
-      if (event.code !== "Space" && event.code !== "Enter") return;
-      event.preventDefault();
-      onCast();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [fishing, onCast]);
   const ringChime = (i: number) => { chimeNote(CHIME_FREQS[i]); emitCompanionEvent("chime"); if (songDone) return; setSongProgress((p) => (i === SONG[p] ? p + 1 : i === SONG[0] ? 1 : 0)); };
   const fmtWhen = (t: number) => { const d = new Date(t); return `${d.getMonth() + 1}月${d.getDate()}日`; };
   const districtLine = (zone: ExploreZone): string => {
     switch (zone.key) {
       case "home": return "回家坐一会儿，窗边的光会慢慢安静下来。";
       case "beach": return "海滩把浪声推到脚边，适合拾起一枚贝壳。";
-      case "rice": return "稻田在风里轻轻摆，水面把天空切成细碎的光。";
+      case "rice": return "稻田映着天空，水面把风和稻苗轻轻托起来。";
       case "mountain": return "山路往上，能从这里登高望岛。";
       case "forest": return "森林把脚步声收得很轻，也许有小动物看见了你。";
       case "town": return "小镇的路灯和招牌都在等一个慢慢走过的人。";
@@ -8045,8 +9979,9 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
     playSfx("tap");
   };
   const setExploreWeather = (weather: ExploreEnvironment["weather"]) => {
+    if (weather === "meteor" && environment.weather !== "meteor") emitCompanionEvent("night");
     setEnvironment((current) => ({ ...current, weather }));
-    playSfx(weather === "rain" ? "ripple" : "tap");
+    playSfx(weather === "rain" ? "ripple" : weather === "meteor" ? "chime" : "tap");
   };
 
   const nearRef = useRef(-1);
@@ -8261,17 +10196,19 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         // antialias 跟随性能分档（对齐 Island3D）：低端/软渲染/移动端关掉 MSAA 省开销，
         // 反正这档已走 toon 材质、跳过 Sobel 手绘后期，画面观感损失极小。
         gl={{ antialias: tier === "high", alpha: false, powerPreference: "high-performance" }}
-        // dpr 上限收一档(高端 1.75→1.4):Retina 上每帧像素 −36%,写实模型逐帧渲染 + Sobel 全屏后期都更轻。
-        // low 档再降到 0.85~1，移动端优先保触控响应和稳定帧率。
-        dpr={tier === "low" ? [0.85, 1] : [1, 1.4]}
+        // DPR 先保守给预算；PerfWatch 发现掉帧会继续下调并关闭最贵的后期。
+        dpr={EXPLORE_DPR_RANGE[tier]}
         camera={{ position: [HEALING_WALK_CAMERA.canvasPosition[0], HEALING_WALK_CAMERA.canvasPosition[1], HEALING_WALK_CAMERA.canvasPosition[2]], fov: HEALING_WALK_CAMERA.canvasFov, near: 0.1, far: 3400 }}
         // 林间土路(DriveScene)是覆盖在上方的独立 Canvas,且与本场景共用 inputRef——
         // 不冻结的话踩油门(W)会让被遮住的小人在底下「走路」,蹭出脚步声(还白白渲染全遮挡场景)。
         // 覆盖期间冻结本场景:脚步声消失,而加油门/引擎声由 DriveScene 自管,不受影响。
         frameloop={forestDrive ? "never" : "always"}
       >
-        <Suspense fallback={<ExploreLoading />}>
-          <ExploreScene visual={visual} environment={environment} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} onAtWater={setAtWater} fishingCasting={fishing !== "idle"} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} onNearDistrict={setNearDistrict} tier={tier} />
+        <WebGLContextLossExit onExit={onExit} />
+        <Suspense fallback={null}>
+          <ExploreModelGate>
+            <ExploreScene visual={visual} environment={environment} inputRef={inputRef} posRef={posRef} headingRef={headingRef} onCollect={() => { playSfx("collect"); setCollected((c) => c + 1); emitCompanionEvent("collect"); }} total={total} giftedIds={giftedIds} onNear={setNearNpc} emotion={emotion} avatar={avatar} onWhale={() => setWhaleFound(true)} onBottle={(i) => setBottles((b) => (b.includes(i) ? b : [...b, i]))} bottleNotes={bottleNotes} imprints={imp} onPickImprint={(i) => { playSfx("shell"); setPickedImprints((p) => (p.includes(i) ? p : [...p, i])); setShownImprint(imp[i]); }} treeColors={imprintsDone ? pickedImprints.map((i) => imp[i].color) : []} companionAction={companionAction} companionSinging={companionSinging} companionSleeping={companionSleeping} companionChatter={companionChatter} onCompanionInteract={() => setCompanionOpen(true)} character={character} expression={expression} flowers={flowers} onPlantFlower={plantFlower} onNearFlower={setNearFlower} lanternLaunch={lanternLaunch} fireworkLaunch={fireworkLaunch} onAtWater={setAtWater} fishingSession={fishingSession} fishingLoadout={fishingLoadout} fishingAction={activeFishingAction} onRingChime={ringChime} songDone={songDone} nextChime={songDone ? -1 : (SONG[songProgress] ?? -1)} lanternCount={lanternCount} onCar={setCarPrompt} onCarEnter={() => setMapMenu(true)} onCrab={() => setCrabFound(true)} onTurtle={() => setTurtleFound(true)} onTreasure={() => setTreasureFound(true)} onConchNear={setNearConch} treasureNote={treasureNote} onDiscover={discover} onNearInteract={setNearInteract} onNearLamp={setNearLamp} onNearDistrict={setNearDistrict} tier={tier} />
+          </ExploreModelGate>
         </Suspense>
       </Canvas>
 
@@ -8448,7 +10385,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           <div className="panel-glass-2 rounded-card p-4 w-[20rem] max-w-[92vw]" onClick={(e) => e.stopPropagation()}>
             <p className="font-display text-[17px] tracking-wider text-white/90 text-center mb-2">捏一个你</p>
             <div className="h-44 rounded-card overflow-hidden mb-3" style={{ background: "rgba(255,255,255,0.06)" }}>
-              <AvatarPreview avatar={avatar} />
+              <AvatarPreview avatar={avatar} character={character} />
             </div>
             <SwatchRow label="肤色" colors={SKIN_SWATCHES} value={avatar.skin} onPick={(c) => setAvatar((a) => ({ ...a, skin: c }))} />
             <SwatchRow label="发色" colors={HAIR_SWATCHES} value={avatar.hair} onPick={(c) => setAvatar((a) => ({ ...a, hair: c }))} />
@@ -8507,19 +10444,20 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       >
         {carPrompt === "exit"
           ? isTouch
-            ? "摇杆驾驶 · 按住「»」加速"
+            ? "摇杆驾驶 · 右侧按住加速"
             : "W/S 油门 · A/D 转向 · 按住 Shift 加速"
           : isTouch
-            ? "左下摇杆移动 · 右侧跳跃 / 招手 / 吹笛"
+            ? "左下摇杆移动 · 右下跳跃 · 右侧招手 / 吹笛"
             : "WASD / 方向键 移动 · 空格跳跃 · F 招手 · Q 吹笛"}
       </p>
 
-      {/* 右下动作按钮组(触屏):吹笛 + 招手 + 跳跃，统一 44 圆;开车时隐藏,改显加速踏板。
+      {/* 右侧动作按钮组(触屏):吹笛 + 招手；跳跃单独放到更低更大的主操作位，开车时隐藏并改显加速踏板。
           精灵面板打开时一并隐藏——面板右贴边、窄屏近乎满宽,这组按钮会压在面板下半部(消息气泡+秘密标签)上;
           且吹笛/招手/跳跃是世界动作,看面板时用不到。精灵入口保留顶部唯一按钮,避免同屏出现两个入口。 */}
       {carPrompt !== "exit" && !companionOpen && (
       <div className="xy-explore-action-pad absolute z-10 flex flex-col items-center gap-2.5" style={{ right: "calc(1.4rem + env(safe-area-inset-right))", bottom: "calc(5rem + env(safe-area-inset-bottom))" }}>
         <button
+          type="button"
           onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.flute = true; }}
           className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
           style={{ touchAction: "none" }}
@@ -8528,6 +10466,7 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           <span className="text-[16px] leading-none">🎵</span>
         </button>
         <button
+          type="button"
           onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.wave = true; }}
           className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
           style={{ touchAction: "none" }}
@@ -8535,28 +10474,33 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
         >
           <span className="text-[17px] leading-none">✋</span>
         </button>
+      </div>
+      )}
+      {carPrompt !== "exit" && !companionOpen && (
         <button
+          type="button"
           onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.jump = true; }}
-          className="flex h-11 w-11 items-center justify-center rounded-full panel-glass-2 text-white/85 select-none active:scale-90 transition-transform"
-          style={{ touchAction: "none" }}
+          className="xy-explore-jump-button absolute z-10 flex h-14 w-14 items-center justify-center rounded-full panel-glass-2 text-white/90 select-none active:scale-90 transition-transform"
+          style={{ right: "calc(1.6rem + env(safe-area-inset-right))", bottom: "calc(6rem + env(safe-area-inset-bottom))", touchAction: "none" }}
           aria-label="跳跃"
         >
-          <span className="text-[17px] leading-none">⤴</span>
+          <span className="text-[22px] leading-none">⤴</span>
         </button>
-      </div>
       )}
       {/* 开车时(触屏):右下「按住加速」踏板,对应键盘 Shift */}
       {isTouch && carPrompt === "exit" && (
         <button
+          type="button"
           onPointerDown={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.boost = true; }}
           onPointerUp={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.boost = false; }}
           onPointerLeave={() => { if (inputRef.current) inputRef.current.boost = false; }}
           onPointerCancel={() => { if (inputRef.current) inputRef.current.boost = false; }}
-          className="xy-explore-boost absolute z-10 flex h-16 w-16 items-center justify-center rounded-full panel-glass-2 text-white/90 select-none active:scale-90 transition-transform"
+          className="xy-explore-drive-pedal absolute z-10 flex h-16 w-24 items-center justify-center gap-1.5 rounded-full panel-glass-2 text-white/90 select-none active:scale-95 transition-transform"
           style={{ right: "calc(1.6rem + env(safe-area-inset-right))", bottom: "calc(6rem + env(safe-area-inset-bottom))", touchAction: "none" }}
-          aria-label="加速"
+          aria-label="按住加速"
         >
-          <span className="text-[26px] leading-none">»</span>
+          <span className="text-[24px] leading-none">»</span>
+          <span className="text-caption leading-none text-white/80">按住加速</span>
         </button>
       )}
 
@@ -8600,24 +10544,19 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
       )}
 
       {/* —— 新玩法 HUD —— */}
-      {/* 海湾岸边:垂钓按钮(底部居中,避开送心愿) */}
+      {/* 海湾岸边:垂钓按钮 · 真实垂钓系统(钓具 / 提竿 / 张力 / 放生) */}
       {atWater && nearNpc < 0 && (
-        <div className="absolute inset-x-0 flex justify-center px-4" style={{ bottom: "calc(2.4rem + env(safe-area-inset-bottom))" }}>
-          {fishing === "bite" ? (
-            <FishingRhythmHud startedAt={rhythmStartedAt} onReel={onCast} />
-          ) : fishing === "missed" ? (
-            <div className="panel-glass-2 rounded-full px-5 py-2.5 text-center font-display text-[14px] tracking-wider text-white/86" role="status" aria-live="polite">
-              {fishingMiss === "early" ? "别急，它刚碰到浮标。" : "鱼从光里游走了。"}
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={onCast}
-              className="panel-glass-2 rounded-full px-6 py-2.5 font-display text-[15px] tracking-wider text-white/90 active:scale-95 transition-transform"
-            >
-              {fishing === "idle" ? "🎣 垂钓" : fishing === "cast" ? "抛竿中…" : "等鱼靠近…"}
-            </button>
-          )}
+        <div className="absolute inset-x-0 flex justify-center px-4" style={{ bottom: "calc(2.4rem + env(safe-area-inset-bottom))" }} aria-label="垂钓: 钓具 提竿 张力 放生">
+          <FishingSystemHud
+            session={fishingSession}
+            save={fishingSave}
+            loadout={fishingLoadout}
+            onStart={startRealisticFishing}
+            onAim={beginFishingAim}
+            onCast={castRealisticLine}
+            onHook={handleHook}
+            onCancel={resetFishingSession}
+          />
         </div>
       )}
 
@@ -8702,15 +10641,6 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
           </div>
         </div>
       )}
-      {/* 天灯模型还没缓存好时的轻提示:就绪后 ensureLantern 自动放飞并撤下此条 */}
-      {lanternPrep && (
-        <div className="absolute inset-x-0 top-[20%] z-40 flex justify-center px-4 pointer-events-none">
-          <div className="panel-glass-2 rounded-full px-4 py-2 flex items-center gap-2 text-[13px] text-white/90">
-            <span className="animate-pulse">🏮</span> 天灯准备中，马上为你放飞…
-          </div>
-        </div>
-      )}
-
       {/* 垂钓收获卡 */}
       {shownCatch && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/35 px-4" onClick={() => setShownCatch(null)}>
@@ -8718,8 +10648,20 @@ export default function ExploreMode({ visual, onExit, emotion, bottleNotes, impr
             <p className="text-[34px] leading-none">{shownCatch.icon}</p>
             <p className="font-display text-[16px] tracking-wider text-white/90 mt-2">{shownCatch.title}</p>
             <p className="font-serif text-caption text-white/75 mt-2 leading-relaxed">{shownCatch.line}</p>
-            <p className="text-caption text-white/40 mt-3">已拾得 {catchCount} 件</p>
-            <button onClick={() => setShownCatch(null)} className="btn-primary mt-3 w-full">收下</button>
+            <p className="text-caption text-white/50 mt-2">{shownCatch.weight.toFixed(2)} kg</p>
+            <p className="text-caption text-white/40 mt-3">已记录 {fishingSave.stats.totalCatches} 次垂钓收获</p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button onClick={() => setShownCatch(null)} className="btn-primary w-full">收藏</button>
+              <button
+                onClick={() => {
+                  if (shownCatch) setFishingSave((save) => recordFishingRelease(save, shownCatch.speciesId));
+                  setShownCatch(null);
+                }}
+                className="btn-ghost w-full"
+              >
+                放生
+              </button>
+            </div>
           </div>
         </div>
       )}

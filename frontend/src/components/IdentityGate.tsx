@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import type { LocalIdentity } from "../lib/localIdentity";
-import { createIdentity } from "../lib/localIdentity";
+import { createIdentity, DEFAULT_NICKNAME } from "../lib/localIdentity";
 import { seedIdentity } from "../lib/api";
 import { SPRING_TAP } from "../lib/motion";
 
@@ -13,9 +13,7 @@ export default function IdentityGate({ onReady }: Props) {
   const [nickname, setNickname] = useState("");
 
   const submit = () => {
-    const next = nickname.trim();
-    if (!next) return;
-    const identity = createIdentity(next);
+    const identity = createIdentity(nickname);
     // 新身份首访时为其注入种子记忆，让岛屿一开始就「记得你」（后端幂等）
     seedIdentity(identity.user_id);
     onReady(identity);
@@ -30,7 +28,7 @@ export default function IdentityGate({ onReady }: Props) {
     >
       <h2 className="font-serif text-mist-100 text-title-sm">先给岛屿一个称呼</h2>
       <p className="mt-2 text-mist-400 text-body leading-relaxed">
-        只保存在本机浏览器，用来区分你的本地记忆。
+        可以直接进入；留空会使用「{DEFAULT_NICKNAME}」。称呼只保存在本机浏览器，用来区分你的本地记忆。
       </p>
       <input
         value={nickname}
@@ -39,13 +37,12 @@ export default function IdentityGate({ onReady }: Props) {
           if (e.key === "Enter") submit();
         }}
         maxLength={24}
-        placeholder="例如：小陈"
+        placeholder={`留空默认：${DEFAULT_NICKNAME}`}
         className="mt-5 w-full rounded-card bg-ink-900/35 border border-mist-600 px-4 py-3 text-mist-100 placeholder:text-mist-500 text-base font-serif outline-none focus:border-mist-400 transition-colors"
       />
       <motion.button
         type="button"
         onClick={submit}
-        disabled={!nickname.trim()}
         whileHover={{ y: -1, scale: 1.01 }}
         whileTap={{ scale: 0.97 }}
         transition={SPRING_TAP}
@@ -59,4 +56,3 @@ export default function IdentityGate({ onReady }: Props) {
     </motion.div>
   );
 }
-

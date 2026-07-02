@@ -12,8 +12,10 @@ import hmac
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, AsyncIterator, Callable, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -25,6 +27,10 @@ _HOST = "tts.tencentcloudapi.com"
 _SERVICE = "tts"
 _ACTION = "TextToVoice"
 _VERSION = "2019-08-23"
+_STREAM_HOST = "tts.cloud.tencent.com"
+_STREAM_PATH = "/stream_wsv2"
+_STREAM_ACTION = "TextToStreamAudioWSv2"
+WsConnect = Callable[[str, dict[str, str]], Any]
 
 # 情绪 → 语速（腾讯云 Speed 取值约 [-2, 6]，0 为常速；负更慢）。克制温柔基调下整体偏慢。
 _EMOTION_SPEED = {
@@ -75,11 +81,15 @@ def _sign(key: bytes, msg: str) -> bytes:
 class TTSService:
     """腾讯云 TTS 封装。configured() 为假时整体降级（前端走浏览器原生）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, ws_connect: Optional[WsConnect] = None) -> None:
         self._client = httpx.Client(timeout=config.TENCENT_TTS_TIMEOUT)
+        self._ws_connect = ws_connect or _default_ws_connect
 
     def configured(self) -> bool:
         return bool(config.TENCENT_TTS_SECRET_ID and config.TENCENT_TTS_SECRET_KEY)
+
+    def streaming_configured(self) -> bool:
+        return bool(self.configured() and config.TENCENT_TTS_APP_ID)
 
     def speed_for(self, emotion: str) -> float:
         return _EMOTION_SPEED.get(emotion, 0.0)
@@ -96,6 +106,17 @@ class TTSService:
         except Exception as e:  # 任何异常都降级，绝不影响主体验
             logger.warning("Tencent TTS 调用失败，降级浏览器原生: %s", e)
             return None
+
+    async def stream(self, text: str, emotion: str = "calm", voice: Optional[int] = None) -> AsyncIterator[bytes]:
+        """逐帧合成 mp3 音频。缺少 AppId 或调用失败时结束迭代，由前端回退整段 TTS。"""
+        if not self.streaming_configured() or not (text or "").strip():
+            return
+        try:
+            async for chunk in self._stream_call(text.strip()[:300], emotion, voice):
+                yield chunk
+        except Exception as e:  # 任何异常都降级，绝不影响主体验
+            logger.warning("Tencent TTS 流式调用失败，降级整段 TTS: %s", e)
+            return
 
     def _call(self, text: str, emotion: str, voice: Optional[int]) -> Optional[bytes]:
         secret_id = config.TENCENT_TTS_SECRET_ID
@@ -128,6 +149,60 @@ class TTSService:
         if not audio_b64:
             return None
         return base64.b64decode(audio_b64)
+
+    async def _stream_call(self, text: str, emotion: str, voice: Optional[int]) -> AsyncIterator[bytes]:
+        session_id = uuid.uuid4().hex
+        url = self._signed_stream_url(emotion, voice, session_id)
+        async with self._ws_connect(url, {}) as ws:
+            await ws.send(json.dumps({
+                "session_id": session_id,
+                "message_id": uuid.uuid4().hex,
+                "action": "ACTION_SYNTHESIS",
+                "data": text,
+            }, ensure_ascii=False))
+            await ws.send(json.dumps({
+                "session_id": session_id,
+                "message_id": uuid.uuid4().hex,
+                "action": "ACTION_COMPLETE",
+                "data": "",
+            }, ensure_ascii=False))
+
+            async for message in ws:
+                if isinstance(message, (bytes, bytearray)):
+                    chunk = bytes(message)
+                    if chunk:
+                        yield chunk
+                    continue
+
+                event = _parse_event(message)
+                code = event.get("code")
+                if code not in (None, 0):
+                    raise RuntimeError(str(event.get("message") or event))
+                if event.get("final") == 1 or event.get("action") == "ACTION_COMPLETE":
+                    break
+
+    def _signed_stream_url(self, emotion: str, voice: Optional[int], session_id: str) -> str:
+        now = int(time.time())
+        params: dict[str, Any] = {
+            "Action": _STREAM_ACTION,
+            "AppId": config.TENCENT_TTS_APP_ID,
+            "SecretId": config.TENCENT_TTS_SECRET_ID,
+            "Timestamp": now,
+            "Expired": now + 3600,
+            "SessionId": session_id,
+            "VoiceType": voice if voice else default_voice_type(),
+            "Codec": "mp3",
+            "SampleRate": 16000,
+            "Speed": self.speed_for(emotion),
+            "Volume": 0,
+        }
+        sign_query = urlencode(sorted(params.items()))
+        sign_text = f"{_STREAM_HOST}{_STREAM_PATH}?{sign_query}"
+        signature = base64.b64encode(
+            hmac.new(config.TENCENT_TTS_SECRET_KEY.encode("utf-8"), sign_text.encode("utf-8"), hashlib.sha1).digest()
+        ).decode("utf-8")
+        params["Signature"] = signature
+        return f"wss://{_STREAM_HOST}{_STREAM_PATH}?{urlencode(params)}"
 
     @staticmethod
     def _auth_headers(secret_id: str, secret_key: str, region: str, payload: str) -> dict:
@@ -170,3 +245,23 @@ class TTSService:
             "X-TC-Version": _VERSION,
             "X-TC-Region": region,
         }
+
+
+def _parse_event(message: Any) -> dict:
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="ignore")
+    if not isinstance(message, str) or not message.strip():
+        return {}
+    try:
+        data = json.loads(message)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _default_ws_connect(url: str, headers: dict[str, str]) -> Any:
+    import websockets  # pylint: disable=import-outside-toplevel
+
+    if headers:
+        return websockets.connect(url, additional_headers=headers)
+    return websockets.connect(url)

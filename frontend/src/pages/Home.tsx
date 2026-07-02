@@ -19,23 +19,16 @@ function prefetchExplore() {
 import Particles from "../components/Particles";
 import MoodInput from "../components/MoodInput";
 import NarrativeCard from "../components/NarrativeCard";
-import IslandAssistant from "../components/IslandAssistant";
-import MindMap from "../components/MindMap";
 import SafetyNotice from "../components/SafetyNotice";
-import BreathingRitual from "../components/BreathingRitual";
-import { NightWatchBanner, GoodnightScreen } from "../components/NightWatch";
+import { NightWatchBanner } from "../components/NightWatch";
 import { useNightWatch } from "../lib/useNightWatch";
 import WelcomeBackCard from "../components/WelcomeBackCard";
 import IslandWhisper from "../components/IslandWhisper";
 import IslandRevision from "../components/IslandRevision";
-import SilentMode from "../components/SilentMode";
-import GlyphCanvas from "../components/GlyphCanvas";
 import LoadingOrb from "../components/LoadingOrb";
 import MusicControl from "../components/MusicControl";
 import IdentityGate from "../components/IdentityGate";
 import UserBadge from "../components/UserBadge";
-import AgentDirectorPanel from "../components/AgentDirectorPanel";
-import OnboardingArrival from "../components/OnboardingArrival";
 import ShortcutsHint from "../components/ShortcutsHint";
 import { useEasterEggs } from "../hooks/useEasterEggs";
 import { play as playSfx } from "../lib/sfx";
@@ -63,15 +56,65 @@ import {
 import { clearIdentity, loadIdentity, type LocalIdentity } from "../lib/localIdentity";
 import { resolveScene, DEFAULT_VISUAL, EMOTION_META, type BackendScene } from "../lib/sceneMap";
 import { STREAM_STAGE_TEXT, classifyError, type ErrorVoiceKind } from "../lib/islandVoice";
-import IslandHushCard from "../components/IslandHushCard";
-import TimeMachine from "../components/TimeMachine";
-import IslandMap from "../components/IslandMap";
 import { useKeyboardInset } from "../hooks/useKeyboardInset";
 import { useImmersion } from "../hooks/useImmersion";
 import { useParallax } from "../hooks/useParallax";
 import { useSkin3d } from "../hooks/useSkin3d";
 
+const BreathingRitual = lazy(() => import("../components/BreathingRitual"));
+const AgentDirectorPanel = lazy(() => import("../components/AgentDirectorPanel"));
+const GoodnightScreen = lazy(() => import("../components/NightWatch").then((m) => ({ default: m.GoodnightScreen })));
+const IslandAssistant = lazy(() => import("../components/IslandAssistant"));
+const IslandHushCard = lazy(() => import("../components/IslandHushCard"));
+const MindMap = lazy(() => import("../components/MindMap"));
+const OnboardingArrival = lazy(() => import("../components/OnboardingArrival"));
+const SilentMode = lazy(() => import("../components/SilentMode"));
+const GlyphCanvas = lazy(() => import("../components/GlyphCanvas"));
+const TimeMachine = lazy(() => import("../components/TimeMachine"));
+const IslandMap = lazy(() => import("../components/IslandMap"));
+
 type Phase = "input" | "loading" | "breathing" | "narrative" | "safety";
+
+function ExploreLaunchFallback({ accent }: { accent: string }) {
+  return (
+    <div
+      className="fixed inset-0 z-[70] grid place-items-center overflow-hidden text-white"
+      role="status"
+      aria-live="polite"
+      style={{
+        background: `radial-gradient(circle at 50% 42%, ${accent}33 0%, rgba(9, 14, 31, 0.92) 36%, #050816 100%)`,
+      }}
+    >
+      <div className="flex flex-col items-center gap-4">
+        <span
+          className="block h-16 w-16 rounded-full border border-white/35"
+          style={{
+            background: `radial-gradient(circle at 42% 35%, rgba(255,255,255,.94), ${accent} 46%, rgba(255,255,255,.08) 68%)`,
+            boxShadow: `0 0 52px ${accent}99`,
+          }}
+        />
+        <span className="font-display text-[15px] tracking-[0.18em] text-white/80">正在登岛...</span>
+      </div>
+    </div>
+  );
+}
+
+function MindMapFallback({ count, level, open, onToggle }: { count: number; level?: number; open: boolean; onToggle: () => void }) {
+  return (
+    <div className="relative z-30 max-w-[min(50vw,21rem)]">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-card bg-white/10 backdrop-blur-md border border-white/18 text-mist-200 hover:text-white text-sm hover:bg-white/15 transition"
+        aria-expanded={open}
+      >
+        <span className="shrink-0 font-serif">心象地图</span>
+        <span className="text-mist-400 text-caption truncate tnum">
+          {level ? `第${level}级 · ` : ""}{count} 片心情 · {open ? "收起" : "翻开"}
+        </span>
+      </button>
+    </div>
+  );
+}
 
 // 高强度负面情绪 + 未触发安全硬阻断时，先邀请用户做一次潮汐呼吸再继续叙事。
 // 安全触发优先：自伤风险直接走 SafetyNotice，不被呼吸打断。
@@ -134,6 +177,10 @@ export default function Home() {
   const [islandMapOpen, setIslandMapOpen] = useState(false);
   // 自由探索：上岛走走，控制小人收集心愿
   const [exploreOpen, setExploreOpen] = useState(false);
+  const openExploreMode = useCallback(() => {
+    prefetchExplore();
+    setExploreOpen(true);
+  }, []);
   // 首页就绪后空闲时预取「上岛」重 chunk + 模型，等用户点按钮时多半已在缓存里（首屏上岛提速）。
   useEffect(() => {
     // 省流量 / 弱网(2g)下不主动预缓存重资源，避免替用户花流量；改由 hover/点按时按需取。
@@ -608,7 +655,18 @@ export default function Home() {
         {identity && (
           <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-start justify-between gap-2">
             <UserBadge identity={identity} onClear={handleClearIdentity} onDeleteData={handleDeleteData} />
-            <MindMap memories={memories} island={activeIsland} artifacts={artifacts} open={memOpen} onToggle={() => setMemOpen((v) => !v)} userId={identity.user_id} />
+            <Suspense
+              fallback={
+                <MindMapFallback
+                  count={memories.length}
+                  level={activeIsland?.growth_level}
+                  open={memOpen}
+                  onToggle={() => setMemOpen((v) => !v)}
+                />
+              }
+            >
+              <MindMap memories={memories} island={activeIsland} artifacts={artifacts} open={memOpen} onToggle={() => setMemOpen((v) => !v)} userId={identity.user_id} />
+            </Suspense>
           </div>
         )}
       </motion.header>
@@ -639,11 +697,13 @@ export default function Home() {
           {phase === "input" && (
             <motion.div key="input" className="w-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
               {error && lastSubmit && (
-                <IslandHushCard
-                  kind={errorKind}
-                  onRetry={() => { setError(null); handleSubmit(lastSubmit.text, lastSubmit.ephemeral); }}
-                  onDismiss={() => setError(null)}
-                />
+                <Suspense fallback={null}>
+                  <IslandHushCard
+                    kind={errorKind}
+                    onRetry={() => { setError(null); handleSubmit(lastSubmit.text, lastSubmit.ephemeral); }}
+                    onDismiss={() => setError(null)}
+                  />
+                </Suspense>
               )}
               {/* InboxQueue：按 revision > welcomeBack > whisper > nightWatch 优先级，
                   同一时刻只显示一张，避免演示路径上多条信件一起砸下来 */}
@@ -670,9 +730,10 @@ export default function Home() {
               {/* 自由探索不依赖历史,任何时候都能上岛走走 —— 主行动召唤,明亮药丸 + 光晕脉冲 + 声纳环,光晕强度随情绪联动 */}
               <div className="text-center mt-4">
                 <motion.button
-                  onClick={() => setExploreOpen(true)}
+                  onClick={openExploreMode}
                   onPointerEnter={prefetchExplore}
                   onPointerDown={prefetchExplore}
+                  onFocus={prefetchExplore}
                   className="island-cta"
                   style={{
                     background: `linear-gradient(165deg, ${visual.accent} 0%, ${visual.accent}d9 52%, ${visual.accent}b3 100%)`,
@@ -711,7 +772,11 @@ export default function Home() {
                     回望这些天 ›
                   </button>
                 )}
-                {memories.length > 0 && identity && <IslandAssistant userId={identity.user_id} />}
+                {memories.length > 0 && identity && (
+                  <Suspense fallback={null}>
+                    <IslandAssistant userId={identity.user_id} />
+                  </Suspense>
+                )}
                 {(memories.length > 0 || artifacts.length > 0) && (
                   <button onClick={() => setIslandMapOpen(true)} className="btn-link py-1 px-1">
                     登高望岛 ›
@@ -730,17 +795,21 @@ export default function Home() {
                 totalAgents={5}
                 onCancel={() => { cancelStreamRef.current?.(); activeReqRef.current = null; setError(null); setPhase("input"); }}
               />
-              <AgentDirectorPanel agents={liveAgents} />
+              <Suspense fallback={null}>
+                <AgentDirectorPanel agents={liveAgents} />
+              </Suspense>
             </motion.div>
           )}
 
           {phase === "breathing" && result && (
             <motion.div key="breathing" className="w-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
-              <BreathingRitual
-                emotionLabel={EMOTION_META[result.emotion]?.label ?? "情绪"}
-                onComplete={() => setPhase("narrative")}
-                onSkip={() => setPhase("narrative")}
-              />
+              <Suspense fallback={null}>
+                <BreathingRitual
+                  emotionLabel={EMOTION_META[result.emotion]?.label ?? "情绪"}
+                  onComplete={() => setPhase("narrative")}
+                  onSkip={() => setPhase("narrative")}
+                />
+              </Suspense>
             </motion.div>
           )}
 
@@ -823,74 +892,88 @@ export default function Home() {
       {/* 首次登岛过场：黑屏 → 月光岛屿 → typewriter → onDone */}
       <AnimatePresence>
         {arrival && identity && (
-          <OnboardingArrival
-            key="arrival"
-            nickname={identity.nickname}
-            onDone={() => {
-              try { sessionStorage.setItem(`xinyu.arrived.${identity.user_id}`, "1"); } catch { /* sessionStorage 不可用 */ }
-              setArrival(false);
-            }}
-          />
+          <Suspense fallback={null}>
+            <OnboardingArrival
+              key="arrival"
+              nickname={identity.nickname}
+              onDone={() => {
+                try { sessionStorage.setItem(`xinyu.arrived.${identity.user_id}`, "1"); } catch { /* sessionStorage 不可用 */ }
+                setArrival(false);
+              }}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
       {/* 晚安屏：z-50 全屏覆盖，5 秒内不暴露返回按钮，保护用户真的去睡觉 */}
       <AnimatePresence>
-        {bedtime && <GoodnightScreen key="goodnight" onWake={() => setBedtime(false)} />}
+        {bedtime && (
+          <Suspense fallback={null}>
+            <GoodnightScreen key="goodnight" onWake={() => setBedtime(false)} />
+          </Suspense>
+        )}
       </AnimatePresence>
 
       {/* 静默坐岛：z-40 全屏覆盖，30 秒陪坐 → 留一枚静默贝壳 → 自动关闭 */}
       <AnimatePresence>
         {silentOpen && identity && (
-          <SilentMode
-            key="silent-mode"
-            userId={identity.user_id}
-            durationSeconds={30}
-            onClose={(artifact) => {
-              setSilentOpen(false);
-              // 用回传的贝壳乐观合并，先让它立刻出现在收藏墙，再异步对账(#6/#25)
-              if (artifact) setArtifacts((prev) => [artifact, ...prev]);
-              fetchArtifacts(identity.user_id).then(setArtifacts).catch(() => {});
-              fetchIslandState(identity.user_id).then(setIsland).catch(() => {});
-            }}
-          />
+          <Suspense fallback={null}>
+            <SilentMode
+              key="silent-mode"
+              userId={identity.user_id}
+              durationSeconds={30}
+              onClose={(artifact) => {
+                setSilentOpen(false);
+                // 用回传的贝壳乐观合并，先让它立刻出现在收藏墙，再异步对账(#6/#25)
+                if (artifact) setArtifacts((prev) => [artifact, ...prev]);
+                fetchArtifacts(identity.user_id).then(setArtifacts).catch(() => {});
+                fetchIslandState(identity.user_id).then(setIsland).catch(() => {});
+              }}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
       {/* 写一个字：z-40 全屏覆盖，描红写一个心境字 → 岛屿读心 → 留一块心境石 */}
       <AnimatePresence>
         {glyphOpen && identity && (
-          <GlyphCanvas
-            key="glyph-canvas"
-            userId={identity.user_id}
-            onClose={(glyph) => {
-              setGlyphOpen(false);
-              if (glyph?.artifact) setArtifacts((prev) => [glyph.artifact, ...prev]);
-              fetchArtifacts(identity.user_id).then(setArtifacts).catch(() => {});
-              fetchIslandState(identity.user_id).then(setIsland).catch(() => {});
-            }}
-          />
+          <Suspense fallback={null}>
+            <GlyphCanvas
+              key="glyph-canvas"
+              userId={identity.user_id}
+              onClose={(glyph) => {
+                setGlyphOpen(false);
+                if (glyph?.artifact) setArtifacts((prev) => [glyph.artifact, ...prev]);
+                fetchArtifacts(identity.user_id).then(setArtifacts).catch(() => {});
+                fetchIslandState(identity.user_id).then(setIsland).catch(() => {});
+              }}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
       {/* 时光机·一键回望：z-[60] 全屏覆盖，把跨天成长压进 20 秒延时动画 */}
       {replayMode && identity && (
-        <TimeMachine
-          userId={replayMode === "demo" ? "demo-timeline" : identity.user_id}
-          demo={replayMode === "demo"}
-          onClose={() => setReplayMode(null)}
-        />
+        <Suspense fallback={null}>
+          <TimeMachine
+            userId={replayMode === "demo" ? "demo-timeline" : identity.user_id}
+            demo={replayMode === "demo"}
+            onClose={() => setReplayMode(null)}
+          />
+        </Suspense>
       )}
 
       {/* 登高望岛：z-[60] 俯瞰式查看自己养成的岛 */}
       <AnimatePresence>
         {islandMapOpen && identity && (
-          <IslandMap
-            key="island-map"
-            island={activeIsland}
-            artifacts={artifacts}
-            onClose={() => setIslandMapOpen(false)}
-          />
+          <Suspense fallback={null}>
+            <IslandMap
+              key="island-map"
+              island={activeIsland}
+              artifacts={artifacts}
+              onClose={() => setIslandMapOpen(false)}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
@@ -898,7 +981,7 @@ export default function Home() {
       {exploreOpen && (
         // 探索模式崩溃（WebGL 上下文丢失等）→ 自动退出回到岛屿主界面，而非整页失联。
         <ErrorBoundary fallback={null} onError={() => setExploreOpen(false)}>
-          <Suspense fallback={null}>
+          <Suspense fallback={<ExploreLaunchFallback accent={visual.accent} />}>
             <ExploreMode key={identity?.user_id ?? "guest"} visual={visual} onExit={() => setExploreOpen(false)} emotion={result?.emotion} bottleNotes={bottleNotes} imprints={imprints} userId={identity?.user_id} />
           </Suspense>
         </ErrorBoundary>
